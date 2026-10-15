@@ -212,10 +212,41 @@ pub struct DatabaseData {
     pub title: String,
     pub view: DatabaseView,
     pub gallery_columns: u8,
+    pub view_settings: DatabaseViewSettings,
     pub sort_key: String,
     pub sort_descending: bool,
     pub properties: Vec<DatabaseProperty>,
     pub rows: Vec<DatabaseRow>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct DatabaseViewSettings {
+    pub gallery_show_cover: bool,
+    pub gallery_show_title: bool,
+    pub gallery_show_description: bool,
+    pub gallery_show_created_at: bool,
+    pub gallery_visible_properties: Option<Vec<i64>>,
+    pub table_show_created_at: bool,
+    pub table_visible_properties: Option<Vec<i64>>,
+    pub board_show_description: bool,
+    pub board_visible_properties: Option<Vec<i64>>,
+}
+
+impl Default for DatabaseViewSettings {
+    fn default() -> Self {
+        Self {
+            gallery_show_cover: true,
+            gallery_show_title: true,
+            gallery_show_description: false,
+            gallery_show_created_at: true,
+            gallery_visible_properties: None,
+            table_show_created_at: true,
+            table_visible_properties: None,
+            board_show_description: false,
+            board_visible_properties: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -242,10 +273,36 @@ pub struct Block {
     pub position: usize,
     pub kind: BlockKind,
     pub content: String,
+    pub text_styles: Vec<TextStyleRange>,
     pub checked: bool,
     pub column_group: Option<i64>,
     pub column_index: usize,
     pub media_width: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct InlineTextStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub font_family: Option<InlineFontFamily>,
+    pub foreground: Option<[u8; 4]>,
+    pub background: Option<[u8; 4]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub enum InlineFontFamily {
+    Serif,
+    Monospace,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct TextStyleRange {
+    pub start: usize,
+    pub end: usize,
+    pub style: InlineTextStyle,
 }
 
 #[derive(Clone, Debug)]

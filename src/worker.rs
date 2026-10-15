@@ -6,8 +6,8 @@ use eframe::egui;
 
 use crate::config::{BLOCK_BATCH_SIZE, SettingKey};
 use crate::domain::model::{
-    Block, BlockId, BlockKind, DatabaseData, DatabaseView, Document, DropPlacement, Page, PageId,
-    SaveBatch, SearchHit,
+    Block, BlockId, BlockKind, DatabaseData, DatabaseView, DatabaseViewSettings, Document,
+    DropPlacement, Page, PageId, SaveBatch, SearchHit, TextStyleRange,
 };
 use crate::error::{Error, Result};
 use crate::storage::Repository;
@@ -30,6 +30,7 @@ pub enum Action {
         position: usize,
         kind: BlockKind,
         content: String,
+        text_styles: Vec<TextStyleRange>,
     },
     ImportMedia {
         page: PageId,
@@ -135,6 +136,10 @@ pub enum Action {
     SetDatabaseGalleryColumns {
         page: PageId,
         columns: u8,
+    },
+    SetDatabaseViewSettings {
+        page: PageId,
+        settings: DatabaseViewSettings,
     },
     SetDatabaseSort {
         page: PageId,
@@ -524,6 +529,11 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
             repository.set_database_gallery_columns(page, columns)?;
             None
         }
+        Action::SetDatabaseViewSettings { page, settings } => {
+            refresh_database = Some(page);
+            repository.set_database_view_settings(page, &settings)?;
+            None
+        }
         Action::SetDatabaseSort {
             page,
             key,
@@ -563,11 +573,16 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
             position,
             kind,
             content,
+            text_styles,
         } => {
             if content.is_empty() {
                 repository.insert_block(page, position, kind)?;
             } else {
-                repository.append_blocks(page, position, &[(kind, content, false)])?;
+                repository.append_blocks_with_styles(
+                    page,
+                    position,
+                    &[(kind, content, false, text_styles)],
+                )?;
             }
             focus = Some(position);
             Some(page)

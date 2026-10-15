@@ -15,6 +15,7 @@ fn read_block(row: &Row<'_>) -> rusqlite::Result<Block> {
         position: read_usize(row, 2)?,
         kind: BlockKind::from_db(&kind),
         content: row.get(4)?,
+        text_styles: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
         checked: row.get(5)?,
         column_group: row.get(6)?,
         column_index: read_usize(row, 7)?,
@@ -322,7 +323,7 @@ impl Repository {
 
     pub fn blocks(&self, page: PageId, start: usize, count: usize) -> Result<Vec<Block>> {
         let mut statement = self.connection.prepare_cached(
-            "SELECT id,page_id,position,kind,content,checked,column_group,layout_column,media_width FROM blocks WHERE page_id=?1 AND position>=?2 AND position<?3 ORDER BY position")?;
+            "SELECT id,page_id,position,kind,content,checked,column_group,layout_column,media_width,text_styles FROM blocks WHERE page_id=?1 AND position>=?2 AND position<?3 ORDER BY position")?;
         Ok(statement
             .query_map(
                 params![
@@ -424,7 +425,50 @@ impl Repository {
         position: usize,
         blocks: &[(BlockKind, String, bool)],
     ) -> Result<()> {
-        if blocks.is_empty() {
+        self.append_blocks_inner(
+            page,
+            position,
+            blocks
+                .iter()
+                .map(|(kind, content, checked)| (*kind, content.as_str(), *checked, &[][..])),
+        )
+    }
+
+    pub fn append_blocks_with_styles(
+        &mut self,
+        page: PageId,
+        position: usize,
+        blocks: &[(
+            BlockKind,
+            String,
+            bool,
+            Vec<crate::domain::model::TextStyleRange>,
+        )],
+    ) -> Result<()> {
+        self.append_blocks_inner(
+            page,
+            position,
+            blocks.iter().map(|(kind, content, checked, styles)| {
+                (*kind, content.as_str(), *checked, styles.as_slice())
+            }),
+        )
+    }
+
+    fn append_blocks_inner<'a>(
+        &mut self,
+        page: PageId,
+        position: usize,
+        blocks: impl ExactSizeIterator<
+            Item = (
+                BlockKind,
+                &'a str,
+                bool,
+                &'a [crate::domain::model::TextStyleRange],
+            ),
+        >,
+    ) -> Result<()> {
+        let block_count = blocks.len();
+        if block_count == 0 {
             return Ok(());
         }
         let transaction = self.connection.transaction()?;
@@ -435,19 +479,22 @@ impl Repository {
         let position = position.min(count);
         transaction.execute(
             "UPDATE blocks SET position=position+?1 WHERE page_id=?2 AND position>=?3",
-            params![sql_index(blocks.len())?, page, sql_index(position)?],
+            params![sql_index(block_count)?, page, sql_index(position)?],
         )?;
         {
             let mut insert = transaction.prepare_cached(
-                "INSERT INTO blocks(page_id,position,kind,content,checked) VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO blocks(page_id,position,kind,content,checked,text_styles) VALUES(?1,?2,?3,?4,?5,?6)",
             )?;
-            for (offset, (kind, content, checked)) in blocks.iter().enumerate() {
+            for (offset, (kind, content, checked, text_styles)) in blocks.enumerate() {
+                let text_styles = serde_json::to_string(text_styles)
+                    .map_err(|error| Error::Invalid(format!("Invalid text formatting: {error}")))?;
                 insert.execute(params![
                     page,
                     sql_index(position + offset)?,
                     kind.as_str(),
                     content,
-                    checked
+                    checked,
+                    text_styles
                 ])?;
             }
         }

@@ -5,12 +5,12 @@ use crate::error::{Error, Result};
 
 pub fn migrate(connection: &Connection) -> Result<()> {
     let version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 9 {
+    if version > 11 {
         return Err(Error::Invalid(
             "This database was created with a newer version of Noteon.".into(),
         ));
     }
-    if version == 9 {
+    if version == 11 {
         return Ok(());
     }
     if version == 0 {
@@ -122,7 +122,31 @@ pub fn migrate(connection: &Connection) -> Result<()> {
         }
         connection.pragma_update(None, "user_version", 9)?;
     }
+    if version <= 9 {
+        if !has_column(connection, "databases", "view_settings")? {
+            connection.execute_batch(
+                "ALTER TABLE databases ADD COLUMN view_settings TEXT NOT NULL DEFAULT '{}';",
+            )?;
+        }
+        connection.pragma_update(None, "user_version", 10)?;
+    }
+    if version <= 10 {
+        if !has_column(connection, "blocks", "text_styles")? {
+            connection.execute_batch(
+                "ALTER TABLE blocks ADD COLUMN text_styles TEXT NOT NULL DEFAULT '[]';",
+            )?;
+        }
+        connection.pragma_update(None, "user_version", 11)?;
+    }
     Ok(())
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns.iter().any(|existing| existing == column))
 }
 
 fn migrate_imported_media(connection: &Connection) -> Result<()> {

@@ -1,10 +1,13 @@
 use eframe::egui::{
     self, Align2, FontFamily, FontId, Key, KeyboardShortcut, Modifiers, Rect, RichText, Sense,
-    Stroke, Ui, pos2, vec2,
+    Stroke, TextFormat, Ui, pos2, vec2,
 };
+use std::sync::Arc;
 
 use crate::domain::editing::split_at_selection;
-use crate::domain::model::{Block, BlockKind, DropPlacement};
+use crate::domain::model::{
+    Block, BlockKind, DropPlacement, InlineFontFamily, InlineTextStyle, TextStyleRange,
+};
 use crate::worker::Action;
 
 use crate::ui::text;
@@ -16,19 +19,26 @@ pub const HANDLE_WIDTH: f32 = 30.0;
 pub const DATABASE_BLOCK_HEIGHT: f32 = 520.0;
 pub const MEDIA_BLOCK_HEIGHT: f32 = 320.0;
 
-const SLASH_COMMANDS: [(&str, BlockKind); 12] = [
-    ("/h1", BlockKind::Heading1),
-    ("/h2", BlockKind::Heading2),
-    ("/h3", BlockKind::Heading3),
-    ("/todo", BlockKind::Todo),
-    ("/bullet", BlockKind::Bullet),
-    ("/number", BlockKind::Numbered),
-    ("/quote", BlockKind::Quote),
-    ("/callout", BlockKind::Callout),
-    ("/code", BlockKind::Code),
-    ("/divider", BlockKind::Divider),
-    ("/text", BlockKind::Text),
-    ("/table", BlockKind::Database),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlashCommandTarget {
+    Block(BlockKind),
+    Page,
+}
+
+const SLASH_COMMANDS: [(&str, SlashCommandTarget); 13] = [
+    ("/h1", SlashCommandTarget::Block(BlockKind::Heading1)),
+    ("/h2", SlashCommandTarget::Block(BlockKind::Heading2)),
+    ("/h3", SlashCommandTarget::Block(BlockKind::Heading3)),
+    ("/todo", SlashCommandTarget::Block(BlockKind::Todo)),
+    ("/bullet", SlashCommandTarget::Block(BlockKind::Bullet)),
+    ("/number", SlashCommandTarget::Block(BlockKind::Numbered)),
+    ("/quote", SlashCommandTarget::Block(BlockKind::Quote)),
+    ("/callout", SlashCommandTarget::Block(BlockKind::Callout)),
+    ("/code", SlashCommandTarget::Block(BlockKind::Code)),
+    ("/divider", SlashCommandTarget::Block(BlockKind::Divider)),
+    ("/text", SlashCommandTarget::Block(BlockKind::Text)),
+    ("/table", SlashCommandTarget::Block(BlockKind::Database)),
+    ("/page", SlashCommandTarget::Page),
 ];
 
 pub fn font(kind: BlockKind) -> FontId {
@@ -66,14 +76,14 @@ pub fn measured_height(ui: &Ui, block: &Block, width: f32) -> f32 {
     } else {
         &block.content
     };
-    let galley = ui.fonts(|fonts| {
-        fonts.layout(
-            text.into(),
-            font(block.kind),
-            egui::Color32::WHITE,
-            text_width,
-        )
-    });
+    let galley = layout_styled_text(
+        ui,
+        text,
+        text_width,
+        font(block.kind),
+        egui::Color32::WHITE,
+        &block.text_styles,
+    );
     (galley.size().y + BLOCK_PADDING * 2.0).clamp(36.0, MAX_BLOCK_HEIGHT)
 }
 
@@ -328,6 +338,7 @@ fn show_menu(
                     position: block.position + 1,
                     kind: BlockKind::Text,
                     content: String::new(),
+                    text_styles: Vec::new(),
                 }));
                 ui.close_menu();
             }
@@ -442,14 +453,32 @@ fn show_text(
                 .max_height(text_rect.height())
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    let snapshot_id =
+                        block_widget_id("text-content-snapshot", block.id, widget_scope);
+                    let previous_content =
+                        ui.ctx().data(|data| data.get_temp::<String>(snapshot_id));
+                    let styles = &block.text_styles;
+                    let base_font = font(block.kind);
+                    let base_color = if block.checked && block.kind == BlockKind::Todo {
+                        palette.muted
+                    } else {
+                        palette.text
+                    };
+                    let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
+                        layout_styled_text(
+                            ui,
+                            text,
+                            wrap_width,
+                            base_font.clone(),
+                            base_color,
+                            styles,
+                        )
+                    };
                     let mut output = egui::TextEdit::multiline(&mut block.content)
                         .id(block_widget_id("block", block.id, widget_scope))
-                        .font(font(block.kind))
-                        .text_color(if block.checked && block.kind == BlockKind::Todo {
-                            palette.muted
-                        } else {
-                            palette.text
-                        })
+                        .font(base_font.clone())
+                        .text_color(base_color)
+                        .layouter(&mut layouter)
                         .hint_text(hint)
                         .frame(false)
                         .margin(egui::Margin::ZERO)
@@ -463,6 +492,24 @@ fn show_text(
                         .lock_focus(block.kind == BlockKind::Code)
                         .show(ui);
                     update_multi_click_selection(ui, &mut output);
+                    if output.response.changed()
+                        && let Some(previous_content) = previous_content.as_deref()
+                    {
+                        adjust_text_styles(
+                            previous_content,
+                            &block.content,
+                            &mut block.text_styles,
+                        );
+                    }
+                    if output.response.has_focus() {
+                        if output.response.changed() || previous_content.is_none() {
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(snapshot_id, block.content.clone())
+                            });
+                        }
+                    } else if previous_content.is_some() {
+                        ui.ctx().data_mut(|data| data.remove::<String>(snapshot_id));
+                    }
                     if focus {
                         output.response.request_focus();
                         let cursor = egui::text::CCursor::new(0);
@@ -474,6 +521,48 @@ fn show_text(
                     }
                     focused = output.response.has_focus();
                     changed |= output.response.changed();
+                    let selection_id = block_widget_id("format-selection", block.id, widget_scope);
+                    let current_range = output
+                        .cursor_range
+                        .map(|range| range.as_sorted_char_range())
+                        .filter(|range| range.start < range.end);
+                    let editor_id = block_widget_id("block", block.id, widget_scope);
+                    let active_selection_id = egui::Id::new("active-text-format-selection");
+                    if output.response.has_focus() {
+                        ui.ctx().data_mut(|data| {
+                            if let Some(range) = current_range.clone() {
+                                data.insert_temp(selection_id, range);
+                                data.insert_temp(active_selection_id, editor_id);
+                            } else {
+                                data.remove::<std::ops::Range<usize>>(selection_id);
+                                if data.get_temp::<egui::Id>(active_selection_id) == Some(editor_id)
+                                {
+                                    data.remove::<egui::Id>(active_selection_id);
+                                }
+                            }
+                        });
+                    }
+                    let active_editor = ui
+                        .ctx()
+                        .data(|data| data.get_temp::<egui::Id>(active_selection_id));
+                    let selected_range = if active_editor == Some(editor_id) {
+                        current_range.or_else(|| {
+                            ui.ctx()
+                                .data(|data| data.get_temp::<std::ops::Range<usize>>(selection_id))
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(range) = selected_range.filter(|range| range.start < range.end) {
+                        changed |= show_text_format_toolbar(
+                            ui,
+                            output.response.rect,
+                            range,
+                            block,
+                            palette,
+                            widget_scope,
+                        );
+                    }
                     let selected_kind = show_command_suggestions(
                         ui,
                         output.response.rect,
@@ -482,16 +571,25 @@ fn show_text(
                         output.response.changed(),
                         widget_scope,
                     );
-                    if let Some(kind) = selected_kind {
-                        if kind == BlockKind::Database {
-                            intents.push(Intent::Action(Action::CreateDatabaseBlock {
-                                page: block.page_id,
-                                position: block.position,
-                                replace_block: Some(block.id),
-                            }));
+                    if let Some(target) = selected_kind {
+                        match target {
+                            SlashCommandTarget::Block(BlockKind::Database) => {
+                                intents.push(Intent::Action(Action::CreateDatabaseBlock {
+                                    page: block.page_id,
+                                    position: block.position,
+                                    replace_block: Some(block.id),
+                                }));
+                                block.kind = BlockKind::Database;
+                            }
+                            SlashCommandTarget::Block(kind) => block.kind = kind,
+                            SlashCommandTarget::Page => {
+                                intents
+                                    .push(Intent::Action(Action::CreatePage(Some(block.page_id))));
+                                block.kind = BlockKind::Text;
+                            }
                         }
-                        block.kind = kind;
                         block.content.clear();
+                        block.text_styles.clear();
                         output.response.request_focus();
                         changed = true;
                     } else {
@@ -512,11 +610,359 @@ fn show_text(
                     {
                         block.kind = kind;
                         block.content.clear();
+                        block.text_styles.clear();
                     }
                 });
         },
     );
     changed
+}
+
+fn layout_styled_text(
+    ui: &Ui,
+    text: &str,
+    wrap_width: f32,
+    base_font: FontId,
+    base_color: egui::Color32,
+    styles: &[TextStyleRange],
+) -> Arc<egui::Galley> {
+    let characters: Vec<_> = text.char_indices().collect();
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = wrap_width;
+    let mut start = 0;
+    while start < characters.len() {
+        let style = style_at(styles, start);
+        let mut end = start + 1;
+        while end < characters.len() && style_at(styles, end) == style {
+            end += 1;
+        }
+        let byte_start = characters[start].0;
+        let byte_end = characters.get(end).map_or(text.len(), |(index, _)| *index);
+        let mut format = TextFormat::simple(
+            styled_font(base_font.clone(), &style),
+            style.foreground.map(color_from_rgba).unwrap_or(base_color),
+        );
+        format.italics = style.italic;
+        let color = style.foreground.map(color_from_rgba).unwrap_or(base_color);
+        if style.underline {
+            format.underline = Stroke::new(1.0, color);
+        }
+        if style.strikethrough {
+            format.strikethrough = Stroke::new(1.0, color);
+        }
+        if let Some(background) = style.background {
+            format.background = color_from_rgba(background);
+        }
+        job.append(&text[byte_start..byte_end], 0.0, format);
+        start = end;
+    }
+    ui.fonts(|fonts| fonts.layout_job(job))
+}
+
+fn styled_font(mut font: FontId, style: &InlineTextStyle) -> FontId {
+    font.family = match (style.font_family, style.bold) {
+        (Some(InlineFontFamily::Monospace), _) => FontFamily::Monospace,
+        (Some(InlineFontFamily::Serif), true) => FontFamily::Name("noteon-serif-bold".into()),
+        (Some(InlineFontFamily::Serif), false) => FontFamily::Name("noteon-serif".into()),
+        (None, true) => FontFamily::Name("noteon-bold".into()),
+        _ => font.family,
+    };
+    font
+}
+
+fn show_text_format_toolbar(
+    ui: &Ui,
+    anchor: Rect,
+    range: std::ops::Range<usize>,
+    block: &mut Block,
+    palette: Palette,
+    widget_scope: Option<u64>,
+) -> bool {
+    let viewport = ui.ctx().screen_rect();
+    let toolbar_height = 38.0;
+    let top = if anchor.top() - toolbar_height >= viewport.top() {
+        anchor.top() - toolbar_height
+    } else {
+        anchor.bottom() + 4.0
+    };
+    let position = pos2(anchor.left(), top).max(viewport.min);
+    let mut changed = false;
+    egui::Area::new(block_widget_id(
+        "text-format-toolbar",
+        block.id,
+        widget_scope,
+    ))
+    .order(egui::Order::Foreground)
+    .fixed_pos(position)
+    .show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (label, description, field) in [
+                    ("B", "Bold", StyleToggle::Bold),
+                    ("I", "Italic", StyleToggle::Italic),
+                    ("U", "Underline", StyleToggle::Underline),
+                    ("S", "Strikethrough", StyleToggle::Strikethrough),
+                ] {
+                    let active = range_has_toggle(&block.text_styles, range.clone(), field);
+                    if ui
+                        .selectable_label(active, label)
+                        .on_hover_text(description)
+                        .clicked()
+                    {
+                        toggle_range_style(block, range.clone(), field);
+                        changed = true;
+                    }
+                }
+                ui.menu_button("Font", |ui| {
+                    for (label, family) in [
+                        ("Default", None),
+                        ("Serif", Some(InlineFontFamily::Serif)),
+                        ("Monospace", Some(InlineFontFamily::Monospace)),
+                    ] {
+                        if ui
+                            .selectable_label(
+                                range_has_font(&block.text_styles, range.clone(), family),
+                                label,
+                            )
+                            .clicked()
+                        {
+                            apply_range_style(block, range.clone(), |style| {
+                                style.font_family = family;
+                            });
+                            changed = true;
+                            ui.close_menu();
+                        }
+                    }
+                });
+                ui.menu_button(RichText::new("A").strong(), |ui| {
+                    ui.label("Text color");
+                    let mut color = range_color(&block.text_styles, range.clone(), true)
+                        .unwrap_or(palette.text);
+                    if ui.color_edit_button_srgba(&mut color).changed() {
+                        apply_range_style(block, range.clone(), |style| {
+                            style.foreground = Some(color.to_array());
+                        });
+                        changed = true;
+                    }
+                    if ui.button("Reset text color").clicked() {
+                        apply_range_style(block, range.clone(), |style| {
+                            style.foreground = None;
+                        });
+                        changed = true;
+                        ui.close_menu();
+                    }
+                });
+                ui.menu_button("Highlight", |ui| {
+                    ui.label("Background color");
+                    let mut color = range_color(&block.text_styles, range.clone(), false)
+                        .unwrap_or(egui::Color32::from_rgb(255, 230, 120));
+                    if ui.color_edit_button_srgba(&mut color).changed() {
+                        apply_range_style(block, range.clone(), |style| {
+                            style.background = Some(color.to_array());
+                        });
+                        changed = true;
+                    }
+                    if ui.button("Remove highlight").clicked() {
+                        apply_range_style(block, range.clone(), |style| {
+                            style.background = None;
+                        });
+                        changed = true;
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
+    });
+    changed
+}
+
+#[derive(Clone, Copy)]
+enum StyleToggle {
+    Bold,
+    Italic,
+    Underline,
+    Strikethrough,
+}
+
+fn range_has_toggle(
+    styles: &[TextStyleRange],
+    range: std::ops::Range<usize>,
+    field: StyleToggle,
+) -> bool {
+    let characters = expand_text_styles(styles, range.end);
+    let selected = &characters[range.start.min(characters.len())..range.end.min(characters.len())];
+    !selected.is_empty()
+        && selected.iter().all(|style| match field {
+            StyleToggle::Bold => style.bold,
+            StyleToggle::Italic => style.italic,
+            StyleToggle::Underline => style.underline,
+            StyleToggle::Strikethrough => style.strikethrough,
+        })
+}
+
+fn range_has_font(
+    styles: &[TextStyleRange],
+    range: std::ops::Range<usize>,
+    font_family: Option<InlineFontFamily>,
+) -> bool {
+    let characters = expand_text_styles(styles, range.end);
+    let selected = &characters[range.start.min(characters.len())..range.end.min(characters.len())];
+    !selected.is_empty()
+        && selected
+            .iter()
+            .all(|style| style.font_family == font_family)
+}
+
+fn range_color(
+    styles: &[TextStyleRange],
+    range: std::ops::Range<usize>,
+    foreground: bool,
+) -> Option<egui::Color32> {
+    let characters = expand_text_styles(styles, range.end);
+    let selected = &characters[range.start.min(characters.len())..range.end.min(characters.len())];
+    let first = selected.first()?;
+    let rgba = if foreground {
+        first.foreground
+    } else {
+        first.background
+    }?;
+    selected
+        .iter()
+        .all(|style| {
+            (if foreground {
+                style.foreground
+            } else {
+                style.background
+            }) == Some(rgba)
+        })
+        .then(|| color_from_rgba(rgba))
+}
+
+fn toggle_range_style(block: &mut Block, range: std::ops::Range<usize>, field: StyleToggle) {
+    let enabled = !range_has_toggle(&block.text_styles, range.clone(), field);
+    apply_range_style(block, range, |style| match field {
+        StyleToggle::Bold => style.bold = enabled,
+        StyleToggle::Italic => style.italic = enabled,
+        StyleToggle::Underline => style.underline = enabled,
+        StyleToggle::Strikethrough => style.strikethrough = enabled,
+    });
+}
+
+fn apply_range_style(
+    block: &mut Block,
+    range: std::ops::Range<usize>,
+    mut apply: impl FnMut(&mut InlineTextStyle),
+) {
+    let mut characters = expand_text_styles(&block.text_styles, block.content.chars().count());
+    let start = range.start.min(characters.len());
+    let end = range.end.min(characters.len());
+    for style in &mut characters[start..end] {
+        apply(style);
+    }
+    block.text_styles = compress_text_styles(&characters);
+}
+
+fn adjust_text_styles(old: &str, new: &str, styles: &mut Vec<TextStyleRange>) {
+    let old_chars: Vec<_> = old.chars().collect();
+    let new_chars: Vec<_> = new.chars().collect();
+    let previous_styles = expand_text_styles(styles, old_chars.len());
+    let prefix = old_chars
+        .iter()
+        .zip(&new_chars)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let suffix = old_chars[prefix..]
+        .iter()
+        .rev()
+        .zip(new_chars[prefix..].iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let inserted = new_chars.len().saturating_sub(prefix + suffix);
+    let mut next_styles = previous_styles[..prefix].to_vec();
+    let inherited = previous_styles
+        .get(prefix.saturating_sub(1))
+        .or_else(|| previous_styles.get(prefix))
+        .cloned()
+        .unwrap_or_default();
+    next_styles.extend((0..inserted).map(|_| inherited.clone()));
+    next_styles.extend_from_slice(&previous_styles[old_chars.len().saturating_sub(suffix)..]);
+    styles.clone_from(&compress_text_styles(&next_styles));
+}
+
+fn split_text_styles(
+    styles: &[TextStyleRange],
+    selection: std::ops::Range<usize>,
+) -> (Vec<TextStyleRange>, Vec<TextStyleRange>) {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for range in styles {
+        let left_end = range.end.min(selection.start);
+        if range.start < left_end {
+            left.push(TextStyleRange {
+                start: range.start,
+                end: left_end,
+                style: range.style.clone(),
+            });
+        }
+        let right_start = range.start.max(selection.end);
+        if right_start < range.end {
+            right.push(TextStyleRange {
+                start: right_start - selection.end,
+                end: range.end - selection.end,
+                style: range.style.clone(),
+            });
+        }
+    }
+    (left, right)
+}
+
+fn expand_text_styles(styles: &[TextStyleRange], length: usize) -> Vec<InlineTextStyle> {
+    let mut expanded = vec![InlineTextStyle::default(); length];
+    for range in styles {
+        let start = range.start.min(length);
+        let end = range.end.min(length);
+        if start >= end {
+            continue;
+        }
+        for style in &mut expanded[start..end] {
+            style.clone_from(&range.style);
+        }
+    }
+    expanded
+}
+
+fn compress_text_styles(styles: &[InlineTextStyle]) -> Vec<TextStyleRange> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < styles.len() {
+        let style = &styles[start];
+        if style == &InlineTextStyle::default() {
+            start += 1;
+            continue;
+        }
+        let mut end = start + 1;
+        while end < styles.len() && styles[end] == *style {
+            end += 1;
+        }
+        ranges.push(TextStyleRange {
+            start,
+            end,
+            style: style.clone(),
+        });
+        start = end;
+    }
+    ranges
+}
+
+fn style_at(styles: &[TextStyleRange], character_index: usize) -> InlineTextStyle {
+    styles
+        .iter()
+        .find(|range| range.start <= character_index && character_index < range.end)
+        .map_or_else(InlineTextStyle::default, |range| range.style.clone())
+}
+
+fn color_from_rgba(rgba: [u8; 4]) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3])
 }
 
 #[derive(Clone)]
@@ -758,7 +1204,7 @@ fn show_command_suggestions(
     focused: bool,
     text_changed: bool,
     widget_scope: Option<u64>,
-) -> Option<BlockKind> {
+) -> Option<SlashCommandTarget> {
     let matches = matching_commands(&block.content);
     if matches.is_empty() {
         return None;
@@ -801,17 +1247,17 @@ fn show_command_suggestions(
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_min_width(230.0);
                 ui.label(RichText::new("BLOCK TYPE").small().weak());
-                for (index, (command, kind)) in matches.iter().enumerate() {
-                    let label = if *kind == BlockKind::Database {
-                        "Table"
-                    } else {
-                        kind.label()
+                for (index, (command, target)) in matches.iter().enumerate() {
+                    let label = match target {
+                        SlashCommandTarget::Block(BlockKind::Database) => "Table",
+                        SlashCommandTarget::Block(kind) => kind.label(),
+                        SlashCommandTarget::Page => "Page",
                     };
                     if ui
                         .selectable_label(index == selected, format!("{command}   {label}"))
                         .clicked()
                     {
-                        activate = Some(*kind);
+                        activate = Some(*target);
                     }
                 }
             });
@@ -829,7 +1275,7 @@ fn slash_query(content: &str) -> Option<&str> {
     Some(query)
 }
 
-fn matching_commands(content: &str) -> Vec<(&'static str, BlockKind)> {
+fn matching_commands(content: &str) -> Vec<(&'static str, SlashCommandTarget)> {
     let Some(query) = slash_query(content) else {
         return Vec::new();
     };
@@ -853,14 +1299,17 @@ fn handle_enter(
     if let Some(kind) = BlockKind::shortcut(&block.content) {
         block.kind = kind;
         block.content.clear();
+        block.text_styles.clear();
         return true;
     }
     let selection = selection.unwrap_or_else(|| {
         let end = block.content.chars().count();
         end..end
     });
-    let (prefix, remainder) = split_at_selection(&block.content, selection);
+    let (prefix, remainder) = split_at_selection(&block.content, selection.clone());
+    let (prefix_styles, remainder_styles) = split_text_styles(&block.text_styles, selection);
     block.content = prefix;
+    block.text_styles = prefix_styles;
     let next_kind = match block.kind {
         BlockKind::Todo | BlockKind::Bullet | BlockKind::Numbered => block.kind,
         _ => BlockKind::Text,
@@ -871,6 +1320,7 @@ fn handle_enter(
         position: block.position + 1,
         kind: next_kind,
         content: remainder,
+        text_styles: remainder_styles,
     }));
     true
 }
@@ -886,8 +1336,8 @@ fn consume_plain_enter(ui: &mut Ui) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveSelection, SelectionMode, drag_selection_range, matching_commands,
-        selection_unit_range, slash_query,
+        ActiveSelection, SelectionMode, SlashCommandTarget, drag_selection_range,
+        matching_commands, selection_unit_range, slash_query,
     };
     use crate::domain::model::BlockKind;
 
@@ -895,10 +1345,17 @@ mod tests {
     fn slash_command_matches_narrow_as_the_query_grows() {
         let headings = matching_commands("/h");
         assert_eq!(headings.len(), 3);
-        assert_eq!(matching_commands("/todo"), [("/todo", BlockKind::Todo)]);
+        assert_eq!(
+            matching_commands("/todo"),
+            [("/todo", SlashCommandTarget::Block(BlockKind::Todo))]
+        );
         assert_eq!(
             matching_commands("/table"),
-            [("/table", BlockKind::Database)]
+            [("/table", SlashCommandTarget::Block(BlockKind::Database))]
+        );
+        assert_eq!(
+            matching_commands("/page"),
+            [("/page", SlashCommandTarget::Page)]
         );
         assert!(matching_commands("/unknown").is_empty());
     }

@@ -30,7 +30,8 @@ CREATE TABLE blocks (
     column_group INTEGER,
     layout_column INTEGER NOT NULL DEFAULT 0,
     column_width REAL NOT NULL DEFAULT 1.0 CHECK(column_width > 0 AND column_width <= 1.0),
-    media_width REAL NOT NULL DEFAULT 1.0 CHECK(media_width >= 0.25 AND media_width <= 1.0)
+    media_width REAL NOT NULL DEFAULT 1.0 CHECK(media_width >= 0.25 AND media_width <= 1.0),
+    text_styles TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX blocks_page_position ON blocks(page_id, position);
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -39,7 +40,8 @@ CREATE TABLE databases (
     view_mode TEXT NOT NULL DEFAULT 'table' CHECK(view_mode IN ('table','gallery','board')),
     sort_key TEXT NOT NULL DEFAULT 'created_at',
     sort_descending INTEGER NOT NULL DEFAULT 1 CHECK(sort_descending IN (0,1)),
-    gallery_columns INTEGER NOT NULL DEFAULT 3 CHECK(gallery_columns BETWEEN 1 AND 6)
+    gallery_columns INTEGER NOT NULL DEFAULT 3 CHECK(gallery_columns BETWEEN 1 AND 6),
+    view_settings TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE database_properties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,5 +102,5 @@ CREATE TRIGGER blocks_au AFTER UPDATE OF content ON blocks WHEN old.content != n
     INSERT INTO block_search(block_search,rowid,content) VALUES('delete',old.id,old.content);
     INSERT INTO block_search(rowid,content) VALUES(new.id,new.content);
 END;
-PRAGMA user_version=9;
+PRAGMA user_version=11;
 COMMIT;

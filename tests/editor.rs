@@ -52,6 +52,7 @@ fn editor(content: &str, count: usize) -> Editor {
                 position,
                 kind: BlockKind::Text,
                 content: content.into(),
+                text_styles: Vec::new(),
                 checked: false,
                 column_group: None,
                 column_index: 0,

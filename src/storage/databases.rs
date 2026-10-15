@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::domain::model::{
     DEFAULT_DATABASE_STATUS_OPTIONS, DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView,
-    PROPERTY_TYPES, PageId,
+    DatabaseViewSettings, PROPERTY_TYPES, PageId,
 };
 use crate::error::{Error, Result};
 
@@ -157,11 +157,12 @@ impl Repository {
     }
 
     pub fn database(&self, page_id: PageId) -> Result<DatabaseData> {
-        let (view, gallery_columns, sort_key, sort_descending, title): (String, u8, String, bool, String) = self.connection.query_row(
-            "SELECT d.view_mode,d.gallery_columns,d.sort_key,d.sort_descending,p.title FROM databases d JOIN pages p ON p.id=d.page_id WHERE d.page_id=?1",
+        let (view, gallery_columns, view_settings, sort_key, sort_descending, title): (String, u8, String, String, bool, String) = self.connection.query_row(
+            "SELECT d.view_mode,d.gallery_columns,d.view_settings,d.sort_key,d.sort_descending,p.title FROM databases d JOIN pages p ON p.id=d.page_id WHERE d.page_id=?1",
             [page_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )?;
+        let view_settings = serde_json::from_str(&view_settings).unwrap_or_default();
         let mut property_statement = self.connection.prepare_cached(
             "SELECT id,name,kind,options FROM database_properties WHERE database_page_id=?1 ORDER BY position,id",
         )?;
@@ -259,6 +260,7 @@ impl Repository {
             title,
             view: DatabaseView::from_db(&view),
             gallery_columns,
+            view_settings,
             sort_key,
             sort_descending,
             properties,
@@ -412,6 +414,20 @@ impl Repository {
         self.connection.execute(
             "UPDATE databases SET gallery_columns=?1 WHERE page_id=?2",
             params![columns, page],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_database_view_settings(
+        &self,
+        page: PageId,
+        settings: &DatabaseViewSettings,
+    ) -> Result<()> {
+        let settings = serde_json::to_string(settings)
+            .map_err(|error| Error::Invalid(format!("Invalid database view settings: {error}")))?;
+        self.connection.execute(
+            "UPDATE databases SET view_settings=?1 WHERE page_id=?2",
+            params![settings, page],
         )?;
         Ok(())
     }

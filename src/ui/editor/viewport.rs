@@ -365,6 +365,7 @@ impl Editor {
                 position: document.outline.len(),
                 kind: BlockKind::Text,
                 content: String::new(),
+                text_styles: Vec::new(),
             }));
         }
         let dropped_files = ui.ctx().input_mut(|input| {

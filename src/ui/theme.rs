@@ -33,6 +33,31 @@ pub fn configure(context: &egui::Context) {
             .or_default()
             .push("segoe-symbols".into());
     }
+    let font_directory = std::env::var_os("WINDIR")
+        .map(std::path::PathBuf::from)
+        .map(|path| path.join("Fonts"))
+        .unwrap_or_default();
+    for (family_name, file_name) in [
+        ("noteon-bold", "segoeuib.ttf"),
+        ("noteon-serif", "georgia.ttf"),
+        ("noteon-serif-bold", "georgiab.ttf"),
+    ] {
+        let font_names = if let Ok(bytes) = std::fs::read(font_directory.join(file_name)) {
+            fonts
+                .font_data
+                .insert(family_name.into(), Arc::new(FontData::from_owned(bytes)));
+            vec![family_name.into()]
+        } else {
+            fonts
+                .families
+                .get(&FontFamily::Proportional)
+                .cloned()
+                .unwrap_or_default()
+        };
+        fonts
+            .families
+            .insert(FontFamily::Name(family_name.into()), font_names);
+    }
     context.set_fonts(fonts);
     apply(context, false, None, None, 1.0);
 }

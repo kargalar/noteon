@@ -1,7 +1,7 @@
 mod block;
 mod cache;
 mod header;
-mod media;
+pub(super) mod media;
 mod viewport;
 
 use crate::domain::model::{DatabaseData, Document, PageId};

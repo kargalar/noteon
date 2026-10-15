@@ -10,10 +10,10 @@ use crate::worker::Action;
 
 use super::{Intent, palette::Palette};
 
-const TABLE_NAME_WIDTH: f32 = 210.0;
-const TABLE_CREATED_WIDTH: f32 = 145.0;
-const TABLE_PROPERTY_WIDTH: f32 = 220.0;
-const TABLE_HEADER_HEIGHT: f32 = 38.0;
+const TABLE_NAME_WIDTH: f32 = 205.0;
+const TABLE_CREATED_WIDTH: f32 = 130.0;
+const TABLE_PROPERTY_WIDTH: f32 = 190.0;
+const TABLE_HEADER_HEIGHT: f32 = 32.0;
 const TABLE_ROW_HEIGHT: f32 = 34.0;
 
 pub struct Drafts<'a> {
@@ -83,6 +83,7 @@ fn show_inner(
                     }));
                 }
             }
+            show_view_options(ui, data, intents);
             if data.view == DatabaseView::Gallery {
                 egui::ComboBox::from_id_salt(("gallery-columns", data.page_id))
                     .selected_text(format!("{} items/row", data.gallery_columns))
@@ -188,6 +189,113 @@ fn sort_key_label(data: &DatabaseData) -> String {
     }
 }
 
+fn show_view_options(ui: &mut Ui, data: &mut DatabaseData, intents: &mut Vec<Intent>) {
+    let mut changed = false;
+    let properties = &data.properties;
+    let board_properties: Vec<_> = properties
+        .iter()
+        .filter(|property| property.kind != "status" && property.kind != "select")
+        .cloned()
+        .collect();
+    let view = data.view;
+    let settings = &mut data.view_settings;
+    ui.menu_button("View options", |ui| match view {
+        DatabaseView::Table => {
+            changed |= ui
+                .checkbox(&mut settings.table_show_created_at, "Show created date")
+                .changed();
+            ui.separator();
+            ui.label("Visible properties");
+            changed |= property_visibility_options(
+                ui,
+                &board_properties,
+                &mut settings.table_visible_properties,
+                usize::MAX,
+            );
+        }
+        DatabaseView::Gallery => {
+            changed |= ui
+                .checkbox(&mut settings.gallery_show_cover, "Show cover image")
+                .changed();
+            changed |= ui
+                .checkbox(&mut settings.gallery_show_title, "Show title")
+                .changed();
+            changed |= ui
+                .checkbox(&mut settings.gallery_show_description, "Show description")
+                .changed();
+            changed |= ui
+                .checkbox(&mut settings.gallery_show_created_at, "Show created date")
+                .changed();
+            ui.separator();
+            ui.label("Visible properties");
+            changed |= property_visibility_options(
+                ui,
+                properties,
+                &mut settings.gallery_visible_properties,
+                2,
+            );
+        }
+        DatabaseView::Board => {
+            changed |= ui
+                .checkbox(&mut settings.board_show_description, "Show description")
+                .changed();
+            ui.separator();
+            ui.label("Visible properties");
+            changed |= property_visibility_options(
+                ui,
+                properties,
+                &mut settings.board_visible_properties,
+                2,
+            );
+        }
+    });
+    if changed {
+        intents.push(Intent::Action(Action::SetDatabaseViewSettings {
+            page: data.page_id,
+            settings: data.view_settings.clone(),
+        }));
+    }
+}
+
+fn property_visibility_options(
+    ui: &mut Ui,
+    properties: &[DatabaseProperty],
+    visible_properties: &mut Option<Vec<i64>>,
+    default_count: usize,
+) -> bool {
+    let defaults = || -> Vec<i64> {
+        if default_count == usize::MAX {
+            properties.iter().map(|property| property.id).collect()
+        } else {
+            properties
+                .iter()
+                .take(default_count)
+                .map(|property| property.id)
+                .collect()
+        }
+    };
+    let mut changed = false;
+    for property in properties {
+        let is_visible = visible_properties.as_ref().map_or_else(
+            || defaults().contains(&property.id),
+            |ids| ids.contains(&property.id),
+        );
+        let mut checked = is_visible;
+        if ui.checkbox(&mut checked, &property.name).changed() {
+            let visible = visible_properties.get_or_insert_with(defaults);
+            if checked {
+                if !visible.contains(&property.id) {
+                    visible.push(property.id);
+                }
+            } else {
+                visible.retain(|id| *id != property.id);
+            }
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub struct RecordPropertiesTarget {
     pub page_id: i64,
     pub indent: f32,
@@ -254,51 +362,88 @@ fn show_table(
     drafts: &mut Drafts<'_>,
 ) {
     let rows = sorted_rows(data);
+    let visible_properties: Vec<_> = data
+        .properties
+        .iter()
+        .filter(|property| {
+            data.view_settings
+                .table_visible_properties
+                .as_ref()
+                .is_none_or(|visible| visible.contains(&property.id))
+        })
+        .collect();
+    let show_created_at = data.view_settings.table_show_created_at;
     let table_width = TABLE_NAME_WIDTH
-        + TABLE_CREATED_WIDTH
-        + TABLE_PROPERTY_WIDTH * data.properties.len() as f32;
+        + if show_created_at {
+            TABLE_CREATED_WIDTH
+        } else {
+            0.0
+        }
+        + TABLE_PROPERTY_WIDTH * visible_properties.len() as f32;
     ui.spacing_mut().item_spacing.x = 0.0;
     egui::ScrollArea::horizontal()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(table_width);
             ui.horizontal(|ui| {
-                table_cell(ui, TABLE_NAME_WIDTH, TABLE_HEADER_HEIGHT, |ui| {
+                table_cell(ui, TABLE_NAME_WIDTH, TABLE_HEADER_HEIGHT, palette, |ui| {
                     if ui
                         .add_sized(
-                            [TABLE_NAME_WIDTH, TABLE_HEADER_HEIGHT],
-                            egui::Button::new(sort_label(
-                                "Name",
-                                &data.sort_key,
-                                "title",
-                                data.sort_descending,
-                            )),
+                            [TABLE_NAME_WIDTH - 16.0, TABLE_HEADER_HEIGHT],
+                            egui::Button::new(
+                                RichText::new(sort_label(
+                                    "Name",
+                                    &data.sort_key,
+                                    "title",
+                                    data.sort_descending,
+                                ))
+                                .color(palette.muted),
+                            )
+                            .frame(false),
                         )
                         .clicked()
                     {
                         toggle_sort(data, "title", intents);
                     }
                 });
-                table_cell(ui, TABLE_CREATED_WIDTH, TABLE_HEADER_HEIGHT, |ui| {
-                    if ui
-                        .add_sized(
-                            [TABLE_CREATED_WIDTH, TABLE_HEADER_HEIGHT],
-                            egui::Button::new(sort_label(
-                                "Created",
-                                &data.sort_key,
-                                "created_at",
-                                data.sort_descending,
-                            )),
-                        )
-                        .clicked()
-                    {
-                        toggle_sort(data, "created_at", intents);
-                    }
-                });
-                for property in &data.properties {
-                    table_cell(ui, TABLE_PROPERTY_WIDTH, TABLE_HEADER_HEIGHT, |ui| {
-                        show_property_header(ui, data, property, busy, intents, drafts);
-                    });
+                if show_created_at {
+                    table_cell(
+                        ui,
+                        TABLE_CREATED_WIDTH,
+                        TABLE_HEADER_HEIGHT,
+                        palette,
+                        |ui| {
+                            if ui
+                                .add_sized(
+                                    [TABLE_CREATED_WIDTH - 16.0, TABLE_HEADER_HEIGHT],
+                                    egui::Button::new(
+                                        RichText::new(sort_label(
+                                            "Created",
+                                            &data.sort_key,
+                                            "created_at",
+                                            data.sort_descending,
+                                        ))
+                                        .color(palette.muted),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                toggle_sort(data, "created_at", intents);
+                            }
+                        },
+                    );
+                }
+                for property in &visible_properties {
+                    table_cell(
+                        ui,
+                        TABLE_PROPERTY_WIDTH,
+                        TABLE_HEADER_HEIGHT,
+                        palette,
+                        |ui| {
+                            show_property_header(ui, data, property, busy, intents, drafts);
+                        },
+                    );
                 }
             });
             ui.separator();
@@ -307,7 +452,7 @@ fn show_table(
                 .show_rows(ui, TABLE_ROW_HEIGHT, rows.len(), |ui, visible| {
                     for row in &rows[visible] {
                         ui.horizontal(|ui| {
-                            table_cell(ui, TABLE_NAME_WIDTH, TABLE_ROW_HEIGHT, |ui| {
+                            table_cell(ui, TABLE_NAME_WIDTH, TABLE_ROW_HEIGHT, palette, |ui| {
                                 let title = drafts
                                     .titles
                                     .entry(row.page.id)
@@ -316,7 +461,8 @@ fn show_table(
                                     !busy,
                                     egui::TextEdit::singleline(title)
                                         .hint_text("Untitled page")
-                                        .desired_width(TABLE_NAME_WIDTH - 34.0),
+                                        .desired_width(TABLE_NAME_WIDTH - 42.0)
+                                        .frame(false),
                                 );
                                 if response.lost_focus() && title != &row.page.title {
                                     intents.push(Intent::Action(Action::RenameDatabaseRecord {
@@ -331,20 +477,34 @@ fn show_table(
                                     intents.push(Intent::Open(row.page.id, None));
                                 }
                             });
-                            table_cell(ui, TABLE_CREATED_WIDTH, TABLE_ROW_HEIGHT, |ui| {
-                                ui.label(format_date(row.page.created_at));
-                            });
-                            for property in &data.properties {
-                                table_cell(ui, TABLE_PROPERTY_WIDTH, TABLE_ROW_HEIGHT, |ui| {
-                                    property_editor(
-                                        ui,
-                                        row,
-                                        property,
-                                        busy,
-                                        intents,
-                                        drafts.values,
-                                    );
-                                });
+                            if show_created_at {
+                                table_cell(
+                                    ui,
+                                    TABLE_CREATED_WIDTH,
+                                    TABLE_ROW_HEIGHT,
+                                    palette,
+                                    |ui| {
+                                        ui.label(format_date(row.page.created_at));
+                                    },
+                                );
+                            }
+                            for property in &visible_properties {
+                                table_cell(
+                                    ui,
+                                    TABLE_PROPERTY_WIDTH,
+                                    TABLE_ROW_HEIGHT,
+                                    palette,
+                                    |ui| {
+                                        property_editor(
+                                            ui,
+                                            row,
+                                            property,
+                                            busy,
+                                            intents,
+                                            drafts.values,
+                                        );
+                                    },
+                                );
                             }
                         });
                     }
@@ -356,11 +516,34 @@ fn show_table(
         });
 }
 
-fn table_cell(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&mut Ui)) {
+fn table_cell(
+    ui: &mut Ui,
+    width: f32,
+    height: f32,
+    palette: Palette,
+    add_contents: impl FnOnce(&mut Ui),
+) {
     ui.allocate_ui_with_layout(
         egui::vec2(width, height),
         egui::Layout::left_to_right(egui::Align::Center),
-        add_contents,
+        |ui| {
+            let rect = ui.max_rect();
+            let response = ui.interact(rect, ui.id().with("table-cell"), egui::Sense::hover());
+            let fill = if response.hovered() {
+                palette.hover
+            } else {
+                palette.background
+            };
+            ui.painter().rect_filled(rect, 0.0, fill);
+            ui.painter().rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.0, palette.border),
+                egui::StrokeKind::Inside,
+            );
+            ui.add_space(8.0);
+            add_contents(ui);
+        },
     );
 }
 
@@ -623,7 +806,30 @@ fn show_cards(
     let rows = sorted_rows(data);
     let columns = columns.max(1);
     let row_count = rows.len().div_ceil(columns);
-    let row_height = 104.0;
+    let gallery = data.view == DatabaseView::Gallery;
+    let settings = &data.view_settings;
+    let show_cover = gallery && settings.gallery_show_cover;
+    let show_title = !gallery || settings.gallery_show_title;
+    let show_created_at = if gallery {
+        settings.gallery_show_created_at
+    } else {
+        true
+    };
+    let show_description = gallery && settings.gallery_show_description;
+    let visible_properties = if gallery {
+        settings.gallery_visible_properties.as_deref()
+    } else {
+        None
+    };
+    let property_count =
+        visible_properties.map_or_else(|| data.properties.len().min(2), |visible| visible.len());
+    let row_height: f32 = (if show_cover { 160.0 } else { 0.0 })
+        + if show_title { 28.0 } else { 0.0 }
+        + if show_created_at { 20.0 } else { 0.0 }
+        + if show_description { 38.0 } else { 0.0 }
+        + if property_count > 0 { 20.0 } else { 0.0 }
+        + 24.0;
+    let row_height = row_height.max(70.0);
     let gap = ui.spacing().item_spacing.x;
     let card_frame = egui::Frame::group(ui.style()).fill(palette.sidebar);
     let frame_margin = card_frame.total_margin();
@@ -645,52 +851,97 @@ fn show_cards(
                             ui.set_max_width(card_width);
                             ui.set_min_height(card_height);
 
-                            let title = if row.page.title.is_empty() {
-                                "Untitled page"
-                            } else {
-                                &row.page.title
-                            };
-                            if ui
-                                .add_sized(
-                                    [(card_width - 16.0).max(1.0), 22.0],
-                                    egui::Label::new(RichText::new(title).heading())
-                                        .truncate()
-                                        .sense(egui::Sense::click()),
-                                )
-                                .clicked()
-                                && !busy
-                            {
-                                intents.push(Intent::Open(row.page.id, None));
+                            let content_width = (card_width - 16.0).max(1.0);
+                            if show_cover {
+                                let image_size = egui::vec2(content_width, 160.0);
+                                let (image_rect, response) =
+                                    ui.allocate_exact_size(image_size, egui::Sense::click());
+                                if let Some(path) = row.page.cover_image.as_deref() {
+                                    let focus = egui::vec2(row.page.cover_x, row.page.cover_y);
+                                    crate::ui::editor::media::paint_cover(
+                                        ui,
+                                        std::path::Path::new(path),
+                                        image_rect,
+                                        focus,
+                                    );
+                                } else {
+                                    ui.painter().rect_filled(image_rect, 4.0, palette.code);
+                                }
+                                if response.clicked() && !busy {
+                                    intents.push(Intent::Open(row.page.id, None));
+                                }
                             }
-                            ui.add_sized(
-                                [(card_width - 16.0).max(1.0), 16.0],
-                                egui::Label::new(
-                                    RichText::new(format_date(row.page.created_at))
-                                        .small()
-                                        .color(palette.muted),
-                                )
-                                .truncate(),
-                            );
+                            if show_title {
+                                let title = if row.page.title.is_empty() {
+                                    "Untitled page"
+                                } else {
+                                    &row.page.title
+                                };
+                                if ui
+                                    .add_sized(
+                                        [content_width, 22.0],
+                                        egui::Label::new(RichText::new(title).heading())
+                                            .truncate()
+                                            .sense(egui::Sense::click()),
+                                    )
+                                    .clicked()
+                                    && !busy
+                                {
+                                    intents.push(Intent::Open(row.page.id, None));
+                                }
+                            }
+                            if show_created_at {
+                                ui.add_sized(
+                                    [content_width, 16.0],
+                                    egui::Label::new(
+                                        RichText::new(format_date(row.page.created_at))
+                                            .small()
+                                            .color(palette.muted),
+                                    )
+                                    .truncate(),
+                                );
+                            }
+                            if show_description && !row.preview.trim().is_empty() {
+                                ui.add_sized(
+                                    [content_width, 36.0],
+                                    egui::Label::new(
+                                        RichText::new(&row.preview).small().color(palette.muted),
+                                    )
+                                    .truncate(),
+                                );
+                            }
                             let summaries: Vec<_> = data
                                 .properties
                                 .iter()
+                                .filter(|property| {
+                                    visible_properties.map_or_else(
+                                        || {
+                                            data.properties
+                                                .iter()
+                                                .take(2)
+                                                .any(|visible| visible.id == property.id)
+                                        },
+                                        |visible| visible.contains(&property.id),
+                                    )
+                                })
                                 .filter_map(|property| {
                                     row.values
                                         .get(&property.id)
                                         .filter(|value| !value.is_empty())
                                         .map(|value| format!("{}: {value}", property.name))
                                 })
-                                .take(2)
                                 .collect();
-                            ui.add_sized(
-                                [(card_width - 16.0).max(1.0), 18.0],
-                                egui::Label::new(
-                                    RichText::new(summaries.join(" / "))
-                                        .small()
-                                        .color(palette.muted),
-                                )
-                                .truncate(),
-                            );
+                            if !summaries.is_empty() {
+                                ui.add_sized(
+                                    [content_width, 18.0],
+                                    egui::Label::new(
+                                        RichText::new(summaries.join(" / "))
+                                            .small()
+                                            .color(palette.muted),
+                                    )
+                                    .truncate(),
+                                );
+                            }
                         });
                     }
                 });
@@ -723,6 +974,7 @@ fn show_board(
         groups.push("No selection".into());
     }
     let sorted = sorted_rows(data);
+    let board_visible_properties = data.view_settings.board_visible_properties.as_deref();
     let mut rows_by_group = HashMap::<String, Vec<&DatabaseRow>>::new();
     for row in &sorted {
         let value = row.values.get(&status.id).map(String::as_str).unwrap_or("");
@@ -804,19 +1056,37 @@ fn show_board(
                                     .properties
                                     .iter()
                                     .filter(|property| property.id != status.id)
+                                    .filter(|property| {
+                                        board_visible_properties.map_or_else(
+                                            || {
+                                                data.properties
+                                                    .iter()
+                                                    .filter(|candidate| candidate.id != status.id)
+                                                    .take(2)
+                                                    .any(|visible| visible.id == property.id)
+                                            },
+                                            |visible| visible.contains(&property.id),
+                                        )
+                                    })
                                     .filter_map(|property| {
                                         row.values
                                             .get(&property.id)
                                             .filter(|value| !value.is_empty())
                                             .map(|value| format!("{}: {value}", property.name))
                                     })
-                                    .take(3)
                                     .collect();
                                 if !properties.is_empty() {
                                     ui.label(
                                         RichText::new(properties.join("  ·  "))
                                             .small()
                                             .color(palette.muted),
+                                    );
+                                }
+                                if data.view_settings.board_show_description
+                                    && !row.preview.trim().is_empty()
+                                {
+                                    ui.label(
+                                        RichText::new(&row.preview).small().color(palette.muted),
                                     );
                                 }
                             }

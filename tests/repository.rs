@@ -220,7 +220,7 @@ fn version_four_workspaces_migrate_custom_page_properties() {
     let version: i32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 11);
 }
 
 #[test]

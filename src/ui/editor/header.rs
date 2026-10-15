@@ -92,41 +92,58 @@ pub(super) fn show(
     } else if page.cover != 0 {
         cover(ui, cover_rect, palette.cover(page.cover));
     }
-    if cover_response.hovered() {
-        ui.scope_builder(egui::UiBuilder::new().max_rect(cover_rect), |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                ui.menu_button("Cover", |ui| {
-                    if ui.button("Choose image…").clicked() {
-                        intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
-                        ui.close_menu();
-                    }
-                    if page.cover_image.is_some() {
-                        ui.label("Drag the cover image to reposition it.");
-                    }
-                    ui.separator();
-                    for (style, label) in [
-                        (0, "No cover"),
-                        (1, "Sage"),
-                        (2, "Sand"),
-                        (3, "Sky"),
-                        (4, "Rose"),
-                    ] {
-                        if ui
-                            .selectable_label(
-                                page.cover == style && page.cover_image.is_none(),
-                                label,
-                            )
-                            .clicked()
-                        {
-                            page.cover = style;
-                            page.cover_image = None;
-                            page_changed = true;
+    let cover_controls_id = egui::Id::new(("cover-controls", page.id));
+    let controls_were_hovered = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(cover_controls_id).unwrap_or_default());
+    let cover_menu_open = ui.ctx().memory(|memory| memory.any_popup_open());
+    if cover_response.hovered() || controls_were_hovered || cover_menu_open {
+        let controls = egui::Area::new(cover_controls_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(cover_rect.right_top() + vec2(-96.0, 6.0))
+            .show(ui.ctx(), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    ui.menu_button("Cover", |ui| {
+                        if ui.button("Choose image…").clicked() {
+                            intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
                             ui.close_menu();
                         }
-                    }
+                        if page.cover_image.is_some() {
+                            ui.label("Drag the cover image to reposition it.");
+                        }
+                        ui.separator();
+                        for (style, label) in [
+                            (0, "No cover"),
+                            (1, "Sage"),
+                            (2, "Sand"),
+                            (3, "Sky"),
+                            (4, "Rose"),
+                        ] {
+                            if ui
+                                .selectable_label(
+                                    page.cover == style && page.cover_image.is_none(),
+                                    label,
+                                )
+                                .clicked()
+                            {
+                                page.cover = style;
+                                page.cover_image = None;
+                                page_changed = true;
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 });
             });
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                cover_controls_id,
+                controls.response.hovered() || cover_response.hovered(),
+            );
         });
+    } else {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(cover_controls_id, false));
     }
     if cover_height > 28.0 {
         ui.add_space(8.0);

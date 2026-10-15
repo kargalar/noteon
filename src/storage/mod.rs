@@ -71,7 +71,7 @@ impl Repository {
                 }
             }
             let mut block_statement = transaction.prepare_cached(
-                "UPDATE blocks SET kind=?1,content=?2,checked=?3,media_width=?4 WHERE id=?5 AND page_id=?6",
+                "UPDATE blocks SET kind=?1,content=?2,checked=?3,media_width=?4,text_styles=?5 WHERE id=?6 AND page_id=?7",
             )?;
             let mut touch_statement = transaction
                 .prepare_cached("UPDATE pages SET updated_at=unixepoch() WHERE id=?1")?;
@@ -82,6 +82,9 @@ impl Repository {
                     block.content,
                     block.checked,
                     block.media_width.clamp(0.25, 1.0),
+                    serde_json::to_string(&block.text_styles).map_err(|error| {
+                        Error::Invalid(format!("Invalid text formatting: {error}"))
+                    })?,
                     block.id,
                     block.page_id
                 ])?;

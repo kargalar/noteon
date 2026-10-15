@@ -1,0 +1,894 @@
+use std::collections::HashMap;
+
+use eframe::egui::{self, RichText, Ui};
+
+use crate::domain::model::{
+    DEFAULT_DATABASE_STATUS_OPTIONS, DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView,
+    PROPERTY_TYPES,
+};
+use crate::worker::Action;
+
+use super::{Intent, palette::Palette};
+
+const TABLE_NAME_WIDTH: f32 = 210.0;
+const TABLE_CREATED_WIDTH: f32 = 145.0;
+const TABLE_PROPERTY_WIDTH: f32 = 220.0;
+const TABLE_HEADER_HEIGHT: f32 = 38.0;
+const TABLE_ROW_HEIGHT: f32 = 34.0;
+
+pub struct Drafts<'a> {
+    pub properties: &'a mut std::collections::HashMap<i64, (String, String)>,
+    pub titles: &'a mut std::collections::HashMap<i64, String>,
+    pub values: &'a mut std::collections::HashMap<(i64, i64), String>,
+}
+
+pub fn show(
+    ui: &mut Ui,
+    data: &mut DatabaseData,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    drafts: &mut Drafts<'_>,
+) {
+    show_inner(ui, data, busy, palette, intents, drafts, true);
+}
+
+pub fn show_embedded(
+    ui: &mut Ui,
+    data: &mut DatabaseData,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    drafts: &mut Drafts<'_>,
+) {
+    show_inner(ui, data, false, palette, intents, drafts, false);
+}
+
+fn show_inner(
+    ui: &mut Ui,
+    data: &mut DatabaseData,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    drafts: &mut Drafts<'_>,
+    editable_title: bool,
+) {
+    ui.vertical(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            if editable_title {
+                let previous_title = data.title.clone();
+                let title = ui.add_enabled(
+                    !busy,
+                    egui::TextEdit::singleline(&mut data.title)
+                        .font(egui::TextStyle::Heading)
+                        .desired_width(280.0),
+                );
+                if title.lost_focus() && previous_title != data.title {
+                    intents.push(Intent::Action(Action::RenameDatabaseRecord {
+                        page: data.page_id,
+                        title: data.title.clone(),
+                    }));
+                }
+            }
+            ui.separator();
+            for view in [
+                DatabaseView::Table,
+                DatabaseView::Gallery,
+                DatabaseView::Board,
+            ] {
+                let selected = data.view == view;
+                if ui.selectable_label(selected, view.label()).clicked() && !selected {
+                    intents.push(Intent::Action(Action::SetDatabaseView {
+                        page: data.page_id,
+                        view,
+                    }));
+                }
+            }
+            if data.view == DatabaseView::Gallery {
+                egui::ComboBox::from_id_salt(("gallery-columns", data.page_id))
+                    .selected_text(format!("{} items/row", data.gallery_columns))
+                    .show_ui(ui, |ui| {
+                        for columns in 1..=6 {
+                            if ui
+                                .selectable_label(
+                                    data.gallery_columns == columns,
+                                    format!("{columns} items/row"),
+                                )
+                                .clicked()
+                                && data.gallery_columns != columns
+                            {
+                                intents.push(Intent::Action(Action::SetDatabaseGalleryColumns {
+                                    page: data.page_id,
+                                    columns,
+                                }));
+                            }
+                        }
+                    });
+            }
+            ui.separator();
+            egui::ComboBox::from_id_salt(("database-sort", data.page_id))
+                .selected_text(format!("Sort: {}", sort_key_label(data)))
+                .show_ui(ui, |ui| {
+                    for (label, key) in [("Name", "title"), ("Created", "created_at")] {
+                        if ui.selectable_label(data.sort_key == key, label).clicked()
+                            && data.sort_key != key
+                        {
+                            toggle_sort(data, key, intents);
+                        }
+                    }
+                    for property in &data.properties {
+                        let key = property.id.to_string();
+                        if ui
+                            .selectable_label(data.sort_key == key, &property.name)
+                            .clicked()
+                            && data.sort_key != key
+                        {
+                            toggle_sort(data, &key, intents);
+                        }
+                    }
+                });
+            if ui
+                .small_button(if data.sort_descending { "↓" } else { "↑" })
+                .on_hover_text("Toggle sort direction")
+                .clicked()
+            {
+                intents.push(Intent::Action(Action::SetDatabaseSort {
+                    page: data.page_id,
+                    key: data.sort_key.clone(),
+                    descending: !data.sort_descending,
+                }));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("+ Property", |ui| {
+                    for (kind, label) in PROPERTY_TYPES {
+                        if ui.button(label).clicked() {
+                            let name = format!("Property {}", data.properties.len() + 1);
+                            intents.push(Intent::Action(Action::AddDatabaseProperty {
+                                database: data.page_id,
+                                name,
+                                kind: kind.into(),
+                                options: if matches!(kind, "select" | "status" | "multi-select") {
+                                    DEFAULT_DATABASE_STATUS_OPTIONS
+                                        .iter()
+                                        .map(|option| (*option).into())
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                },
+                            }));
+                            ui.close_menu();
+                        }
+                    }
+                });
+                if ui
+                    .add_enabled(!busy, egui::Button::new("+ New record"))
+                    .clicked()
+                {
+                    intents.push(Intent::Action(Action::CreateDatabaseRecord(data.page_id)));
+                }
+            });
+        });
+        ui.separator();
+        match data.view {
+            DatabaseView::Table => show_table(ui, data, busy, palette, intents, drafts),
+            DatabaseView::Gallery => show_gallery(ui, data, busy, palette, intents),
+            DatabaseView::Board => show_board(ui, data, busy, palette, intents),
+        }
+    });
+}
+
+fn sort_key_label(data: &DatabaseData) -> String {
+    match data.sort_key.as_str() {
+        "title" => "Name".to_owned(),
+        "created_at" => "Created".to_owned(),
+        key => key
+            .parse::<i64>()
+            .ok()
+            .and_then(|id| data.properties.iter().find(|property| property.id == id))
+            .map_or_else(|| "Property".to_owned(), |property| property.name.clone()),
+    }
+}
+
+pub struct RecordPropertiesTarget {
+    pub page_id: i64,
+    pub indent: f32,
+}
+
+pub fn show_record_properties(
+    ui: &mut Ui,
+    data: &DatabaseData,
+    target: RecordPropertiesTarget,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    value_drafts: &mut std::collections::HashMap<(i64, i64), String>,
+) {
+    let RecordPropertiesTarget { page_id, indent } = target;
+    let Some(row) = data.rows.iter().find(|row| row.page.id == page_id) else {
+        return;
+    };
+    if data.properties.is_empty() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.add_space(indent);
+        ui.vertical(|ui| {
+            ui.set_max_width(440.0);
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 2.0);
+            ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
+            ui.label(
+                RichText::new("PROPERTIES")
+                    .small()
+                    .strong()
+                    .color(palette.muted),
+            );
+            for property in &data.properties {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_sized([105.0, 20.0], egui::Label::new(&property.name));
+                    property_editor(ui, row, property, busy, intents, value_drafts);
+                });
+            }
+        });
+    });
+    ui.add_space(3.0);
+}
+
+fn sorted_rows(data: &DatabaseData) -> Vec<&DatabaseRow> {
+    data.rows.iter().collect()
+}
+
+fn toggle_sort(data: &DatabaseData, key: &str, intents: &mut Vec<Intent>) {
+    intents.push(Intent::Action(Action::SetDatabaseSort {
+        page: data.page_id,
+        key: key.into(),
+        descending: data.sort_key == key && !data.sort_descending,
+    }));
+}
+
+fn show_table(
+    ui: &mut Ui,
+    data: &DatabaseData,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    drafts: &mut Drafts<'_>,
+) {
+    let rows = sorted_rows(data);
+    let table_width = TABLE_NAME_WIDTH
+        + TABLE_CREATED_WIDTH
+        + TABLE_PROPERTY_WIDTH * data.properties.len() as f32;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_min_width(table_width);
+            ui.horizontal(|ui| {
+                table_cell(ui, TABLE_NAME_WIDTH, TABLE_HEADER_HEIGHT, |ui| {
+                    if ui
+                        .add_sized(
+                            [TABLE_NAME_WIDTH, TABLE_HEADER_HEIGHT],
+                            egui::Button::new(sort_label(
+                                "Name",
+                                &data.sort_key,
+                                "title",
+                                data.sort_descending,
+                            )),
+                        )
+                        .clicked()
+                    {
+                        toggle_sort(data, "title", intents);
+                    }
+                });
+                table_cell(ui, TABLE_CREATED_WIDTH, TABLE_HEADER_HEIGHT, |ui| {
+                    if ui
+                        .add_sized(
+                            [TABLE_CREATED_WIDTH, TABLE_HEADER_HEIGHT],
+                            egui::Button::new(sort_label(
+                                "Created",
+                                &data.sort_key,
+                                "created_at",
+                                data.sort_descending,
+                            )),
+                        )
+                        .clicked()
+                    {
+                        toggle_sort(data, "created_at", intents);
+                    }
+                });
+                for property in &data.properties {
+                    table_cell(ui, TABLE_PROPERTY_WIDTH, TABLE_HEADER_HEIGHT, |ui| {
+                        show_property_header(ui, data, property, busy, intents, drafts);
+                    });
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show_rows(ui, TABLE_ROW_HEIGHT, rows.len(), |ui, visible| {
+                    for row in &rows[visible] {
+                        ui.horizontal(|ui| {
+                            table_cell(ui, TABLE_NAME_WIDTH, TABLE_ROW_HEIGHT, |ui| {
+                                let title = drafts
+                                    .titles
+                                    .entry(row.page.id)
+                                    .or_insert_with(|| row.page.title.clone());
+                                let response = ui.add_enabled(
+                                    !busy,
+                                    egui::TextEdit::singleline(title)
+                                        .hint_text("Untitled page")
+                                        .desired_width(TABLE_NAME_WIDTH - 34.0),
+                                );
+                                if response.lost_focus() && title != &row.page.title {
+                                    intents.push(Intent::Action(Action::RenameDatabaseRecord {
+                                        page: row.page.id,
+                                        title: title.clone(),
+                                    }));
+                                }
+                                if response.double_clicked() {
+                                    intents.push(Intent::Open(row.page.id, None));
+                                }
+                                if ui.small_button("↗").on_hover_text("Open page").clicked() {
+                                    intents.push(Intent::Open(row.page.id, None));
+                                }
+                            });
+                            table_cell(ui, TABLE_CREATED_WIDTH, TABLE_ROW_HEIGHT, |ui| {
+                                ui.label(format_date(row.page.created_at));
+                            });
+                            for property in &data.properties {
+                                table_cell(ui, TABLE_PROPERTY_WIDTH, TABLE_ROW_HEIGHT, |ui| {
+                                    property_editor(
+                                        ui,
+                                        row,
+                                        property,
+                                        busy,
+                                        intents,
+                                        drafts.values,
+                                    );
+                                });
+                            }
+                        });
+                    }
+                });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("+   Property").color(palette.accent));
+                ui.menu_button("", |ui| add_property_menu(ui, data, intents));
+            });
+        });
+}
+
+fn table_cell(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&mut Ui)) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        add_contents,
+    );
+}
+
+fn show_property_header(
+    ui: &mut Ui,
+    data: &DatabaseData,
+    property: &DatabaseProperty,
+    busy: bool,
+    intents: &mut Vec<Intent>,
+    drafts: &mut Drafts<'_>,
+) {
+    let draft = drafts
+        .properties
+        .entry(property.id)
+        .or_insert_with(|| (property.name.clone(), property.options.join(", ")));
+    ui.add_sized(
+        [TABLE_PROPERTY_WIDTH - 64.0, TABLE_HEADER_HEIGHT],
+        egui::Label::new(RichText::new(&property.name).strong()).truncate(),
+    )
+    .on_hover_text(&property.name);
+    let sort_key = property.id.to_string();
+    if ui
+        .small_button(sort_label(
+            "↕",
+            &data.sort_key,
+            &sort_key,
+            data.sort_descending,
+        ))
+        .clicked()
+    {
+        toggle_sort(data, &sort_key, intents);
+    }
+    ui.menu_button("⋯", |ui| {
+        ui.label("Property name");
+        let name_changed = ui
+            .add_enabled(
+                !busy,
+                egui::TextEdit::singleline(&mut draft.0).desired_width(180.0),
+            )
+            .lost_focus();
+        if name_changed && draft.0 != property.name {
+            intents.push(Intent::Action(Action::RenameDatabaseProperty {
+                property: property.id,
+                name: draft.0.clone(),
+            }));
+        }
+        egui::ComboBox::from_id_salt(("property-kind", property.id))
+            .selected_text(property_types_label(&property.kind))
+            .show_ui(ui, |ui| {
+                for (kind, label) in PROPERTY_TYPES {
+                    if ui.selectable_label(property.kind == kind, label).clicked()
+                        && property.kind != kind
+                    {
+                        intents.push(Intent::Action(Action::SetDatabasePropertyType {
+                            property: property.id,
+                            kind: kind.into(),
+                        }));
+                    }
+                }
+            });
+        ui.label("Options (comma-separated)");
+        ui.text_edit_singleline(&mut draft.1);
+        if ui.button("Save options").clicked() {
+            intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
+                property: property.id,
+                options: draft
+                    .1
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|option| !option.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            }));
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button("Delete property").clicked() {
+            intents.push(Intent::Action(Action::DeleteDatabaseProperty(property.id)));
+            ui.close_menu();
+        }
+    });
+}
+
+fn sort_label(name: &str, current: &str, key: &str, descending: bool) -> String {
+    if current == key {
+        format!("{name} {}", if descending { "↓" } else { "↑" })
+    } else {
+        name.into()
+    }
+}
+
+fn property_types_label(kind: &str) -> &'static str {
+    PROPERTY_TYPES
+        .iter()
+        .find(|(key, _)| *key == kind)
+        .map_or("Metin", |(_, label)| label)
+}
+
+fn property_editor(
+    ui: &mut Ui,
+    row: &DatabaseRow,
+    property: &DatabaseProperty,
+    busy: bool,
+    intents: &mut Vec<Intent>,
+    value_drafts: &mut std::collections::HashMap<(i64, i64), String>,
+) {
+    let value = row.values.get(&property.id).cloned().unwrap_or_default();
+    let action = |value: String| {
+        Intent::Action(Action::SetDatabaseProperty {
+            page: row.page.id,
+            property: property.id,
+            value,
+        })
+    };
+    match property.kind.as_str() {
+        "select" | "status" => {
+            egui::ComboBox::from_id_salt(("property", row.page.id, property.id))
+                .width(TABLE_PROPERTY_WIDTH - 12.0)
+                .selected_text(if value.is_empty() { "Select" } else { &value })
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(value.is_empty(), "No selection")
+                        .clicked()
+                        && !value.is_empty()
+                    {
+                        intents.push(action(String::new()));
+                    }
+                    for option in &property.options {
+                        if ui.selectable_label(value == *option, option).clicked()
+                            && value != *option
+                        {
+                            intents.push(action(option.clone()));
+                        }
+                    }
+                });
+        }
+        "checkbox" => {
+            let mut checked = value == "true";
+            if ui
+                .add_enabled(!busy, egui::Checkbox::without_text(&mut checked))
+                .changed()
+            {
+                intents.push(action(checked.to_string()));
+            }
+        }
+        "multi-select" => {
+            let draft = value_drafts
+                .entry((row.page.id, property.id))
+                .or_insert_with(|| value.clone());
+            let mut selected: Vec<String> = draft
+                .split('|')
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let selected_label = if selected.is_empty() {
+                "Select".to_owned()
+            } else {
+                let joined = selected.join(", ");
+                if joined.chars().count() > 22 {
+                    format!("{}…", joined.chars().take(21).collect::<String>())
+                } else {
+                    joined
+                }
+            };
+            ui.menu_button(selected_label, |ui| {
+                for option in &property.options {
+                    let mut enabled = selected.contains(option);
+                    if ui.checkbox(&mut enabled, option).changed() {
+                        if enabled && !selected.contains(option) {
+                            selected.push(option.clone());
+                        }
+                        if !enabled {
+                            selected.retain(|item| item != option);
+                        }
+                        *draft = selected.join("|");
+                    }
+                }
+                if ui.button("Uygula").clicked() {
+                    intents.push(action(draft.clone()));
+                    ui.close_menu();
+                }
+            });
+        }
+        _ => {
+            let edited = value_drafts
+                .entry((row.page.id, property.id))
+                .or_insert(value.clone());
+            let text = ui.add_enabled(
+                !busy,
+                egui::TextEdit::singleline(edited)
+                    .desired_width(120.0)
+                    .hint_text(if property.kind == "date" {
+                        "YYYY-MM-DD"
+                    } else {
+                        ""
+                    }),
+            );
+            if text.lost_focus() && edited != &value {
+                intents.push(action(edited.clone()));
+            }
+        }
+    }
+}
+
+fn add_property_menu(ui: &mut Ui, data: &DatabaseData, intents: &mut Vec<Intent>) {
+    let name_id = egui::Id::new(("new-database-property-name", data.page_id));
+    let mut name = ui
+        .ctx()
+        .data(|data| data.get_temp::<String>(name_id))
+        .unwrap_or_else(|| format!("Property {}", data.properties.len() + 1));
+    ui.label("Property name");
+    if ui.text_edit_singleline(&mut name).changed() {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(name_id, name.clone()));
+    }
+    ui.separator();
+    for (kind, label) in PROPERTY_TYPES {
+        if ui.button(label).clicked() {
+            intents.push(Intent::Action(Action::AddDatabaseProperty {
+                database: data.page_id,
+                name: if name.trim().is_empty() {
+                    format!("Property {}", data.properties.len() + 1)
+                } else {
+                    name.trim().to_owned()
+                },
+                kind: kind.into(),
+                options: Vec::new(),
+            }));
+            ui.ctx().data_mut(|data| data.remove::<String>(name_id));
+            ui.close_menu();
+        }
+    }
+}
+
+fn show_gallery(
+    ui: &mut Ui,
+    data: &DatabaseData,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    show_cards(
+        ui,
+        data,
+        busy,
+        palette,
+        intents,
+        usize::from(data.gallery_columns),
+    );
+}
+
+fn show_cards(
+    ui: &mut Ui,
+    data: &DatabaseData,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    columns: usize,
+) {
+    let rows = sorted_rows(data);
+    let columns = columns.max(1);
+    let row_count = rows.len().div_ceil(columns);
+    let row_height = 104.0;
+    let gap = ui.spacing().item_spacing.x;
+    let card_frame = egui::Frame::group(ui.style()).fill(palette.sidebar);
+    let frame_margin = card_frame.total_margin();
+    let horizontal_frame_margin = frame_margin.left + frame_margin.right;
+    let card_width = ((ui.available_width().max(1.0) - gap * columns.saturating_sub(1) as f32)
+        / columns as f32
+        - horizontal_frame_margin)
+        .max(1.0);
+    let card_height = (row_height - frame_margin.top - frame_margin.bottom).max(1.0);
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show_rows(ui, row_height, row_count, |ui, visible| {
+            for row_index in visible {
+                ui.horizontal(|ui| {
+                    for row in rows.iter().skip(row_index * columns).take(columns) {
+                        card_frame.show(ui, |ui| {
+                            ui.set_min_width(card_width);
+                            ui.set_max_width(card_width);
+                            ui.set_min_height(card_height);
+
+                            let title = if row.page.title.is_empty() {
+                                "Untitled page"
+                            } else {
+                                &row.page.title
+                            };
+                            if ui
+                                .add_sized(
+                                    [(card_width - 16.0).max(1.0), 22.0],
+                                    egui::Label::new(RichText::new(title).heading())
+                                        .truncate()
+                                        .sense(egui::Sense::click()),
+                                )
+                                .clicked()
+                                && !busy
+                            {
+                                intents.push(Intent::Open(row.page.id, None));
+                            }
+                            ui.add_sized(
+                                [(card_width - 16.0).max(1.0), 16.0],
+                                egui::Label::new(
+                                    RichText::new(format_date(row.page.created_at))
+                                        .small()
+                                        .color(palette.muted),
+                                )
+                                .truncate(),
+                            );
+                            let summaries: Vec<_> = data
+                                .properties
+                                .iter()
+                                .filter_map(|property| {
+                                    row.values
+                                        .get(&property.id)
+                                        .filter(|value| !value.is_empty())
+                                        .map(|value| format!("{}: {value}", property.name))
+                                })
+                                .take(2)
+                                .collect();
+                            ui.add_sized(
+                                [(card_width - 16.0).max(1.0), 18.0],
+                                egui::Label::new(
+                                    RichText::new(summaries.join(" / "))
+                                        .small()
+                                        .color(palette.muted),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    }
+                });
+            }
+        });
+}
+
+fn show_board(
+    ui: &mut Ui,
+    data: &DatabaseData,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let status = data
+        .properties
+        .iter()
+        .find(|property| property.kind == "status" || property.kind == "select");
+    let Some(status) = status else {
+        ui.label("Add a Status or Select property to use the board view.");
+        show_cards(ui, data, busy, palette, intents, 1);
+        return;
+    };
+    let mut groups = if status.options.is_empty() {
+        vec!["No selection".to_owned()]
+    } else {
+        status.options.clone()
+    };
+    if !groups.iter().any(|group| group == "No selection") {
+        groups.push("No selection".into());
+    }
+    let sorted = sorted_rows(data);
+    let mut rows_by_group = HashMap::<String, Vec<&DatabaseRow>>::new();
+    for row in &sorted {
+        let value = row.values.get(&status.id).map(String::as_str).unwrap_or("");
+        let group = if value.is_empty() {
+            "No selection"
+        } else {
+            value
+        };
+        rows_by_group.entry(group.to_owned()).or_default().push(row);
+        if !groups.iter().any(|candidate| candidate == group) {
+            groups.push(group.to_owned());
+        }
+    }
+    egui::ScrollArea::horizontal().show(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            for group in groups {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(230.0);
+                    ui.heading(&group);
+                    let rows = rows_by_group.get(&group).map_or(&[][..], Vec::as_slice);
+                    egui::ScrollArea::vertical()
+                        .id_salt(("database-board-column", data.page_id, &group))
+                        .max_height(ui.available_height())
+                        .show_rows(ui, 62.0, rows.len(), |ui, visible| {
+                            for row in &rows[visible] {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !busy,
+                                            egui::Button::new(row.page.display_title()),
+                                        )
+                                        .clicked()
+                                    {
+                                        intents.push(Intent::Open(row.page.id, None));
+                                    }
+                                    let current =
+                                        row.values.get(&status.id).cloned().unwrap_or_default();
+                                    egui::ComboBox::from_id_salt(("board-status", row.page.id))
+                                        .selected_text(if current.is_empty() {
+                                            "No selection"
+                                        } else {
+                                            &current
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(
+                                                    current.is_empty(),
+                                                    "No selection",
+                                                )
+                                                .clicked()
+                                                && !current.is_empty()
+                                            {
+                                                intents.push(Intent::Action(
+                                                    Action::SetDatabaseProperty {
+                                                        page: row.page.id,
+                                                        property: status.id,
+                                                        value: String::new(),
+                                                    },
+                                                ));
+                                            }
+                                            for option in &status.options {
+                                                if ui
+                                                    .selectable_label(current == *option, option)
+                                                    .clicked()
+                                                    && current != *option
+                                                {
+                                                    intents.push(Intent::Action(
+                                                        Action::SetDatabaseProperty {
+                                                            page: row.page.id,
+                                                            property: status.id,
+                                                            value: option.clone(),
+                                                        },
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                });
+                                let properties: Vec<_> = data
+                                    .properties
+                                    .iter()
+                                    .filter(|property| property.id != status.id)
+                                    .filter_map(|property| {
+                                        row.values
+                                            .get(&property.id)
+                                            .filter(|value| !value.is_empty())
+                                            .map(|value| format!("{}: {value}", property.name))
+                                    })
+                                    .take(3)
+                                    .collect();
+                                if !properties.is_empty() {
+                                    ui.label(
+                                        RichText::new(properties.join("  ·  "))
+                                            .small()
+                                            .color(palette.muted),
+                                    );
+                                }
+                            }
+                        });
+                });
+            }
+        });
+    });
+}
+
+pub(crate) fn format_date(timestamp: i64) -> String {
+    let Some(date_time) =
+        chrono::DateTime::from_timestamp(timestamp, 0).map(|utc| utc.with_timezone(&chrono::Local))
+    else {
+        return "—".to_owned();
+    };
+    format_date_at(date_time, chrono::Local::now().date_naive())
+}
+
+fn format_date_at(date_time: chrono::DateTime<chrono::Local>, today: chrono::NaiveDate) -> String {
+    use chrono::{Datelike, Timelike};
+
+    let month = match date_time.month() {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => unreachable!(),
+    };
+
+    if date_time.date_naive() == today {
+        format!(
+            "{} {month}, {:02}:{:02}",
+            date_time.day(),
+            date_time.hour(),
+            date_time.minute()
+        )
+    } else if date_time.year() == today.year() {
+        format!("{} {month}", date_time.day())
+    } else {
+        format!("{} {month} {}", date_time.day(), date_time.year())
+    }
+}
+
+#[cfg(test)]
+mod date_format_tests {
+    use super::format_date_at;
+    use chrono::{Local, NaiveDate, TimeZone};
+
+    #[test]
+    fn date_format_hides_year_for_this_year_and_time_for_other_days() {
+        let today = NaiveDate::from_ymd_opt(2025, 10, 15).unwrap();
+        let yesterday = Local.with_ymd_and_hms(2025, 10, 14, 17, 42, 31).unwrap();
+        let previous_year = Local.with_ymd_and_hms(2024, 10, 15, 17, 42, 31).unwrap();
+
+        assert_eq!(format_date_at(yesterday, today), "14 October");
+        assert_eq!(format_date_at(previous_year, today), "15 October 2024");
+    }
+
+    #[test]
+    fn date_format_shows_time_only_for_today() {
+        let today = NaiveDate::from_ymd_opt(2025, 10, 15).unwrap();
+        let same_day = Local.with_ymd_and_hms(2025, 10, 15, 9, 7, 53).unwrap();
+
+        assert_eq!(format_date_at(same_day, today), "15 October, 09:07");
+    }
+}

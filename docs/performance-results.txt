@@ -1,0 +1,10 @@
+Noteon performance | 10000 pages | 119990 blocks | 20000 blocks on largest page
+Fixture creation: 2.79s
+
+Page metadata (10,000)                 p50     3.404 ms | p95     3.957 ms
+Document outline (20,000)              p50     4.802 ms | p95     6.583 ms
+Deep block window (128 of 20,000)      p50     0.084 ms | p95     0.125 ms
+FTS rare term                          p50     0.094 ms | p95     0.239 ms
+FTS common term (50 result cap)        p50     4.033 ms | p95     4.286 ms
+Single block transaction (FULL sync)   p50     0.760 ms | p95     1.518 ms
+10,000 visible-range lookups           p50     0.720 ms | p95     0.833 ms

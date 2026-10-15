@@ -1,0 +1,34 @@
+[package]
+name = "noteon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A fully local Rust-based notes workspace for Windows"
+license = "MIT"
+default-run = "noteon"
+
+[dependencies]
+directories = "6.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
+egui_dock = { version = "0.16.0", features = ["serde"] }
+rfd = "0.17"
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

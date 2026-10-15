@@ -564,10 +564,13 @@ impl TabViewer for PageTabViewer<'_> {
             self.database_lru.retain(|candidate| *candidate != page_id);
             self.database_lru.push_back(page_id);
             if let Some(database) = self.databases.get_mut(&page_id) {
+                let page_icon = self.sidebar.page(page_id).map(|p| p.icon.clone());
                 ui.add_enabled_ui(!self.busy, |ui| {
                     crate::ui::database::show(
                         ui,
                         database,
+                        page_icon.as_deref(),
+                        parent_title.as_deref(),
                         self.busy,
                         self.palette,
                         self.intents,

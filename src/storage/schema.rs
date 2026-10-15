@@ -123,7 +123,12 @@ pub fn migrate(connection: &Connection) -> Result<()> {
         connection.pragma_update(None, "user_version", 9)?;
     }
     if version <= 9 {
-        if !has_column(connection, "databases", "view_settings")? {
+        let has_databases: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='databases')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_databases && !has_column(connection, "databases", "view_settings")? {
             connection.execute_batch(
                 "ALTER TABLE databases ADD COLUMN view_settings TEXT NOT NULL DEFAULT '{}';",
             )?;

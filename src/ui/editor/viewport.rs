@@ -239,7 +239,7 @@ impl Editor {
                                 egui::UiBuilder::new().max_rect(database_rect),
                                 |ui| {
                                     ui.push_id(("embedded-database", block.id), |ui| {
-                                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                                        egui::Frame::NONE.show(ui, |ui| {
                                             ui.set_min_width(ui.available_width());
                                             ui.set_min_height(block::DATABASE_BLOCK_HEIGHT - 16.0);
                                             crate::ui::database::show_embedded(

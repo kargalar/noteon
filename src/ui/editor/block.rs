@@ -316,7 +316,7 @@ fn show_menu(
                 }
             }
             ui.separator();
-            if ui.button("↑ Move up").clicked() {
+            if ui.button("▲ Move up").clicked() {
                 intents.push(Intent::Action(Action::MoveBlock {
                     page: block.page_id,
                     block: block.id,
@@ -324,7 +324,7 @@ fn show_menu(
                 }));
                 ui.close_menu();
             }
-            if ui.button("↓ Move down").clicked() {
+            if ui.button("▼ Move down").clicked() {
                 intents.push(Intent::Action(Action::MoveBlock {
                     page: block.page_id,
                     block: block.id,

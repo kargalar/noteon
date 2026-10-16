@@ -2806,16 +2806,19 @@ fn show_cards(
                                     egui::vec2(inner_rect.width(), 120.0),
                                     egui::Sense::hover(),
                                 );
+                                card_ui.painter().rect_filled(image_rect, 6.0, palette.code);
+                                let mut painted = false;
                                 if let Some(path) = row.page.cover_image.as_deref() {
                                     let focus = egui::vec2(row.page.cover_x, row.page.cover_y);
-                                    crate::ui::editor::media::paint_cover(
+                                    painted = crate::ui::editor::media::paint_cover(
                                         &mut card_ui,
                                         std::path::Path::new(path),
                                         image_rect,
                                         focus,
-                                    );
-                                } else {
-                                    card_ui.painter().rect_filled(image_rect, 6.0, palette.code);
+                                    )
+                                    .is_some();
+                                }
+                                if !painted {
                                     let icon = if row.page.icon.is_empty() {
                                         "📄"
                                     } else {
@@ -2830,6 +2833,7 @@ fn show_cards(
                                     );
                                 }
                             }
+
 
                             if show_title {
                                 let icon = if row.page.icon.is_empty() {

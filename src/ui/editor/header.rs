@@ -45,6 +45,7 @@ pub(super) fn show(
     let (cover_rect, cover_response) =
         ui.allocate_exact_size(vec2(width, cover_height), Sense::drag());
     if let Some(path) = page.cover_image.as_deref() {
+        ui.painter().rect_filled(cover_rect, 6.0, palette.code);
         let image_size = super::media::paint_cover(
             ui,
             std::path::Path::new(path),

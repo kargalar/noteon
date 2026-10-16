@@ -15,6 +15,8 @@ pub enum Intent {
     Open(PageId, Option<usize>),
     OpenTitle(String),
     OpenInTab(PageId),
+    OpenUrl(String),
+    OpenFileExplorer(String),
     DockPage(PageId, u64, DockSide),
     ClosePageTab(PageId),
     Action(Action),

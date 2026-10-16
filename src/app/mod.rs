@@ -505,6 +505,13 @@ impl NoteonApp {
                     }
                 }
                 Intent::OpenInTab(id) => self.open_page_in_tab(id),
+                Intent::OpenUrl(url) => {
+                    context.open_url(egui::OpenUrl::new_tab(&url));
+                    crate::ui::editor::links::open_url_in_browser(&url);
+                }
+                Intent::OpenFileExplorer(path) => {
+                    crate::ui::editor::links::open_in_file_explorer(&path);
+                }
                 Intent::DockPage(id, target_instance, side) => {
                     self.dock_page_at_edge(id, target_instance, side);
                 }
@@ -709,12 +716,13 @@ impl NoteonApp {
             .editors
             .values()
             .any(|editor| !editor.selected_blocks.is_empty());
+        let wants_keyboard = context.wants_keyboard_input();
         let deletable_pages: Vec<PageId> = if self.ready
             && !self.busy
             && !self.closing
             && !self.trash
             && !has_selected_blocks
-            && !context.wants_keyboard_input()
+            && !wants_keyboard
         {
             if !self.sidebar.selected_pages.is_empty() {
                 self.sidebar
@@ -756,7 +764,7 @@ impl NoteonApp {
             if input.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight) {
                 intents.push(Intent::Forward);
             }
-            if !context.wants_keyboard_input() {
+            if !wants_keyboard {
                 if input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
                     || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
                 {

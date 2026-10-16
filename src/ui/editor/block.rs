@@ -729,6 +729,184 @@ fn show_text(
                     }
                     focused = output.response.has_focus();
                     changed |= output.response.changed();
+
+                    let detected_links = super::links::find_links_and_paths(&block.content);
+                    if !detected_links.is_empty() {
+                        let pointer_pos =
+                            ui.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.interact_pos()));
+                        if let Some(pos) = pointer_pos {
+                            if output.response.rect.contains(pos) {
+                                let relative_pos = pos - output.response.rect.min;
+                                let cursor = output.galley.cursor_from_pos(relative_pos);
+                                let char_index = cursor.ccursor.index;
+                                let char_rect = output
+                                    .galley
+                                    .pos_from_cursor(&cursor)
+                                    .translate(output.response.rect.min.to_vec2())
+                                    .expand(3.0);
+
+                                if char_rect.contains(pos) {
+                                    if let Some(link) = detected_links
+                                        .iter()
+                                        .find(|l| l.char_range.contains(&char_index))
+                                    {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+
+                                        let is_dark = palette.text.r() > 150;
+                                        let web_color = if is_dark {
+                                            egui::Color32::from_rgb(88, 166, 255)
+                                        } else {
+                                            egui::Color32::from_rgb(9, 105, 218)
+                                        };
+                                        let file_color = if is_dark {
+                                            egui::Color32::from_rgb(245, 158, 11)
+                                        } else {
+                                            egui::Color32::from_rgb(180, 83, 9)
+                                        };
+
+                                        egui::show_tooltip(
+                                            ui.ctx(),
+                                            ui.layer_id(),
+                                            egui::Id::new(("link-tooltip", block.id)),
+                                            |ui| {
+                                                ui.set_max_width(360.0);
+                                                match &link.link_type {
+                                                    super::links::LinkType::Web { url } => {
+                                                        ui.horizontal(|ui| {
+                                                            ui.label(RichText::new("🌐").size(15.0));
+                                                            ui.vertical(|ui| {
+                                                                ui.label(
+                                                                    RichText::new("Website Bağlantısı")
+                                                                        .strong()
+                                                                        .size(12.0),
+                                                                );
+                                                                ui.label(
+                                                                    RichText::new(url)
+                                                                        .color(web_color)
+                                                                        .size(11.0),
+                                                                );
+                                                                ui.label(
+                                                                    RichText::new(
+                                                                        "Tarayıcıda açmak için tıkla",
+                                                                    )
+                                                                    .italics()
+                                                                    .size(10.0)
+                                                                    .color(palette.muted),
+                                                                );
+                                                            });
+                                                        });
+                                                    }
+                                                    super::links::LinkType::FilePath { path } => {
+                                                        ui.horizontal(|ui| {
+                                                            ui.label(RichText::new("📁").size(15.0));
+                                                            ui.vertical(|ui| {
+                                                                ui.label(
+                                                                    RichText::new("Dosya Gezgini Yolu")
+                                                                        .strong()
+                                                                        .size(12.0),
+                                                                );
+                                                                ui.label(
+                                                                    RichText::new(path)
+                                                                        .color(file_color)
+                                                                        .monospace()
+                                                                        .size(11.0),
+                                                                );
+                                                                ui.label(
+                                                                    RichText::new(
+                                                                        "Dosya Gezgini'nde açmak için tıkla",
+                                                                    )
+                                                                    .italics()
+                                                                    .size(10.0)
+                                                                    .color(palette.muted),
+                                                                );
+                                                            });
+                                                        });
+                                                    }
+                                                }
+                                            },
+                                        );
+
+                                        let clicked = ui.input(|i| {
+                                            i.pointer.primary_clicked()
+                                                || i.pointer.button_clicked(egui::PointerButton::Middle)
+                                        });
+                                        let is_dragging =
+                                            ui.input(|i| i.pointer.is_decidedly_dragging());
+                                        if clicked && !is_dragging {
+                                            match &link.link_type {
+                                                super::links::LinkType::Web { url } => {
+                                                    intents.push(Intent::OpenUrl(url.clone()));
+                                                }
+                                                super::links::LinkType::FilePath { path } => {
+                                                    intents.push(Intent::OpenFileExplorer(
+                                                        path.clone(),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    output.response.context_menu(|ui| {
+                        ui.set_min_width(200.0);
+                        let context_links = super::links::find_links_and_paths(&block.content);
+                        for link in &context_links {
+                            match &link.link_type {
+                                super::links::LinkType::Web { url } => {
+                                    let label = if url.len() > 30 {
+                                        format!("🌐  {}...", &url[..27])
+                                    } else {
+                                        format!("🌐  {url}")
+                                    };
+                                    if ui.button(label).clicked() {
+                                        intents.push(Intent::OpenUrl(url.clone()));
+                                        ui.close_menu();
+                                    }
+                                }
+                                super::links::LinkType::FilePath { path } => {
+                                    let label = if path.len() > 30 {
+                                        format!("📁  {}...", &path[..27])
+                                    } else {
+                                        format!("📁  {path}")
+                                    };
+                                    if ui.button(label).clicked() {
+                                        intents.push(Intent::OpenFileExplorer(path.clone()));
+                                        ui.close_menu();
+                                    }
+                                }
+                            }
+                        }
+                        if !context_links.is_empty() {
+                            ui.separator();
+                        }
+                        if ui.button("▲  Yukarı taşı").clicked() {
+                            intents.push(Intent::Action(Action::MoveBlock {
+                                page: block.page_id,
+                                block: block.id,
+                                direction: -1,
+                            }));
+                            ui.close_menu();
+                        }
+                        if ui.button("▼  Aşağı taşı").clicked() {
+                            intents.push(Intent::Action(Action::MoveBlock {
+                                page: block.page_id,
+                                block: block.id,
+                                direction: 1,
+                            }));
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button(RichText::new("🗑  Bloğu sil").color(palette.danger)).clicked() {
+                            intents.push(Intent::Action(Action::DeleteBlock {
+                                page: block.page_id,
+                                block: block.id,
+                            }));
+                            ui.close_menu();
+                        }
+                    });
                     let selection_id = block_widget_id("format-selection", block.id, widget_scope);
                     let current_range = output
                         .cursor_range
@@ -907,31 +1085,89 @@ fn layout_styled_text(
     styles: &[TextStyleRange],
 ) -> Arc<egui::Galley> {
     let characters: Vec<_> = text.char_indices().collect();
+    let detected_links = super::links::find_links_and_paths(text);
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = wrap_width;
+
+    let is_dark = ui.visuals().dark_mode;
+    let web_color = if is_dark {
+        egui::Color32::from_rgb(88, 166, 255)
+    } else {
+        egui::Color32::from_rgb(9, 105, 218)
+    };
+    let file_color = if is_dark {
+        egui::Color32::from_rgb(245, 158, 11)
+    } else {
+        egui::Color32::from_rgb(180, 83, 9)
+    };
+
     let mut start = 0;
     while start < characters.len() {
         let style = style_at(styles, start);
+        let link_kind = detected_links
+            .iter()
+            .find(|l| l.char_range.contains(&start))
+            .map(|l| &l.link_type);
         let mut end = start + 1;
-        while end < characters.len() && style_at(styles, end) == style {
+        while end < characters.len()
+            && style_at(styles, end) == style
+            && detected_links
+                .iter()
+                .find(|l| l.char_range.contains(&end))
+                .map(|l| &l.link_type)
+                == link_kind
+        {
             end += 1;
         }
         let byte_start = characters[start].0;
         let byte_end = characters.get(end).map_or(text.len(), |(index, _)| *index);
-        let mut format = TextFormat::simple(
-            styled_font(base_font.clone(), &style),
-            style.foreground.map(color_from_rgba).unwrap_or(base_color),
-        );
+
+        let mut font = styled_font(base_font.clone(), &style);
+        let mut color = style.foreground.map(color_from_rgba).unwrap_or(base_color);
+        let mut background = style.background.map(color_from_rgba);
+        let mut underline = style.underline;
+
+        if let Some(link) = link_kind {
+            match link {
+                super::links::LinkType::Web { .. } => {
+                    if style.foreground.is_none() {
+                        color = web_color;
+                    }
+                    underline = true;
+                }
+                super::links::LinkType::FilePath { .. } => {
+                    if style.foreground.is_none() {
+                        color = file_color;
+                    }
+                    underline = true;
+                    font.family = FontFamily::Monospace;
+                    if background.is_none() {
+                        background = Some(egui::Color32::from_rgba_unmultiplied(
+                            file_color.r(),
+                            file_color.g(),
+                            file_color.b(),
+                            30,
+                        ));
+                    }
+                }
+            }
+        }
+
+        let mut format = TextFormat::simple(font, color);
         format.italics = style.italic;
-        let color = style.foreground.map(color_from_rgba).unwrap_or(base_color);
-        if style.underline {
-            format.underline = Stroke::new(1.0, color);
+        if underline {
+            let underline_stroke_color = match link_kind {
+                Some(super::links::LinkType::Web { .. }) => web_color,
+                Some(super::links::LinkType::FilePath { .. }) => file_color,
+                _ => color,
+            };
+            format.underline = Stroke::new(1.1, underline_stroke_color);
         }
         if style.strikethrough {
             format.strikethrough = Stroke::new(1.0, color);
         }
-        if let Some(background) = style.background {
-            format.background = color_from_rgba(background);
+        if let Some(bg) = background {
+            format.background = bg;
         }
         job.append(&text[byte_start..byte_end], 0.0, format);
         start = end;

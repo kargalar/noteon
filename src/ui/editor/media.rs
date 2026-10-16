@@ -2,21 +2,76 @@ use eframe::egui::{self, ColorImage, Context, TextureHandle, TextureOptions, Ui,
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::thread;
 
 const VIDEO_WIDTH: usize = 640;
 const VIDEO_HEIGHT: usize = 360;
 const VIDEO_FRAME_BYTES: usize = VIDEO_WIDTH * VIDEO_HEIGHT * 4;
-const IMAGE_CACHE_LIMIT: usize = 32;
+const IMAGE_CACHE_LIMIT: usize = 128;
 const VIDEO_CACHE_LIMIT: usize = 4;
 
+enum CachedImageState {
+    Loading,
+    Loaded(TextureHandle),
+    Failed,
+}
+
+struct ImageLoadRequest {
+    key: String,
+    path: PathBuf,
+    context: Context,
+}
+
+struct ImageLoadResponse {
+    key: String,
+    result: Result<ColorImage, ()>,
+}
+
+struct ImageLoader {
+    request_tx: Sender<ImageLoadRequest>,
+    response_rx: Receiver<ImageLoadResponse>,
+    cache: HashMap<String, CachedImageState>,
+}
+
+impl ImageLoader {
+    fn new() -> Self {
+        let (request_tx, request_rx) = mpsc::channel::<ImageLoadRequest>();
+        let (response_tx, response_rx) = mpsc::channel::<ImageLoadResponse>();
+        let _ = thread::Builder::new()
+            .name("noteon-image-loader".into())
+            .spawn(move || {
+                while let Ok(request) = request_rx.recv() {
+                    let result = match image::open(&request.path) {
+                        Ok(img) => {
+                            let thumb = img.thumbnail(1280, 960).to_rgba8();
+                            let size = [thumb.width() as usize, thumb.height() as usize];
+                            Ok(ColorImage::from_rgba_unmultiplied(size, thumb.as_raw()))
+                        }
+                        Err(_) => Err(()),
+                    };
+                    let _ = response_tx.send(ImageLoadResponse {
+                        key: request.key,
+                        result,
+                    });
+                    request.context.request_repaint();
+                }
+            });
+
+        Self {
+            request_tx,
+            response_rx,
+            cache: HashMap::new(),
+        }
+    }
+}
+
 thread_local! {
-    static IMAGES: RefCell<HashMap<String, TextureHandle>> = RefCell::default();
+    static IMAGE_LOADER: RefCell<ImageLoader> = RefCell::new(ImageLoader::new());
     static VIDEOS: RefCell<HashMap<String, VideoState>> = RefCell::default();
     static FULLSCREEN: RefCell<Option<(String, TextureHandle)>> = const { RefCell::new(None) };
 }
@@ -31,18 +86,27 @@ struct VideoState {
 
 pub fn show_image(ui: &mut Ui, path: &Path, available: Vec2, fullscreen_id: &str) -> Option<Vec2> {
     let path_key = path.to_string_lossy().into_owned();
-    let texture = cached_image(ui.ctx(), &path_key, path)?;
-    let native = texture.size_vec2();
-    let scale = (available.x / native.x)
-        .min(available.y / native.y)
-        .clamp(0.01, 1.0);
-    let size = native * scale;
-    let response = ui.add(egui::Image::new((texture.id(), size)).sense(egui::Sense::click()));
-    if response.clicked() || fullscreen_active(fullscreen_id) {
-        show_fullscreen(ui.ctx(), fullscreen_id, texture.clone(), size);
+    if let Some(texture) = cached_image(ui.ctx(), &path_key, path) {
+        let native = texture.size_vec2();
+        let scale = (available.x / native.x)
+            .min(available.y / native.y)
+            .clamp(0.01, 1.0);
+        let size = native * scale;
+        let response = ui.add(egui::Image::new((texture.id(), size)).sense(egui::Sense::click()));
+        if response.clicked() || fullscreen_active(fullscreen_id) {
+            show_fullscreen(ui.ctx(), fullscreen_id, texture.clone(), size);
+        }
+        Some(size)
+    } else {
+        ui.allocate_ui(available, |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.spinner();
+            });
+        });
+        None
     }
-    Some(size)
 }
+
 
 pub fn show_video(ui: &mut Ui, path: &Path, size: Vec2, fullscreen_id: &str) {
     let key = path.to_string_lossy().into_owned();
@@ -124,27 +188,56 @@ pub fn show_video(ui: &mut Ui, path: &Path, size: Vec2, fullscreen_id: &str) {
 }
 
 fn cached_image(context: &Context, key: &str, path: &Path) -> Option<TextureHandle> {
-    if let Some(texture) = IMAGES.with(|images| images.borrow().get(key).cloned()) {
-        return Some(texture);
-    }
-    let image = image::open(path).ok()?.thumbnail(1600, 1200).to_rgba8();
-    let size = [image.width() as usize, image.height() as usize];
-    let texture = context.load_texture(
-        format!("page-image-{key}"),
-        ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
-        TextureOptions::LINEAR,
-    );
-    IMAGES.with(|images| {
-        let mut images = images.borrow_mut();
-        if images.len() >= IMAGE_CACHE_LIMIT
-            && let Some(oldest) = images.keys().next().cloned()
-        {
-            images.remove(&oldest);
+    IMAGE_LOADER.with(|loader| {
+        let mut loader = loader.borrow_mut();
+        while let Ok(response) = loader.response_rx.try_recv() {
+            match response.result {
+                Ok(color_image) => {
+                    let texture = context.load_texture(
+                        format!("page-image-{}", response.key),
+                        color_image,
+                        TextureOptions::LINEAR,
+                    );
+                    if loader.cache.len() >= IMAGE_CACHE_LIMIT {
+                        if let Some(oldest) = loader
+                            .cache
+                            .iter()
+                            .find(|(k, v)| k.as_str() != response.key && matches!(v, CachedImageState::Loaded(_)))
+                            .map(|(k, _)| k.clone())
+                        {
+                            loader.cache.remove(&oldest);
+                        }
+                    }
+                    loader
+                        .cache
+                        .insert(response.key, CachedImageState::Loaded(texture));
+                }
+                Err(()) => {
+                    loader
+                        .cache
+                        .insert(response.key, CachedImageState::Failed);
+                }
+            }
         }
-        images.insert(key.to_owned(), texture.clone());
-    });
-    Some(texture)
+
+        match loader.cache.get(key) {
+            Some(CachedImageState::Loaded(texture)) => Some(texture.clone()),
+            Some(CachedImageState::Loading) | Some(CachedImageState::Failed) => None,
+            None => {
+                loader
+                    .cache
+                    .insert(key.to_owned(), CachedImageState::Loading);
+                let _ = loader.request_tx.send(ImageLoadRequest {
+                    key: key.to_owned(),
+                    path: path.to_path_buf(),
+                    context: context.clone(),
+                });
+                None
+            }
+        }
+    })
 }
+
 
 pub fn paint_cover(ui: &Ui, path: &Path, rect: egui::Rect, focus: Vec2) -> Option<Vec2> {
     let key = path.to_string_lossy().into_owned();

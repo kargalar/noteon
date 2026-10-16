@@ -3,10 +3,9 @@ setlocal
 cd /d "%~dp0"
 
 echo Noteon baslatiliyor...
-cargo run --release %*
-if %ERRORLEVEL% neq 0 (
+cargo run %*
+if errorlevel 1 (
     echo.
-    echo Bir hata olustu (Hata kodu: %ERRORLEVEL%).
+    echo Bir hata olustu.
     pause
 )
-

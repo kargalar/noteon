@@ -1,7 +1,7 @@
 use rusqlite::{OptionalExtension, Row, params};
 
 use crate::config::SettingKey;
-use crate::domain::model::{BlockKind, Page, PageId};
+use crate::domain::model::{BlockId, BlockKind, Page, PageId};
 use crate::error::{Error, Result};
 
 use super::{Repository, read_usize, sql_index};
@@ -49,6 +49,11 @@ impl Repository {
     }
 
     pub fn create_page(&mut self, parent: Option<PageId>, title: &str) -> Result<PageId> {
+        let title = if title.trim().is_empty() {
+            "Untitled"
+        } else {
+            title
+        };
         let transaction = self.connection.transaction()?;
         if let Some(parent) = parent {
             let active: bool = transaction.query_row(
@@ -68,8 +73,231 @@ impl Repository {
         )?;
         let id = transaction.last_insert_rowid();
         transaction.execute("INSERT INTO blocks(page_id,position) VALUES(?1,0)", [id])?;
+        if let Some(parent_id) = parent {
+            let block_count: usize = transaction.query_row(
+                "SELECT block_count FROM pages WHERE id=?1",
+                [parent_id],
+                |row| read_usize(row, 0),
+            )?;
+            let empty_id: Option<BlockId> = {
+                let mut stmt = transaction.prepare(
+                    "SELECT id FROM blocks WHERE page_id=?1 AND kind='text' AND content='' ORDER BY position LIMIT 1",
+                )?;
+                stmt.query_row([parent_id], |row| row.get(0)).optional()?
+            };
+            if let Some(eid) = empty_id {
+                transaction.execute(
+                    "UPDATE blocks SET kind='text',content=?1 WHERE id=?2",
+                    params![format!("↗ {title}"), eid],
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO blocks(page_id,position,kind,content) VALUES(?1,?2,'text',?3)",
+                    params![parent_id, sql_index(block_count)?, format!("↗ {title}")],
+                )?;
+                transaction.execute(
+                    "UPDATE pages SET block_count=block_count+1 WHERE id=?1",
+                    [parent_id],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+                [parent_id],
+            )?;
+        }
         transaction.commit()?;
         Ok(id)
+    }
+
+    pub fn create_subpage_block(&mut self, parent: PageId, position: usize) -> Result<PageId> {
+        let transaction = self.connection.transaction()?;
+        let active: bool = transaction.query_row(
+            "SELECT trashed_by IS NULL FROM pages WHERE id=?1",
+            [parent],
+            |row| row.get(0),
+        )?;
+        if !active {
+            return Err(Error::Invalid(
+                "A subpage cannot be added to a page in the trash.".into(),
+            ));
+        }
+        transaction.execute(
+            "INSERT INTO pages(parent_id,title,sort_order) SELECT ?1,'Untitled',COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS ?1",
+            [parent],
+        )?;
+        let subpage_id = transaction.last_insert_rowid();
+        transaction.execute("INSERT INTO blocks(page_id,position) VALUES(?1,0)", [subpage_id])?;
+
+        let block_count: usize = transaction.query_row(
+            "SELECT block_count FROM pages WHERE id=?1",
+            [parent],
+            |row| read_usize(row, 0),
+        )?;
+        let pos = position.min(block_count);
+        transaction.execute(
+            "UPDATE blocks SET position=position+1 WHERE page_id=?1 AND position>=?2",
+            params![parent, sql_index(pos)?],
+        )?;
+        transaction.execute(
+            "INSERT INTO blocks(page_id,position,kind,content) VALUES(?1,?2,'text','↗ Untitled')",
+            params![parent, sql_index(pos)?],
+        )?;
+        transaction.execute(
+            "UPDATE pages SET block_count=block_count+1,updated_at=unixepoch() WHERE id=?1",
+            [parent],
+        )?;
+        transaction.commit()?;
+        Ok(subpage_id)
+    }
+
+    pub fn create_subpage_block_replacing(
+        &mut self,
+        parent: PageId,
+        block: BlockId,
+    ) -> Result<PageId> {
+        let transaction = self.connection.transaction()?;
+        let active: bool = transaction.query_row(
+            "SELECT trashed_by IS NULL FROM pages WHERE id=?1",
+            [parent],
+            |row| row.get(0),
+        )?;
+        if !active {
+            return Err(Error::Invalid(
+                "A subpage cannot be added to a page in the trash.".into(),
+            ));
+        }
+        transaction.execute(
+            "INSERT INTO pages(parent_id,title,sort_order) SELECT ?1,'Untitled',COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS ?1",
+            [parent],
+        )?;
+        let subpage_id = transaction.last_insert_rowid();
+        transaction.execute("INSERT INTO blocks(page_id,position) VALUES(?1,0)", [subpage_id])?;
+
+        let belongs_to_page: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM blocks WHERE id=?1 AND page_id=?2)",
+            params![block, parent],
+            |row| row.get(0),
+        )?;
+        if belongs_to_page {
+            transaction.execute(
+                "UPDATE blocks SET kind='text',content='↗ Untitled',checked=0 WHERE id=?1",
+                [block],
+            )?;
+        } else {
+            let block_count: usize = transaction.query_row(
+                "SELECT block_count FROM pages WHERE id=?1",
+                [parent],
+                |row| read_usize(row, 0),
+            )?;
+            transaction.execute(
+                "INSERT INTO blocks(page_id,position,kind,content) VALUES(?1,?2,'text','↗ Untitled')",
+                params![parent, sql_index(block_count)?],
+            )?;
+            transaction.execute(
+                "UPDATE pages SET block_count=block_count+1 WHERE id=?1",
+                [parent],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [parent],
+        )?;
+        transaction.commit()?;
+        Ok(subpage_id)
+    }
+
+    pub fn ensure_subpage_blocks(&mut self, parent_id: PageId) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        let mut child_statement = transaction.prepare_cached(
+            "SELECT id, title FROM pages WHERE parent_id=?1 AND trashed_by IS NULL AND NOT EXISTS(SELECT 1 FROM databases WHERE page_id=pages.id) ORDER BY sort_order, id",
+        )?;
+        let children = child_statement
+            .query_map([parent_id], |row| {
+                Ok((row.get::<_, PageId>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(child_statement);
+
+        if children.is_empty() {
+            return Ok(());
+        }
+
+        let mut block_statement = transaction.prepare_cached(
+            "SELECT id, position, kind, content FROM blocks WHERE page_id=?1 ORDER BY position",
+        )?;
+        let mut blocks = block_statement
+            .query_map([parent_id], |row| {
+                Ok((
+                    row.get::<_, BlockId>(0)?,
+                    read_usize(row, 1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(block_statement);
+
+        let mut changed = false;
+        for (_child_id, child_title) in &children {
+            let clean_title = child_title.trim();
+            let link_target = if clean_title.is_empty() {
+                "Untitled"
+            } else {
+                clean_title
+            };
+            let expected_marker = format!("↗ {link_target}");
+
+            let has_matching_block = blocks.iter().any(|(_, _, kind, content)| {
+                if kind == "text" && content.trim_start().starts_with('↗') {
+                    let block_target = content
+                        .trim_start()
+                        .trim_start_matches("↗ ")
+                        .trim_start_matches('↗')
+                        .trim();
+                    block_target.eq_ignore_ascii_case(link_target)
+                        || (link_target == "Untitled" && block_target.is_empty())
+                } else {
+                    false
+                }
+            });
+
+            if !has_matching_block {
+                if let Some(pos) = blocks.iter().position(|(_, _, kind, content)| {
+                    kind == "text" && content.trim().is_empty()
+                }) {
+                    let (block_id, _, _, _) = blocks[pos];
+                    transaction.execute(
+                        "UPDATE blocks SET content=?1 WHERE id=?2",
+                        params![expected_marker, block_id],
+                    )?;
+                    blocks[pos].3 = expected_marker.clone();
+                    changed = true;
+                } else {
+                    let next_pos: usize = transaction.query_row(
+                        "SELECT COALESCE(MAX(position)+1,0) FROM blocks WHERE page_id=?1",
+                        [parent_id],
+                        |row| read_usize(row, 0),
+                    )?;
+                    transaction.execute(
+                        "INSERT INTO blocks(page_id,position,kind,content) VALUES(?1,?2,'text',?3)",
+                        params![parent_id, sql_index(next_pos)?, expected_marker],
+                    )?;
+                    transaction.execute(
+                        "UPDATE pages SET block_count=block_count+1 WHERE id=?1",
+                        [parent_id],
+                    )?;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            transaction.execute(
+                "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+                [parent_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn toggle_favorite(&self, id: PageId) -> Result<()> {
@@ -78,10 +306,55 @@ impl Repository {
         Ok(())
     }
 
-    pub fn trash_page(&self, id: PageId) -> Result<()> {
-        self.connection.execute(
-            "WITH RECURSIVE descendants(id) AS (SELECT id FROM pages WHERE id=?1 UNION ALL SELECT p.id FROM pages p JOIN descendants d ON p.parent_id=d.id)
-             UPDATE pages SET trashed_by=?1 WHERE id IN (SELECT id FROM descendants) AND trashed_by IS NULL", [id])?;
+    pub fn trash_pages(&mut self, ids: &[PageId]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        for &id in ids {
+            let parent_info: Option<(PageId, String)> = transaction
+                .query_row(
+                    "SELECT parent_id, title FROM pages WHERE id=?1 AND parent_id IS NOT NULL",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+            if let Some((parent_id, title)) = parent_info {
+                let clean_title = title.trim();
+                let marker = format!("↗ {clean_title}");
+                transaction.execute(
+                    "DELETE FROM blocks WHERE page_id=?1 AND kind='text' AND (content=?2 OR (content='↗ Untitled' AND ?3=''))",
+                    params![parent_id, marker, clean_title],
+                )?;
+                let count: usize = transaction.query_row(
+                    "SELECT COUNT(*) FROM blocks WHERE page_id=?1",
+                    [parent_id],
+                    |row| read_usize(row, 0),
+                )?;
+                transaction.execute("UPDATE pages SET block_count=?1 WHERE id=?2", params![count as i64, parent_id])?;
+            }
+            transaction.execute(
+                "WITH RECURSIVE descendants(id) AS (SELECT id FROM pages WHERE id=?1 UNION ALL SELECT p.id FROM pages p JOIN descendants d ON p.parent_id=d.id)
+                 UPDATE pages SET trashed_by=?1 WHERE id IN (SELECT id FROM descendants) AND trashed_by IS NULL", [id])?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn trash_page(&mut self, id: PageId) -> Result<()> {
+        self.trash_pages(&[id])
+    }
+
+    pub fn restore_pages(&mut self, ids: &[PageId]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        for &id in ids {
+            let group: Option<PageId> = transaction
+                .query_row("SELECT trashed_by FROM pages WHERE id=?1", [id], |row| row.get(0))
+                .optional()?
+                .flatten();
+            if group == Some(id) {
+                transaction.execute("UPDATE pages SET parent_id=NULL WHERE id=?1 AND parent_id IN (SELECT id FROM pages WHERE trashed_by IS NOT NULL AND trashed_by!=?1)", [id])?;
+                transaction.execute("UPDATE pages SET trashed_by=NULL WHERE trashed_by=?1", [id])?;
+            }
+        }
+        transaction.commit()?;
         Ok(())
     }
 

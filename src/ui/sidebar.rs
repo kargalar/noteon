@@ -102,7 +102,7 @@ impl Sidebar {
         {
             for &child_id in children {
                 if let Some(page) = self.page(child_id) {
-                    if page.title.trim().eq_ignore_ascii_case(clean) {
+                    if page.display_title().trim().eq_ignore_ascii_case(clean) {
                         return Some(child_id);
                     }
                 }
@@ -111,14 +111,14 @@ impl Sidebar {
         if let Some(page) = self
             .pages
             .iter()
-            .find(|p| p.trashed_by.is_none() && p.title.trim().eq_ignore_ascii_case(clean))
+            .find(|p| p.trashed_by.is_none() && p.display_title().trim().eq_ignore_ascii_case(clean))
         {
             return Some(page.id);
         }
         let clean_lower = clean.to_lowercase();
         self.pages
             .iter()
-            .find(|p| p.trashed_by.is_none() && p.title.to_lowercase().contains(&clean_lower))
+            .find(|p| p.trashed_by.is_none() && p.display_title().to_lowercase().contains(&clean_lower))
             .map(|p| p.id)
     }
 
@@ -230,15 +230,16 @@ impl Sidebar {
     ) {
         let footer = 128.0;
         let mut toggle = None;
-        let sidebar_rect = ui.max_rect();
-        if ui.rect_contains_pointer(sidebar_rect)
-            && !trash
+        if !trash
             && !self.selected_pages.is_empty()
             && !ui.ctx().wants_keyboard_input()
         {
             if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
-                for id in &self.selected_pages {
-                    intents.push(Intent::Action(Action::Trash(*id)));
+                let ids: Vec<_> = self.selected_pages.iter().copied().collect();
+                if ids.len() == 1 {
+                    intents.push(Intent::Action(Action::Trash(ids[0])));
+                } else {
+                    intents.push(Intent::Action(Action::TrashPages(ids)));
                 }
                 self.selected_pages.clear();
                 self.anchor_page = None;

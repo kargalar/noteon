@@ -228,9 +228,15 @@ pub fn show(
         .data(|d| d.get_temp::<bool>(collapse_id))
         .unwrap_or(false);
 
+    let section_hover_id = egui::Id::new(("page-properties-section-hover", page, scope_id));
+    let was_section_hovered = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(section_hover_id))
+        .unwrap_or(false);
+
     ui.horizontal(|ui| {
         ui.add_space(indent);
-        ui.vertical(|ui| {
+        let section_resp = ui.vertical(|ui| {
             ui.set_max_width(section_width);
             ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
             ui.push_id(("page-properties", page, scope_id), |ui| {
@@ -301,9 +307,8 @@ pub fn show(
                 }
 
                 // Bottom quick "+ Add property" button row
-                ui.add_space(2.0);
-                let add_row_id = ui.id().with(("add-prop-bottom-row", page, scope_id));
-                let add_menu_open_id = ui.id().with(("add-prop-menu-open", page, scope_id));
+                let add_row_id = egui::Id::new(("add-prop-bottom-row", page, scope_id));
+                let add_menu_open_id = egui::Id::new(("add-prop-menu-open", page, scope_id));
                 let was_hovered = ui
                     .ctx()
                     .data(|d| d.get_temp::<bool>(add_row_id))
@@ -313,8 +318,9 @@ pub fn show(
                     .data(|d| d.get_temp::<bool>(add_menu_open_id))
                     .unwrap_or(false);
 
-                let is_active = was_hovered || was_menu_open;
-                let row_bg = if is_active {
+                let is_visible = was_section_hovered || was_hovered || was_menu_open;
+                let is_highlighted = was_hovered || was_menu_open;
+                let row_bg = if is_highlighted {
                     blend_color(palette.background, palette.hover, 0.55)
                 } else {
                     Color32::TRANSPARENT
@@ -328,31 +334,38 @@ pub fn show(
                     .show(ui, |ui| {
                         ui.set_min_width(section_width - 12.0);
                         ui.horizontal(|ui| {
-                            let text_color = if is_active {
-                                palette.text
-                            } else {
-                                palette.muted
-                            };
-                            let menu_resp = ui.menu_button(
-                                RichText::new("+  Add property")
-                                    .font(FontId::proportional(12.5))
-                                    .color(text_color),
-                                |ui| {
+                            if is_visible {
+                                let text_color = if is_highlighted {
+                                    palette.text
+                                } else {
+                                    palette.muted
+                                };
+                                let menu_resp = ui.menu_button(
+                                    RichText::new("+  Add property")
+                                        .font(FontId::proportional(12.5))
+                                        .color(text_color),
+                                    |ui| {
+                                        show_add_property_panel(
+                                            ui, page, scope_id, properties, busy, palette, intents,
+                                        );
+                                    },
+                                );
+                                if menu_resp.inner.is_some() {
+                                    is_now_open = true;
+                                }
+                                let ctx_resp = menu_resp.response.context_menu(|ui| {
                                     show_add_property_panel(
                                         ui, page, scope_id, properties, busy, palette, intents,
                                     );
-                                },
-                            );
-                            if menu_resp.inner.is_some() {
-                                is_now_open = true;
-                            }
-                            let ctx_resp = menu_resp.response.context_menu(|ui| {
-                                show_add_property_panel(
-                                    ui, page, scope_id, properties, busy, palette, intents,
-                                );
-                            });
-                            if ctx_resp.is_some() {
-                                is_now_open = true;
+                                });
+                                if ctx_resp.is_some() {
+                                    is_now_open = true;
+                                }
+                            } else {
+                                let dummy = RichText::new("+  Add property")
+                                    .font(FontId::proportional(12.5))
+                                    .color(Color32::TRANSPARENT);
+                                ui.label(dummy);
                             }
                         });
                     });
@@ -366,6 +379,15 @@ pub fn show(
                     d.insert_temp(add_menu_open_id, is_now_open);
                 });
             });
+        });
+
+        let section_hit_rect = section_resp.response.rect.expand2(vec2(0.0, 24.0));
+        let section_hovered = ui.rect_contains_pointer(section_hit_rect);
+        if section_hovered != was_section_hovered {
+            ui.ctx().request_repaint();
+        }
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(section_hover_id, section_hovered);
         });
     });
     ui.add_space(6.0);

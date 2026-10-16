@@ -48,6 +48,23 @@ impl Editor {
             )
         });
         self.scroll_offset = output.state.offset.y;
+        let any_block_changed = intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::BlockChanged(_) | Intent::Action(_)));
+        if !any_block_changed {
+            let redo_pressed = ui.input_mut(|i| {
+                i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)
+                    || i.consume_key(Modifiers::COMMAND, Key::Y)
+            });
+            let undo_pressed = ui.input_mut(|i| {
+                i.consume_key(Modifiers::COMMAND, Key::Z)
+            });
+            if redo_pressed {
+                intents.push(Intent::Redo);
+            } else if undo_pressed {
+                intents.push(Intent::Undo);
+            }
+        }
         intents
     }
 

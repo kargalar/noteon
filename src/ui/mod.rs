@@ -38,6 +38,8 @@ pub enum Intent {
     RetrySave,
     Back,
     Forward,
+    Undo,
+    Redo,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
@@ -7,7 +8,7 @@ use eframe::egui;
 use crate::config::{BLOCK_BATCH_SIZE, SettingKey};
 use crate::domain::model::{
     Block, BlockId, BlockKind, BulkBlockStyleOp, DatabaseData, DatabaseView, DatabaseViewSettings,
-    Document, DropPlacement, Page, PageId, PropertyOption, SaveBatch, SearchHit, TextStyleRange,
+    Document, DropPlacement, Page, PageId, PageSnapshot, PropertyOption, SaveBatch, SearchHit, TextStyleRange,
 };
 use crate::error::{Error, Result};
 use crate::storage::Repository;
@@ -15,9 +16,18 @@ use crate::storage::Repository;
 #[derive(Debug)]
 pub enum Action {
     CreatePage(Option<PageId>),
+    CreateSubpageBlock {
+        page: PageId,
+        position: usize,
+        replace_block: Option<BlockId>,
+    },
     Favorite(PageId),
     Trash(PageId),
+    TrashPages(Vec<PageId>),
     Restore(PageId),
+    RestorePages(Vec<PageId>),
+    UndoPage(PageId),
+    RedoPage(PageId),
     Duplicate(PageId),
     MovePage(PageId, Option<PageId>),
     ReorderPage {
@@ -304,6 +314,12 @@ pub enum Event {
         notice: Option<String>,
         refresh_database: Option<PageId>,
     },
+    PageUndoEmpty {
+        page_id: PageId,
+    },
+    PageRedoEmpty {
+        page_id: PageId,
+    },
     Failed {
         operation: FailedOperation,
         message: String,
@@ -378,16 +394,20 @@ impl Worker {
                     }
                 }
                 let mut write_failed = false;
+                let mut page_histories: HashMap<PageId, PageHistory> = HashMap::new();
                 for request in requests {
                     let (operation, result) = match request {
                         Request::Shutdown => break,
-                        Request::Document { page, generation } => (
-                            FailedOperation::Document(generation),
-                            repository.document(page).map(|document| Event::Document {
-                                generation,
-                                document,
-                            }),
-                        ),
+                        Request::Document { page, generation } => {
+                            let _ = repository.ensure_subpage_blocks(page);
+                            (
+                                FailedOperation::Document(generation),
+                                repository.document(page).map(|document| Event::Document {
+                                    generation,
+                                    document,
+                                }),
+                            )
+                        }
                         Request::Blocks {
                             page,
                             generation,
@@ -413,6 +433,29 @@ impl Worker {
                                 .map(|hits| Event::Search { generation, hits }),
                         ),
                         Request::Save { id, batch } => {
+                            let touched_pages: HashSet<PageId> = batch
+                                .pages
+                                .iter()
+                                .map(|p| p.id)
+                                .chain(batch.blocks.iter().map(|b| b.page_id))
+                                .collect();
+                            for &page_id in &touched_pages {
+                                let history = page_histories.entry(page_id).or_default();
+                                let should_push = match history.last_save_time {
+                                    Some(time) => time.elapsed() > std::time::Duration::from_millis(1000),
+                                    None => true,
+                                };
+                                if should_push {
+                                    if let Ok(snapshot) = repository.page_snapshot(page_id) {
+                                        history.undo_stack.push(snapshot);
+                                        if history.undo_stack.len() > 50 {
+                                            history.undo_stack.remove(0);
+                                        }
+                                        history.redo_stack.clear();
+                                    }
+                                }
+                                history.last_save_time = Some(std::time::Instant::now());
+                            }
                             let result = repository.save(&batch);
                             write_failed = result.is_err();
                             (FailedOperation::Save(id), result.map(|()| Event::Saved(id)))
@@ -423,7 +466,7 @@ impl Worker {
                                     "Save pending changes before continuing.".into(),
                                 ))
                             } else {
-                                perform_action(&mut repository, action)
+                                perform_action(&mut repository, &mut page_histories, action)
                             };
                             (FailedOperation::Action, result)
                         }
@@ -469,13 +512,68 @@ impl Drop for Worker {
     }
 }
 
-fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> {
+#[derive(Default)]
+struct PageHistory {
+    undo_stack: Vec<PageSnapshot>,
+    redo_stack: Vec<PageSnapshot>,
+    last_save_time: Option<std::time::Instant>,
+}
+
+fn perform_action(
+    repository: &mut Repository,
+    page_histories: &mut HashMap<PageId, PageHistory>,
+    action: Action,
+) -> Result<Event> {
     let mut focus = None;
     let mut notice = None;
     let mut refresh_database = None;
     let mut refresh_page_properties = None;
+
+    let modified_page_id = match &action {
+        Action::InsertBlock { page, .. }
+        | Action::CreateSubpageBlock { page, .. }
+        | Action::ImportMedia { page, .. }
+        | Action::DeleteBlock { page, .. }
+        | Action::DeleteBlocks { page, .. }
+        | Action::SetBlocksKind { page, .. }
+        | Action::SetBlocksChecked { page, .. }
+        | Action::FormatBlocks { page, .. }
+        | Action::MoveBlocks { page, .. }
+        | Action::DuplicateBlocks { page, .. }
+        | Action::GroupBlocksInColumns { page, .. }
+        | Action::UngroupBlockColumns { page, .. }
+        | Action::MoveBlock { page, .. }
+        | Action::ArrangeBlock { page, .. }
+        | Action::ResizeColumns { page, .. }
+        | Action::CreateDatabaseBlock { page, .. } => Some(*page),
+        _ => None,
+    };
+    if let Some(page_id) = modified_page_id {
+        let history = page_histories.entry(page_id).or_default();
+        history.last_save_time = None;
+        if let Ok(snapshot) = repository.page_snapshot(page_id) {
+            history.undo_stack.push(snapshot);
+            if history.undo_stack.len() > 50 {
+                history.undo_stack.remove(0);
+            }
+            history.redo_stack.clear();
+        }
+    }
+
     let page = match action {
         Action::CreatePage(parent) => Some(repository.create_page(parent, "")?),
+        Action::CreateSubpageBlock {
+            page: parent,
+            position,
+            replace_block,
+        } => {
+            let subpage_id = if let Some(block) = replace_block {
+                repository.create_subpage_block_replacing(parent, block)?
+            } else {
+                repository.create_subpage_block(parent, position)?
+            };
+            Some(subpage_id)
+        }
         Action::CreateDatabase(parent) => Some(repository.create_database(parent)?),
         Action::CreateDatabaseBlock {
             page: parent,
@@ -711,12 +809,54 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
             None
         }
         Action::Trash(id) => {
-            repository.trash_page(id)?;
+            repository.trash_pages(&[id])?;
+            None
+        }
+        Action::TrashPages(ids) => {
+            repository.trash_pages(&ids)?;
             None
         }
         Action::Restore(id) => {
-            repository.restore_page(id)?;
+            repository.restore_pages(&[id])?;
             Some(id)
+        }
+        Action::RestorePages(ids) => {
+            repository.restore_pages(&ids)?;
+            ids.last().copied()
+        }
+        Action::UndoPage(page_id) => {
+            let history = page_histories.entry(page_id).or_default();
+            if let Some(prev) = history.undo_stack.pop() {
+                if let Ok(current) = repository.page_snapshot(page_id) {
+                    history.redo_stack.push(current);
+                    if history.redo_stack.len() > 50 {
+                        history.redo_stack.remove(0);
+                    }
+                }
+                history.last_save_time = None;
+                let _ = repository.restore_page_snapshot(&prev)?;
+                focus = Some(0);
+                Some(page_id)
+            } else {
+                return Ok(Event::PageUndoEmpty { page_id });
+            }
+        }
+        Action::RedoPage(page_id) => {
+            let history = page_histories.entry(page_id).or_default();
+            if let Some(next) = history.redo_stack.pop() {
+                if let Ok(current) = repository.page_snapshot(page_id) {
+                    history.undo_stack.push(current);
+                    if history.undo_stack.len() > 50 {
+                        history.undo_stack.remove(0);
+                    }
+                }
+                history.last_save_time = None;
+                let _ = repository.restore_page_snapshot(&next)?;
+                focus = Some(0);
+                Some(page_id)
+            } else {
+                return Ok(Event::PageRedoEmpty { page_id });
+            }
         }
         Action::Duplicate(id) => Some(repository.duplicate_page(id)?),
         Action::MovePage(id, parent) => {
@@ -902,7 +1042,12 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
     };
     Ok(Event::ActionDone {
         pages: repository.list_pages()?,
-        document: page.map(|id| repository.document(id)).transpose()?,
+        document: page
+            .map(|id| {
+                let _ = repository.ensure_subpage_blocks(id);
+                repository.document(id)
+            })
+            .transpose()?,
         page_properties: refresh_page_properties
             .map(|id| {
                 repository

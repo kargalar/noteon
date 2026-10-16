@@ -487,3 +487,140 @@ fn clicking_breadcrumb_navigates_to_parent_page() {
     );
 }
 
+#[test]
+fn editor_emits_undo_and_redo_intents() {
+    let context = egui::Context::default();
+    let mut editor = editor("Sample content", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    // Press Ctrl+Z
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![Event::Key {
+            key: Key::Z,
+            physical_key: Some(Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        }],
+        Modifiers::COMMAND,
+    );
+    assert!(intents.iter().any(|intent| matches!(intent, Intent::Undo)));
+
+    // Press Ctrl+Shift+Z
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![Event::Key {
+            key: Key::Z,
+            physical_key: Some(Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND | Modifiers::SHIFT,
+        }],
+        Modifiers::COMMAND | Modifiers::SHIFT,
+    );
+    assert!(intents.iter().any(|intent| matches!(intent, Intent::Redo)));
+}
+
+#[test]
+fn clicking_anywhere_on_page_link_block_navigates_to_page() {
+    let context = egui::Context::default();
+    let mut editor = editor("↗ Hedef Sayfa", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    // Clicking anywhere in the middle of the block row (e.g. x = 300.0, y = 260.0)
+    let click_pos = egui::pos2(300.0, 260.0);
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![
+            Event::PointerMoved(click_pos),
+            Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+        Modifiers::NONE,
+    );
+
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::OpenTitle(title) if title == "Hedef Sayfa"))
+    );
+}
+
+#[test]
+fn editing_page_link_block_allows_editing_and_enter_finishes_edit() {
+    let context = egui::Context::default();
+    let mut editor = editor("↗ Eski Başlık", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    let editing_id = egui::Id::new(("page-link-editing", 1_i64));
+    let started_id = egui::Id::new(("page-link-editing-started", 1_i64));
+    context.data_mut(|d| {
+        d.insert_temp(editing_id, true);
+        d.insert_temp(started_id, true);
+    });
+
+    let _ = frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    assert_eq!(context.data(|d| d.get_temp::<bool>(editing_id)), Some(true));
+
+    let _ = frame(
+        &context,
+        &mut editor,
+        vec![enter(Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+
+    assert_eq!(context.data(|d| d.get_temp::<bool>(editing_id)), None);
+}
+
+#[test]
+fn add_property_button_visible_only_on_hover() {
+    let context = egui::Context::default();
+    let mut editor = editor("İçerik", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    let add_row_id = egui::Id::new(("add-prop-bottom-row", 1_i64, 0_u64));
+    let section_hover_id = egui::Id::new(("page-properties-section-hover", 1_i64, 0_u64));
+
+    // When mouse is not over properties section, section is not hovered
+    assert_eq!(context.data(|d| d.get_temp::<bool>(section_hover_id)), Some(false));
+    assert_eq!(context.data(|d| d.get_temp::<bool>(add_row_id)), Some(false));
+
+    // Hover over the properties section area (centered around x = 350, y = 200)
+    let hover_pos = egui::pos2(350.0, 200.0);
+    frame(
+        &context,
+        &mut editor,
+        vec![Event::PointerMoved(hover_pos)],
+        Modifiers::NONE,
+    );
+
+    // Section hover is now active
+    assert_eq!(context.data(|d| d.get_temp::<bool>(section_hover_id)), Some(true));
+
+    // Move mouse away to the bottom of the editor
+    let away_pos = egui::pos2(350.0, 700.0);
+    frame(
+        &context,
+        &mut editor,
+        vec![Event::PointerMoved(away_pos)],
+        Modifiers::NONE,
+    );
+
+    // Section hover is now inactive again
+    assert_eq!(context.data(|d| d.get_temp::<bool>(section_hover_id)), Some(false));
+}
+

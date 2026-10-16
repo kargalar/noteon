@@ -217,7 +217,15 @@ pub(super) fn show(
             },
         );
     }
-    ui.add_space(8.0);
+    ui.add_space(4.0);
+    let line_y = ui.cursor().min.y;
+    let line_left = inset + block::HANDLE_WIDTH;
+    let line_right = inset + document_width - 4.0;
+    ui.painter().line_segment(
+        [egui::pos2(line_left, line_y), egui::pos2(line_right, line_y)],
+        Stroke::new(1.0, palette.border),
+    );
+    ui.add_space(4.0);
     (
         Canvas {
             width,

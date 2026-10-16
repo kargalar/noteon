@@ -529,6 +529,14 @@ impl SaveBatch {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageSnapshot {
+    pub page_id: PageId,
+    pub title: String,
+    pub icon: String,
+    pub blocks: Vec<Block>,
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchHit {
     pub page_id: PageId,

@@ -355,19 +355,6 @@ fn show_window_chrome(
         .show(context, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.add_space(12.0);
-                let (logo_rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), egui::Sense::hover());
-                ui.painter().rect_filled(logo_rect, 6.0, palette.accent);
-                ui.painter().text(
-                    logo_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "n",
-                    egui::FontId::proportional(18.0),
-                    palette.background,
-                );
-                ui.add_space(8.0);
-                ui.label(RichText::new(config::APP_NAME).strong().color(palette.text));
-
                 let controls_total_width =
                     CONTROL_WIDTH * 3.0 + CONTROL_SPACING * 2.0 + RIGHT_PADDING;
                 let drag_width = (ui.available_width() - controls_total_width).max(0.0);

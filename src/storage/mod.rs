@@ -54,6 +54,13 @@ impl Repository {
                 "UPDATE pages SET title=?1,icon=?2,cover=?3,cover_image=?4,cover_x=?5,cover_y=?6,full_width=?7,updated_at=unixepoch() WHERE id=?8",
             )?;
             for page in &batch.pages {
+                let parent_info: Option<(Option<crate::domain::model::PageId>, String)> = transaction
+                    .query_row(
+                        "SELECT parent_id, title FROM pages WHERE id=?1",
+                        [page.id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .ok();
                 let affected = page_statement.execute(rusqlite::params![
                     page.title,
                     page.icon,
@@ -69,6 +76,20 @@ impl Repository {
                         "Page to save was not found: {}",
                         page.id
                     )));
+                }
+                if let Some((Some(parent_id), old_title)) = parent_info {
+                    let clean_title = page.title.trim();
+                    let display_title = if clean_title.is_empty() {
+                        "Untitled"
+                    } else {
+                        clean_title
+                    };
+                    let new_marker = format!("↗ {display_title}");
+                    let old_marker = format!("↗ {}", old_title.trim());
+                    transaction.execute(
+                        "UPDATE blocks SET content = ?1 WHERE page_id = ?2 AND kind = 'text' AND (content = ?3 OR content = '↗ Untitled' OR content = '↗ ' OR content = '↗')",
+                        rusqlite::params![new_marker, parent_id, old_marker],
+                    )?;
                 }
             }
             let mut block_statement = transaction.prepare_cached(

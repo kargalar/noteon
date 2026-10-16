@@ -169,13 +169,18 @@ fn sidebar_ctrl_click_and_shift_click_and_delete() {
     );
     assert!(sidebar.selected_pages.is_empty());
     assert_eq!(sidebar.anchor_page, None);
+    let has_trash_pages = intents
+        .iter()
+        .any(|i| matches!(i, Intent::Action(noteon::worker::Action::TrashPages(_))));
     let trashed: Vec<_> = intents
         .into_iter()
-        .filter_map(|intent| match intent {
-            Intent::Action(noteon::worker::Action::Trash(id)) => Some(id),
-            _ => None,
+        .flat_map(|intent| match intent {
+            Intent::Action(noteon::worker::Action::Trash(id)) => vec![id],
+            Intent::Action(noteon::worker::Action::TrashPages(ids)) => ids,
+            _ => Vec::new(),
         })
         .collect();
+    assert!(has_trash_pages);
     assert!(trashed.contains(&1));
     assert!(trashed.contains(&3));
 }

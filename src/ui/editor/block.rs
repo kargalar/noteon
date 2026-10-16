@@ -129,35 +129,153 @@ pub fn show(
             Stroke::new(1.0, palette.border),
         );
     } else {
-        changed |= show_decoration(ui, body, block, palette);
         let is_page_link =
             block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗');
-        let right_pad = if is_page_link { 36.0 } else { 8.0 };
-        let text_rect = Rect::from_min_max(
-            body.min + vec2(text_indent(block.kind), BLOCK_PADDING - 4.0),
-            body.max - vec2(right_pad, 5.0),
-        );
-        changed |= show_text(ui, text_rect, block, focus, palette, widget_scope, intents);
-        if is_page_link {
+        let editing_id = block_widget_id("page-link-editing", block.id, widget_scope);
+        let started_id = block_widget_id("page-link-editing-started", block.id, widget_scope);
+        let is_editing = ui.ctx().data(|d| d.get_temp::<bool>(editing_id)).unwrap_or(false);
+
+        if is_page_link && !is_editing {
             let target_title = block
                 .content
                 .trim_start()
                 .trim_start_matches("↗ ")
                 .trim_start_matches('↗')
-                .trim()
-                .to_string();
-            if !target_title.is_empty() {
-                let link_btn_rect = Rect::from_min_size(
-                    pos2(body.right() - 30.0, body.min.y + 4.0),
-                    vec2(26.0, 24.0),
-                );
-                let btn = ui.put(
-                    link_btn_rect,
-                    egui::Button::new(RichText::new("↗").color(palette.accent).strong())
-                        .frame(false),
-                ).on_hover_text(format!("Open '{target_title}'"));
-                if btn.clicked() {
-                    intents.push(Intent::OpenTitle(target_title));
+                .trim();
+            let display_title = if target_title.is_empty() {
+                "Untitled"
+            } else {
+                target_title
+            };
+
+            let link_rect = Rect::from_min_max(
+                body.min + vec2(text_indent(block.kind), 2.0),
+                body.max - vec2(4.0, 2.0),
+            );
+            let link_id = block_widget_id("page-link-surface", block.id, widget_scope);
+            let link_resp = ui
+                .interact(link_rect, link_id, Sense::click())
+                .on_hover_text(format!("'{display_title}' sayfasını aç (Düzenlemek için sağ tıkla)"));
+
+            if link_resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                ui.painter().rect_filled(link_rect, 4.0, palette.hover);
+            }
+
+            let mut job = egui::text::LayoutJob::default();
+            job.wrap.max_width = (link_rect.width() - 16.0).max(40.0);
+            job.append(
+                "↗  ",
+                0.0,
+                egui::TextFormat {
+                    font_id: FontId::proportional(15.0),
+                    color: palette.accent,
+                    ..Default::default()
+                },
+            );
+            job.append(
+                display_title,
+                0.0,
+                egui::TextFormat {
+                    font_id: FontId::proportional(15.0),
+                    color: palette.text,
+                    underline: if link_resp.hovered() {
+                        Stroke::new(1.0, palette.muted)
+                    } else {
+                        Stroke::NONE
+                    },
+                    ..Default::default()
+                },
+            );
+            let galley = ui.fonts(|f| f.layout_job(job));
+            let y_offset = if galley.size().y < link_rect.height() - 4.0 {
+                (link_rect.height() - galley.size().y) * 0.5
+            } else {
+                4.0
+            };
+            let text_pos = pos2(link_rect.min.x + 8.0, link_rect.min.y + y_offset);
+            ui.painter().galley(text_pos, galley, palette.text);
+
+            if link_resp.clicked() || link_resp.middle_clicked() {
+                intents.push(Intent::OpenTitle(display_title.to_string()));
+            }
+
+            link_resp.context_menu(|ui| {
+                ui.set_min_width(170.0);
+                if ui.button("✏  Düzenle").clicked() {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(editing_id, true);
+                        d.insert_temp(started_id, true);
+                    });
+                    ui.close_menu();
+                }
+                if ui.button(format!("↗  '{display_title}' Aç")).clicked() {
+                    intents.push(Intent::OpenTitle(display_title.to_string()));
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("▲  Yukarı taşı").clicked() {
+                    intents.push(Intent::Action(Action::MoveBlock {
+                        page: block.page_id,
+                        block: block.id,
+                        direction: -1,
+                    }));
+                    ui.close_menu();
+                }
+                if ui.button("▼  Aşağı taşı").clicked() {
+                    intents.push(Intent::Action(Action::MoveBlock {
+                        page: block.page_id,
+                        block: block.id,
+                        direction: 1,
+                    }));
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button(RichText::new("🗑  Bloğu sil").color(palette.danger)).clicked() {
+                    intents.push(Intent::Action(Action::DeleteBlock {
+                        page: block.page_id,
+                        block: block.id,
+                    }));
+                    ui.close_menu();
+                }
+            });
+        } else {
+            changed |= show_decoration(ui, body, block, palette);
+            let text_rect = Rect::from_min_max(
+                body.min + vec2(text_indent(block.kind), BLOCK_PADDING - 4.0),
+                body.max - vec2(8.0, 5.0),
+            );
+            let just_started = ui.ctx().data_mut(|d| {
+                if d.get_temp::<bool>(started_id).unwrap_or(false) {
+                    d.remove::<bool>(started_id);
+                    true
+                } else {
+                    false
+                }
+            });
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let text_focus = focus || just_started;
+            changed |= show_text(ui, text_rect, block, text_focus, palette, widget_scope, intents);
+
+            if is_page_link {
+                let editor_id = block_widget_id("block", block.id, widget_scope);
+                if just_started {
+                    if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), editor_id) {
+                        let count = block.content.chars().count();
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(count))));
+                        state.store(ui.ctx(), editor_id);
+                    }
+                }
+                let has_focus = ui.ctx().memory(|m| m.has_focus(editor_id));
+                if (!just_started && !has_focus) || esc_pressed || enter_pressed {
+                    ui.ctx().data_mut(|d| {
+                        d.remove::<bool>(editing_id);
+                        d.remove::<bool>(started_id);
+                    });
+                    if esc_pressed || enter_pressed {
+                        ui.ctx().memory_mut(|m| m.surrender_focus(editor_id));
+                    }
                 }
             }
         }
@@ -338,7 +456,14 @@ fn show_menu(
             }));
         }
     }
+    let is_page_link =
+        block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗');
+    let editing_id = block_widget_id("page-link-editing", block.id, widget_scope);
+    let started_id = block_widget_id("page-link-editing-started", block.id, widget_scope);
+    let is_editing = ui.ctx().data(|d| d.get_temp::<bool>(editing_id)).unwrap_or(false);
+
     let right_clicked_on_row = !bulk_selection_active
+        && !(is_page_link && !is_editing)
         && ui.input(|input| {
             input.pointer.button_clicked(egui::PointerButton::Secondary)
                 && input
@@ -361,6 +486,31 @@ fn show_menu(
         egui::popup::PopupCloseBehavior::CloseOnClick,
         |ui| {
             ui.set_min_width(190.0);
+            if is_page_link {
+                if ui.button("✏  Düzenle").clicked() {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(editing_id, true);
+                        d.insert_temp(started_id, true);
+                    });
+                    ui.close_menu();
+                }
+                let target_title = block
+                    .content
+                    .trim_start()
+                    .trim_start_matches("↗ ")
+                    .trim_start_matches('↗')
+                    .trim();
+                let display_title = if target_title.is_empty() {
+                    "Untitled"
+                } else {
+                    target_title
+                };
+                if ui.button(format!("↗  '{display_title}' Aç")).clicked() {
+                    intents.push(Intent::OpenTitle(display_title.to_string()));
+                    ui.close_menu();
+                }
+                ui.separator();
+            }
             ui.label(RichText::new("BLOCK TYPE").small().color(palette.muted));
             for kind in BlockKind::ALL {
                 if ui
@@ -703,15 +853,22 @@ fn show_text(
                                     replace_block: Some(block.id),
                                 }));
                                 block.kind = BlockKind::Database;
+                                block.content.clear();
                             }
-                            SlashCommandTarget::Block(kind) => block.kind = kind,
+                            SlashCommandTarget::Block(kind) => {
+                                block.kind = kind;
+                                block.content.clear();
+                            }
                             SlashCommandTarget::Page => {
-                                intents
-                                    .push(Intent::Action(Action::CreatePage(Some(block.page_id))));
+                                intents.push(Intent::Action(Action::CreateSubpageBlock {
+                                    page: block.page_id,
+                                    position: block.position,
+                                    replace_block: Some(block.id),
+                                }));
                                 block.kind = BlockKind::Text;
+                                block.content = "↗ Untitled".to_string();
                             }
                         }
-                        block.content.clear();
                         block.text_styles.clear();
                         output.response.request_focus();
                         changed = true;
@@ -1417,6 +1574,9 @@ fn handle_enter(
     intents: &mut Vec<Intent>,
 ) -> bool {
     if !focused || block.kind == BlockKind::Code || !consume_plain_enter(ui) {
+        return false;
+    }
+    if block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗') {
         return false;
     }
     if let Some(kind) = BlockKind::shortcut(&block.content) {

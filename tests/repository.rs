@@ -837,4 +837,101 @@ fn full_width_persists_and_duplicates() {
     assert!(repository.page(copy).unwrap().full_width);
 }
 
+#[test]
+fn trash_pages_and_restore_pages_work_in_batch() {
+    let (_directory, mut repository) = database();
+    let p1 = repository.create_page(None, "Page 1").unwrap();
+    let p2 = repository.create_page(None, "Page 2").unwrap();
+    let p3 = repository.create_page(None, "Page 3").unwrap();
+
+    repository.trash_pages(&[p1, p3]).unwrap();
+    assert!(repository.page(p1).unwrap().trashed_by.is_some());
+    assert!(repository.page(p2).unwrap().trashed_by.is_none());
+    assert!(repository.page(p3).unwrap().trashed_by.is_some());
+
+    repository.restore_pages(&[p1, p3]).unwrap();
+    assert!(repository.page(p1).unwrap().trashed_by.is_none());
+    assert!(repository.page(p2).unwrap().trashed_by.is_none());
+    assert!(repository.page(p3).unwrap().trashed_by.is_none());
+}
+
+#[test]
+fn page_snapshot_and_restore_page_snapshot_round_trip() {
+    let (_directory, mut repository) = database();
+    let page = repository.create_page(None, "Initial Title").unwrap();
+    repository
+        .insert_block(page, 1, BlockKind::Todo)
+        .unwrap();
+
+    let snapshot = repository.page_snapshot(page).unwrap();
+    assert_eq!(snapshot.title, "Initial Title");
+    assert_eq!(snapshot.blocks.len(), 2);
+
+    // Make changes: insert block and change title
+    repository
+        .insert_block(page, 2, BlockKind::Callout)
+        .unwrap();
+    let mut edit = PageEdit::from(&repository.page(page).unwrap());
+    edit.title = "Changed Title".into();
+    repository
+        .save(&SaveBatch {
+            pages: vec![edit],
+            blocks: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(repository.page(page).unwrap().title, "Changed Title");
+    assert_eq!(repository.document(page).unwrap().outline.len(), 3);
+
+    // Restore snapshot
+    let restored_doc = repository.restore_page_snapshot(&snapshot).unwrap();
+    assert_eq!(restored_doc.page.title, "Initial Title");
+    assert_eq!(restored_doc.outline.len(), 2);
+    assert_eq!(restored_doc.outline[1].kind, BlockKind::Todo);
+}
+
+#[test]
+fn subpage_blocks_lifecycle_create_sync_ensure_and_trash() {
+    let (_directory, mut repository) = database();
+    let parent = repository.create_page(None, "Ana Sayfa").unwrap();
+    let initial_doc = repository.document(parent).unwrap();
+    let first_block_id = initial_doc.outline[0].id;
+
+    // 1. Create subpage block replacing initial block
+    let child = repository
+        .create_subpage_block_replacing(parent, first_block_id)
+        .unwrap();
+    let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
+    assert_eq!(parent_blocks.len(), 1);
+    assert_eq!(parent_blocks[0].content, "↗ Untitled");
+
+    // 2. Rename child page and ensure parent block updates
+    let mut edit = PageEdit::from(&repository.page(child).unwrap());
+    edit.title = "Alt Sayfa Detayları".into();
+    repository
+        .save(&SaveBatch {
+            pages: vec![edit],
+            blocks: Vec::new(),
+        })
+        .unwrap();
+    let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
+    assert_eq!(parent_blocks[0].content, "↗ Alt Sayfa Detayları");
+
+    // 3. Directly create a child page and call ensure_subpage_blocks
+    let child2 = repository.create_page(Some(parent), "İkinci Alt").unwrap();
+    let _ = repository.ensure_subpage_blocks(parent).unwrap();
+    let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
+    assert_eq!(parent_blocks.len(), 2);
+    assert!(parent_blocks.iter().any(|b| b.content == "↗ İkinci Alt"));
+
+    // 4. Delete the first subpage block from parent -> child should be trashed
+    let first_block = parent_blocks[0].id;
+    repository.delete_block(first_block).unwrap();
+    assert!(repository.page(child).unwrap().trashed_by.is_some());
+
+    // 5. Trash the second child -> its block should be removed from parent
+    repository.trash_page(child2).unwrap();
+    let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
+    assert!(!parent_blocks.iter().any(|b| b.content == "↗ İkinci Alt"));
+}
+
 

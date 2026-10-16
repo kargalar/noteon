@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::model::{
     Block, BlockId, BlockKind, BlockStub, BulkBlockStyleOp, Document, DropPlacement,
-    InlineTextStyle, PageId, TextStyleRange,
+    InlineTextStyle, PageId, PageSnapshot, TextStyleRange,
 };
 use crate::error::{Error, Result};
 
@@ -339,6 +339,58 @@ impl Repository {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn page_snapshot(&self, page_id: PageId) -> Result<PageSnapshot> {
+        let page = self.page(page_id)?;
+        let mut statement = self.connection.prepare_cached(
+            "SELECT id,page_id,position,kind,content,checked,column_group,layout_column,media_width,text_styles FROM blocks WHERE page_id=?1 ORDER BY position",
+        )?;
+        let blocks = statement
+            .query_map([page_id], read_block)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(PageSnapshot {
+            page_id,
+            title: page.title,
+            icon: page.icon,
+            blocks,
+        })
+    }
+
+    pub fn restore_page_snapshot(&mut self, snapshot: &PageSnapshot) -> Result<Document> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "UPDATE pages SET title=?1, icon=?2, updated_at=unixepoch() WHERE id=?3",
+            params![snapshot.title, snapshot.icon, snapshot.page_id],
+        )?;
+        transaction.execute("DELETE FROM blocks WHERE page_id=?1", [snapshot.page_id])?;
+        if snapshot.blocks.is_empty() {
+            transaction.execute(
+                "INSERT INTO blocks(page_id,position) VALUES(?1,0)",
+                [snapshot.page_id],
+            )?;
+        } else {
+            let mut statement = transaction.prepare_cached(
+                "INSERT INTO blocks(id, page_id, position, kind, content, checked, column_group, layout_column, media_width, text_styles)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for (idx, block) in snapshot.blocks.iter().enumerate() {
+                statement.execute(params![
+                    block.id,
+                    block.page_id,
+                    sql_index(idx)?,
+                    block.kind.as_str(),
+                    block.content,
+                    block.checked,
+                    block.column_group,
+                    sql_index(block.column_index)?,
+                    block.media_width,
+                    serde_json::to_string(&block.text_styles).unwrap_or_else(|_| "[]".into()),
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        self.document(snapshot.page_id)
+    }
+
     pub fn insert_block(
         &mut self,
         page: PageId,
@@ -369,24 +421,12 @@ impl Repository {
     }
 
     pub fn delete_block(&mut self, id: BlockId) -> Result<()> {
-        let transaction = self.connection.transaction()?;
-        let (page, position): (PageId, i64) = transaction.query_row(
-            "SELECT page_id,position FROM blocks WHERE id=?1",
+        let page: PageId = self.connection.query_row(
+            "SELECT page_id FROM blocks WHERE id=?1",
             [id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )?;
-        transaction.execute("DELETE FROM blocks WHERE id=?1", [id])?;
-        transaction.execute(
-            "UPDATE blocks SET position=position-1 WHERE page_id=?1 AND position>?2",
-            params![page, position],
-        )?;
-        transaction.execute("INSERT INTO blocks(page_id,position) SELECT ?1,0 WHERE NOT EXISTS(SELECT 1 FROM blocks WHERE page_id=?1)", [page])?;
-        transaction.execute(
-            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
-            [page],
-        )?;
-        transaction.commit()?;
-        Ok(())
+        self.delete_blocks(page, &[id])
     }
 
     pub fn move_block(&mut self, id: BlockId, direction: i32) -> Result<()> {
@@ -515,6 +555,35 @@ impl Repository {
         }
         let transaction = self.connection.transaction()?;
         {
+            let mut check_stmt = transaction.prepare_cached(
+                "SELECT content FROM blocks WHERE id=?1 AND page_id=?2 AND kind='text'",
+            )?;
+            for id in ids {
+                if let Ok(content) =
+                    check_stmt.query_row(params![id, page], |row| row.get::<_, String>(0))
+                {
+                    if content.trim_start().starts_with('↗') {
+                        let title = content
+                            .trim_start()
+                            .trim_start_matches("↗ ")
+                            .trim_start_matches('↗')
+                            .trim();
+                        let child_id: Option<PageId> = transaction
+                            .query_row(
+                                "SELECT id FROM pages WHERE parent_id=?1 AND trashed_by IS NULL AND (title=?2 OR (?2='Untitled' AND title='')) LIMIT 1",
+                                params![page, title],
+                                |row| row.get(0),
+                            )
+                            .ok();
+                        if let Some(cid) = child_id {
+                            transaction.execute(
+                                "UPDATE pages SET trashed_by=?1 WHERE id=?1",
+                                [cid],
+                            )?;
+                        }
+                    }
+                }
+            }
             let mut delete_stmt =
                 transaction.prepare_cached("DELETE FROM blocks WHERE id=?1 AND page_id=?2")?;
             for id in ids {

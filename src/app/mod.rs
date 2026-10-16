@@ -55,6 +55,8 @@ pub struct NoteonApp {
     accent_color: Option<Color32>,
     font_scale: f32,
     trash: bool,
+    trashed_pages_history: Vec<Vec<PageId>>,
+    trashed_pages_redo: Vec<Vec<PageId>>,
     settings_open: bool,
     settings_theme_tab: bool,
     help_open: bool,
@@ -104,6 +106,8 @@ impl NoteonApp {
             accent_color: None,
             font_scale: config::DEFAULT_FONT_SCALE,
             trash: false,
+            trashed_pages_history: Vec::new(),
+            trashed_pages_redo: Vec::new(),
             settings_open: false,
             settings_theme_tab: false,
             help_open: false,
@@ -393,6 +397,39 @@ impl NoteonApp {
             self.error = Some("Save pending changes before continuing.".into());
             return;
         }
+        match &action {
+            Action::Trash(id) => {
+                self.trashed_pages_history.push(vec![*id]);
+                self.trashed_pages_redo.clear();
+            }
+            Action::TrashPages(ids) => {
+                if !ids.is_empty() {
+                    self.trashed_pages_history.push(ids.clone());
+                    self.trashed_pages_redo.clear();
+                }
+            }
+            Action::Restore(id) => {
+                for group in &mut self.trashed_pages_history {
+                    group.retain(|gid| gid != id);
+                }
+                self.trashed_pages_history.retain(|group| !group.is_empty());
+            }
+            Action::RestorePages(ids) => {
+                for id in ids {
+                    for group in &mut self.trashed_pages_history {
+                        group.retain(|gid| gid != id);
+                    }
+                }
+                self.trashed_pages_history.retain(|group| !group.is_empty());
+            }
+            Action::UndoPage(page_id) | Action::RedoPage(page_id) => {
+                self.saves.clear_page(*page_id);
+                if let Some(editor) = self.editors.get_mut(page_id) {
+                    editor.cache = crate::ui::editor::BlockCache::default();
+                }
+            }
+            _ => {}
+        }
         self.flush(true);
         self.busy = self.send(Request::Action(action));
     }
@@ -412,6 +449,26 @@ impl NoteonApp {
                 row.page.cover_x = page.cover_x;
                 row.page.cover_y = page.cover_y;
                 row.page.full_width = page.full_width;
+            }
+        }
+        if let Some(parent_id) = self.sidebar.page(page.id).and_then(|p| p.parent_id) {
+            if let Some(parent_editor) = self.editors.get_mut(&parent_id) {
+                let clean_title = page.title.trim();
+                let display_title = if clean_title.is_empty() {
+                    "Untitled"
+                } else {
+                    clean_title
+                };
+                let new_content = format!("↗ {display_title}");
+                for block in parent_editor.cache.blocks.values_mut() {
+                    if block.kind == crate::domain::model::BlockKind::Text
+                        && block.content.trim_start().starts_with('↗')
+                    {
+                        block.content.clone_from(&new_content);
+                        self.saves.edit_block(block.clone());
+                        break;
+                    }
+                }
             }
         }
         self.saves.edit_page(page);
@@ -585,6 +642,26 @@ impl NoteonApp {
                 }
                 Intent::Back => self.navigate(-1),
                 Intent::Forward => self.navigate(1),
+                Intent::Undo => {
+                    if self.trash || !self.sidebar.selected_pages.is_empty() || self.selected.is_none() {
+                        if let Some(trashed_ids) = self.trashed_pages_history.pop() {
+                            self.trashed_pages_redo.push(trashed_ids.clone());
+                            self.action(Action::RestorePages(trashed_ids));
+                        }
+                    } else if let Some(selected) = self.selected {
+                        self.action(Action::UndoPage(selected));
+                    }
+                }
+                Intent::Redo => {
+                    if self.trash || !self.sidebar.selected_pages.is_empty() || self.selected.is_none() {
+                        if let Some(trashed_ids) = self.trashed_pages_redo.pop() {
+                            self.trashed_pages_history.push(trashed_ids.clone());
+                            self.action(Action::TrashPages(trashed_ids));
+                        }
+                    } else if let Some(selected) = self.selected {
+                        self.action(Action::RedoPage(selected));
+                    }
+                }
             }
         }
     }
@@ -632,20 +709,36 @@ impl NoteonApp {
             .editors
             .values()
             .any(|editor| !editor.selected_blocks.is_empty());
-        let deletable_page = if self.ready
+        let deletable_pages: Vec<PageId> = if self.ready
             && !self.busy
             && !self.closing
             && !self.trash
             && !has_selected_blocks
             && !context.wants_keyboard_input()
         {
-            self.selected.filter(|id| {
+            if !self.sidebar.selected_pages.is_empty() {
                 self.sidebar
-                    .page(*id)
-                    .is_some_and(|page| page.trashed_by.is_none())
-            })
+                    .selected_pages
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        self.sidebar
+                            .page(*id)
+                            .is_some_and(|page| page.trashed_by.is_none())
+                    })
+                    .collect()
+            } else {
+                self.selected
+                    .filter(|id| {
+                        self.sidebar
+                            .page(*id)
+                            .is_some_and(|page| page.trashed_by.is_none())
+                    })
+                    .into_iter()
+                    .collect()
+            }
         } else {
-            None
+            Vec::new()
         };
         context.input_mut(|input| {
             if input.consume_key(egui::Modifiers::CTRL, egui::Key::K) {
@@ -663,12 +756,37 @@ impl NoteonApp {
             if input.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight) {
                 intents.push(Intent::Forward);
             }
-            if let Some(page) = deletable_page
+            if !context.wants_keyboard_input() {
+                if input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+                    || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
+                {
+                    intents.push(Intent::Redo);
+                } else if input.consume_key(egui::Modifiers::CTRL, egui::Key::Z) {
+                    intents.push(Intent::Undo);
+                }
+            }
+            if !deletable_pages.is_empty()
                 && input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
             {
-                intents.push(Intent::Action(Action::Trash(page)));
+                if deletable_pages.len() == 1 {
+                    intents.push(Intent::Action(Action::Trash(deletable_pages[0])));
+                } else {
+                    intents.push(Intent::Action(Action::TrashPages(deletable_pages)));
+                }
             }
         });
+        if !self.sidebar.selected_pages.is_empty()
+            && intents.iter().any(|i| {
+                matches!(
+                    i,
+                    Intent::Action(Action::Trash(_)) | Intent::Action(Action::TrashPages(_))
+                )
+            })
+        {
+            self.sidebar.selected_pages.clear();
+            self.sidebar.anchor_page = None;
+            self.sidebar.anchor_row_index = None;
+        }
         self.handle_intents(intents, context);
     }
 

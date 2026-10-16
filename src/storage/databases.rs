@@ -252,7 +252,7 @@ impl Repository {
             .query_map([page_id], |row| {
                 Ok((
                     read_page(row)?,
-                    row.get::<_, Option<String>>(16)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(17)?.unwrap_or_default(),
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

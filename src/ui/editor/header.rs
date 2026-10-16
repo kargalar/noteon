@@ -31,7 +31,8 @@ pub(super) fn show(
 ) -> (Canvas, Vec<Intent>) {
     let mut intents = Vec::new();
     let page = &mut document.page;
-    breadcrumb(ui, page, palette, parent_title, &mut intents);
+    let mut page_changed = false;
+    breadcrumb(ui, page, palette, parent_title, &mut intents, &mut page_changed);
     ui.add_space(8.0);
     ui.separator();
     let width = ui.available_width();
@@ -43,7 +44,6 @@ pub(super) fn show(
     ui.add_space(10.0);
     let (cover_rect, cover_response) =
         ui.allocate_exact_size(vec2(width, cover_height), Sense::drag());
-    let mut page_changed = false;
     if let Some(path) = page.cover_image.as_deref() {
         let image_size = super::media::paint_cover(
             ui,
@@ -160,8 +160,15 @@ pub(super) fn show(
     if cover_height > 28.0 {
         ui.add_space(8.0);
     }
-    let document_width = (width - 72.0).clamp(200.0, 850.0);
-    let inset = ((width - document_width) / 2.0).max(12.0);
+    let (document_width, inset) = if page.full_width {
+        let doc_w = (width - 48.0).max(200.0);
+        let ins = 24.0;
+        (doc_w, ins)
+    } else {
+        let doc_w = (width - 72.0).clamp(200.0, 850.0);
+        let ins = ((width - doc_w) / 2.0).max(12.0);
+        (doc_w, ins)
+    };
     let props_max_width = (document_width - block::HANDLE_WIDTH).max(280.0);
     page_changed |= title(
         ui,
@@ -224,10 +231,11 @@ pub(super) fn show(
 
 fn breadcrumb(
     ui: &mut Ui,
-    page: &Page,
+    page: &mut Page,
     palette: Palette,
     parent_title: Option<&str>,
     intents: &mut Vec<Intent>,
+    page_changed: &mut bool,
 ) {
     ui.horizontal(|ui| {
         if quiet_button(ui, "‹", palette.muted)
@@ -249,6 +257,17 @@ fn breadcrumb(
         ui.label(RichText::new(format!("{}  {}", page.icon, page.display_title())).size(12.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button("···", |ui| {
+                let full_width_label = if page.full_width {
+                    "⤡  Standard width"
+                } else {
+                    "⤢  Full width"
+                };
+                if ui.button(full_width_label).clicked() {
+                    page.full_width = !page.full_width;
+                    *page_changed = true;
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.button(text::NEW_CHILD).clicked() {
                     intents.push(Intent::Action(Action::CreatePage(Some(page.id))));
                     ui.close_menu();
@@ -274,6 +293,25 @@ fn breadcrumb(
                     ui.close_menu();
                 }
             });
+            if quiet_button(
+                ui,
+                if page.full_width { "⤡" } else { "⤢" },
+                if page.full_width {
+                    palette.accent
+                } else {
+                    palette.muted
+                },
+            )
+            .on_hover_text(if page.full_width {
+                "Standard width"
+            } else {
+                "Full width"
+            })
+            .clicked()
+            {
+                page.full_width = !page.full_width;
+                *page_changed = true;
+            }
             if quiet_button(
                 ui,
                 if page.favorite { "★" } else { "☆" },
@@ -359,6 +397,17 @@ fn title(
                 );
                 changed |= resp.changed();
             });
+            ui.separator();
+            let full_width_label = if page.full_width {
+                "⤡  Standard width"
+            } else {
+                "⤢  Full width"
+            };
+            if ui.button(full_width_label).clicked() {
+                page.full_width = !page.full_width;
+                changed = true;
+                ui.close_menu();
+            }
             ui.separator();
             ui.menu_button("+  Add property", |ui| {
                 for (kind, label) in crate::domain::model::PROPERTY_TYPES {

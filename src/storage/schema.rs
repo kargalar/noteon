@@ -5,12 +5,12 @@ use crate::error::{Error, Result};
 
 pub fn migrate(connection: &Connection) -> Result<()> {
     let version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 11 {
+    if version > 12 {
         return Err(Error::Invalid(
             "This database was created with a newer version of Noteon.".into(),
         ));
     }
-    if version == 11 {
+    if version == 12 {
         return Ok(());
     }
     if version == 0 {
@@ -147,6 +147,19 @@ pub fn migrate(connection: &Connection) -> Result<()> {
             )?;
         }
         connection.pragma_update(None, "user_version", 11)?;
+    }
+    if version <= 11 {
+        let has_pages: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='pages')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_pages && !has_column(connection, "pages", "full_width")? {
+            connection.execute_batch(
+                "ALTER TABLE pages ADD COLUMN full_width INTEGER NOT NULL DEFAULT 0 CHECK(full_width IN (0,1));",
+            )?;
+        }
+        connection.pragma_update(None, "user_version", 12)?;
     }
     Ok(())
 }

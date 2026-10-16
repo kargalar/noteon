@@ -135,6 +135,7 @@ impl Saves {
             page.cover_image.clone_from(&dirty.value.cover_image);
             page.cover_x = dirty.value.cover_x;
             page.cover_y = dirty.value.cover_y;
+            page.full_width = dirty.value.full_width;
         }
     }
 }

@@ -395,7 +395,7 @@ impl NoteonApp {
     }
 
     fn page_changed(&mut self, page: PageEdit) {
-        self.sidebar.update_title(page.id, &page.title, &page.icon);
+        self.sidebar.update_page(&page);
         if let Some(database) = self.databases.get_mut(&page.id) {
             database.title.clone_from(&page.title);
             database.icon.clone_from(&page.icon);
@@ -408,6 +408,7 @@ impl NoteonApp {
                 row.page.cover_image.clone_from(&page.cover_image);
                 row.page.cover_x = page.cover_x;
                 row.page.cover_y = page.cover_y;
+                row.page.full_width = page.full_width;
             }
         }
         self.saves.edit_page(page);
@@ -438,6 +439,11 @@ impl NoteonApp {
         for intent in edits.into_iter().chain(actions) {
             match intent {
                 Intent::Open(id, jump) => self.open_page(id, jump, true),
+                Intent::OpenTitle(title) => {
+                    if let Some(id) = self.sidebar.find_by_title(&title, self.selected) {
+                        self.open_page(id, None, true);
+                    }
+                }
                 Intent::OpenInTab(id) => self.open_page_in_tab(id),
                 Intent::DockPage(id, target_instance, side) => {
                     self.dock_page_at_edge(id, target_instance, side);

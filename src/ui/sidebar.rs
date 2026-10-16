@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, Align2, FontFamily, FontId, RichText, Sense, Stroke, Ui, vec2};
 
-use crate::domain::model::{Page, PageId};
+use crate::domain::model::{Page, PageEdit, PageId};
 use crate::worker::Action;
 
 use super::text;
@@ -58,6 +58,48 @@ impl Sidebar {
             self.pages[*index].title = title.to_owned();
             self.pages[*index].icon = icon.to_owned();
         }
+    }
+
+    pub fn update_page(&mut self, page: &PageEdit) {
+        if let Some(index) = self.by_id.get(&page.id) {
+            self.pages[*index].title = page.title.clone();
+            self.pages[*index].icon = page.icon.clone();
+            self.pages[*index].cover = page.cover;
+            self.pages[*index].cover_image = page.cover_image.clone();
+            self.pages[*index].cover_x = page.cover_x;
+            self.pages[*index].cover_y = page.cover_y;
+            self.pages[*index].full_width = page.full_width;
+        }
+    }
+
+    pub fn find_by_title(&self, query: &str, current_page: Option<PageId>) -> Option<PageId> {
+        let clean = query.trim_start_matches('↗').trim();
+        if clean.is_empty() {
+            return None;
+        }
+        if let Some(curr) = current_page
+            && let Some(children) = self.children.get(&Some(curr))
+        {
+            for &child_id in children {
+                if let Some(page) = self.page(child_id) {
+                    if page.title.trim().eq_ignore_ascii_case(clean) {
+                        return Some(child_id);
+                    }
+                }
+            }
+        }
+        if let Some(page) = self
+            .pages
+            .iter()
+            .find(|p| p.trashed_by.is_none() && p.title.trim().eq_ignore_ascii_case(clean))
+        {
+            return Some(page.id);
+        }
+        let clean_lower = clean.to_lowercase();
+        self.pages
+            .iter()
+            .find(|p| p.trashed_by.is_none() && p.title.to_lowercase().contains(&clean_lower))
+            .map(|p| p.id)
     }
 
     pub fn reveal(&mut self, id: PageId) {

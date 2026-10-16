@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 
 use super::{Repository, read_usize, sql_index};
 
-pub(crate) const PAGE_COLUMNS: &str = "id,parent_id,title,icon,favorite,trashed_by,cover,updated_at,block_count,created_at,priority,EXISTS(SELECT 1 FROM databases WHERE page_id=pages.id),cover_image,cover_x,cover_y,sort_order";
+pub(crate) const PAGE_COLUMNS: &str = "id,parent_id,title,icon,favorite,trashed_by,cover,updated_at,block_count,created_at,priority,EXISTS(SELECT 1 FROM databases WHERE page_id=pages.id),cover_image,cover_x,cover_y,sort_order,full_width";
 
 pub(crate) fn read_page(row: &Row<'_>) -> rusqlite::Result<Page> {
     Ok(Page {
@@ -26,6 +26,7 @@ pub(crate) fn read_page(row: &Row<'_>) -> rusqlite::Result<Page> {
         cover_x: row.get(13)?,
         cover_y: row.get(14)?,
         sort_order: row.get(15)?,
+        full_width: row.get::<_, i32>(16)? != 0,
     })
 }
 
@@ -167,7 +168,7 @@ impl Repository {
 
     pub fn duplicate_page(&mut self, id: PageId) -> Result<PageId> {
         let transaction = self.connection.transaction()?;
-        transaction.execute("INSERT INTO pages(parent_id,title,icon,cover,cover_image,cover_x,cover_y,sort_order) SELECT source.parent_id,source.title || ' (copy)',source.icon,source.cover,source.cover_image,source.cover_x,source.cover_y,(SELECT COALESCE(MAX(sibling.sort_order)+1,0) FROM pages sibling WHERE sibling.parent_id IS source.parent_id) FROM pages source WHERE source.id=?1", [id])?;
+        transaction.execute("INSERT INTO pages(parent_id,title,icon,cover,cover_image,cover_x,cover_y,sort_order,full_width) SELECT source.parent_id,source.title || ' (copy)',source.icon,source.cover,source.cover_image,source.cover_x,source.cover_y,(SELECT COALESCE(MAX(sibling.sort_order)+1,0) FROM pages sibling WHERE sibling.parent_id IS source.parent_id),source.full_width FROM pages source WHERE source.id=?1", [id])?;
         let new_id = transaction.last_insert_rowid();
         transaction.execute("INSERT INTO blocks(page_id,position,kind,content,checked,column_group,layout_column,column_width,media_width,text_styles) SELECT ?1,position,kind,content,checked,column_group,layout_column,column_width,media_width,text_styles FROM blocks WHERE page_id=?2 ORDER BY position", params![new_id, id])?;
         transaction.commit()?;

@@ -51,7 +51,7 @@ impl Repository {
         let transaction = self.connection.transaction()?;
         {
             let mut page_statement = transaction.prepare_cached(
-                "UPDATE pages SET title=?1,icon=?2,cover=?3,cover_image=?4,cover_x=?5,cover_y=?6,updated_at=unixepoch() WHERE id=?7",
+                "UPDATE pages SET title=?1,icon=?2,cover=?3,cover_image=?4,cover_x=?5,cover_y=?6,full_width=?7,updated_at=unixepoch() WHERE id=?8",
             )?;
             for page in &batch.pages {
                 let affected = page_statement.execute(rusqlite::params![
@@ -61,6 +61,7 @@ impl Repository {
                     page.cover_image,
                     page.cover_x.clamp(0.0, 1.0),
                     page.cover_y.clamp(0.0, 1.0),
+                    i32::from(page.full_width),
                     page.id
                 ])?;
                 if affected != 1 {

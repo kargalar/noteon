@@ -244,7 +244,7 @@ fn version_four_workspaces_migrate_custom_page_properties() {
     let version: i32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 #[test]
@@ -705,7 +705,11 @@ fn database_options_rename_remove_and_board_reorder_persist() {
     repository
         .set_database_property_options(
             tags_prop.id,
-            &["Alpha".to_owned(), "Beta".to_owned(), "Gamma".to_owned()],
+            &[
+                noteon::domain::model::PropertyOption::new("Alpha"),
+                noteon::domain::model::PropertyOption::new("Beta"),
+                noteon::domain::model::PropertyOption::new("Gamma"),
+            ],
         )
         .unwrap();
 
@@ -811,6 +815,26 @@ fn bulk_block_operations_edit_move_duplicate_group_and_delete() {
     repository.delete_blocks(page, &target_ids).unwrap();
     let remaining = repository.blocks(page, 0, 10).unwrap();
     assert!(!remaining.iter().any(|b| target_ids.contains(&b.id)));
+}
+
+#[test]
+fn full_width_persists_and_duplicates() {
+    let (_directory, mut repository) = database();
+    let page = repository.create_page(None, "Full Width Test").unwrap();
+    assert!(!repository.page(page).unwrap().full_width);
+
+    let mut edit = PageEdit::from(&repository.page(page).unwrap());
+    edit.full_width = true;
+    repository
+        .save(&SaveBatch {
+            pages: vec![edit],
+            blocks: Vec::new(),
+        })
+        .unwrap();
+    assert!(repository.page(page).unwrap().full_width);
+
+    let copy = repository.duplicate_page(page).unwrap();
+    assert!(repository.page(copy).unwrap().full_width);
 }
 
 

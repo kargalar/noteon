@@ -1335,6 +1335,13 @@ fn show_table(
                 .show_rows(ui, TABLE_ROW_HEIGHT, rows.len(), |ui, visible| {
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                     for row in &rows[visible] {
+                        let row_cursor = ui.cursor().min;
+                        let row_rect = egui::Rect::from_min_size(
+                            row_cursor,
+                            egui::vec2(table_width, TABLE_ROW_HEIGHT),
+                        );
+                        let row_hovered = ui.rect_contains_pointer(row_rect);
+
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                             table_cell(
@@ -1344,7 +1351,8 @@ fn show_table(
                                 palette,
                                 false,
                                 true,
-                                |ui, hovered| {
+                                |ui, cell_hovered| {
+                                    let hovered = row_hovered || cell_hovered;
                                     let icon = if row.page.icon.is_empty() {
                                         "📄"
                                     } else {
@@ -1391,11 +1399,17 @@ fn show_table(
                                     if response.double_clicked() {
                                         intents.push(Intent::Open(row.page.id, None));
                                     }
+                                    response.context_menu(|ui| {
+                                        if ui.button("↗  Open page").clicked() {
+                                            intents.push(Intent::Open(row.page.id, None));
+                                            ui.close_menu();
+                                        }
+                                    });
                                     if hovered {
                                         let open_btn = egui::Button::new(
                                             RichText::new("↗")
-                                                .color(palette.muted)
-                                                .font(FontId::proportional(12.0)),
+                                                .color(palette.text)
+                                                .font(FontId::proportional(12.5)),
                                         )
                                         .frame(false);
                                         if ui.add(open_btn).on_hover_text("Open page").clicked() {
@@ -1621,7 +1635,7 @@ fn table_cell(
     add_contents: impl FnOnce(&mut Ui, bool),
 ) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let hovered = response.hovered();
+    let hovered = response.hovered() || ui.rect_contains_pointer(rect);
     let fill = if hovered {
         palette.hover
     } else {
@@ -1656,7 +1670,7 @@ fn table_footer_cell(
     add_contents: impl FnOnce(&mut Ui),
 ) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::hover());
-    let hovered = response.hovered();
+    let hovered = response.hovered() || ui.rect_contains_pointer(rect);
     let fill = if hovered {
         palette.hover
     } else {

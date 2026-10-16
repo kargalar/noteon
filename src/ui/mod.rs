@@ -13,6 +13,7 @@ use eframe::egui::{self, Color32, FontId, Response, RichText, Ui, Vec2};
 
 pub enum Intent {
     Open(PageId, Option<usize>),
+    OpenTitle(String),
     OpenInTab(PageId),
     DockPage(PageId, u64, DockSide),
     ClosePageTab(PageId),

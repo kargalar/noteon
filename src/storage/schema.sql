@@ -14,7 +14,8 @@ CREATE TABLE pages (
     priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN 0 AND 3),
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    block_count INTEGER NOT NULL DEFAULT 0
+    block_count INTEGER NOT NULL DEFAULT 0,
+    full_width INTEGER NOT NULL DEFAULT 0 CHECK(full_width IN (0,1))
 );
 CREATE INDEX pages_parent ON pages(parent_id);
 CREATE INDEX pages_trash ON pages(trashed_by);
@@ -102,5 +103,5 @@ CREATE TRIGGER blocks_au AFTER UPDATE OF content ON blocks WHEN old.content != n
     INSERT INTO block_search(block_search,rowid,content) VALUES('delete',old.id,old.content);
     INSERT INTO block_search(rowid,content) VALUES(new.id,new.content);
 END;
-PRAGMA user_version=11;
+PRAGMA user_version=12;
 COMMIT;

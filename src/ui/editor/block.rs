@@ -130,11 +130,37 @@ pub fn show(
         );
     } else {
         changed |= show_decoration(ui, body, block, palette);
+        let is_page_link =
+            block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗');
+        let right_pad = if is_page_link { 36.0 } else { 8.0 };
         let text_rect = Rect::from_min_max(
             body.min + vec2(text_indent(block.kind), BLOCK_PADDING - 4.0),
-            body.max - vec2(8.0, 5.0),
+            body.max - vec2(right_pad, 5.0),
         );
         changed |= show_text(ui, text_rect, block, focus, palette, widget_scope, intents);
+        if is_page_link {
+            let target_title = block
+                .content
+                .trim_start()
+                .trim_start_matches("↗ ")
+                .trim_start_matches('↗')
+                .trim()
+                .to_string();
+            if !target_title.is_empty() {
+                let link_btn_rect = Rect::from_min_size(
+                    pos2(body.right() - 30.0, body.min.y + 4.0),
+                    vec2(26.0, 24.0),
+                );
+                let btn = ui.put(
+                    link_btn_rect,
+                    egui::Button::new(RichText::new("↗").color(palette.accent).strong())
+                        .frame(false),
+                ).on_hover_text(format!("Open '{target_title}'"));
+                if btn.clicked() {
+                    intents.push(Intent::OpenTitle(target_title));
+                }
+            }
+        }
     }
     if changed {
         intents.push(Intent::BlockChanged(block.clone()));
@@ -246,19 +272,27 @@ fn show_menu(
         Sense::hover(),
     );
     let handle_rect = Rect::from_min_size(rect.min, vec2(HANDLE_WIDTH - 3.0, 27.0));
+    let popup_id = block_widget_id("block-menu", block.id, widget_scope);
+    let popup_open = ui.memory(|memory| memory.is_popup_open(popup_id));
+    let handle_hit = handle_rect.expand2(vec2(8.0, 4.0));
+    let handle_hovered = ui.rect_contains_pointer(handle_hit);
+    let row_hovered = row_response.hovered() || ui.rect_contains_pointer(rect) || handle_hovered;
+    let handle_color = if selected {
+        palette.accent
+    } else if handle_hovered {
+        palette.text
+    } else if row_hovered || popup_open {
+        palette.muted
+    } else {
+        egui::Color32::TRANSPARENT
+    };
     let mut changed = false;
     let mut kind_change = None;
     let handle = ui.put(
         handle_rect,
-        egui::Button::new(RichText::new("⠿").color(if selected {
-            palette.accent
-        } else if row_response.hovered() {
-            palette.muted
-        } else {
-            egui::Color32::TRANSPARENT
-        }))
-        .frame(false)
-        .sense(Sense::click_and_drag()),
+        egui::Button::new(RichText::new("⠿").color(handle_color))
+            .frame(false)
+            .sense(Sense::click_and_drag()),
     );
     let handle = handle.on_hover_text("Block menu");
     if handle.drag_started() {
@@ -304,7 +338,6 @@ fn show_menu(
             }));
         }
     }
-    let popup_id = block_widget_id("block-menu", block.id, widget_scope);
     let right_clicked_on_row = !bulk_selection_active
         && ui.input(|input| {
             input.pointer.button_clicked(egui::PointerButton::Secondary)
@@ -481,6 +514,8 @@ fn show_text(
                     let base_font = font(block.kind);
                     let base_color = if block.checked && block.kind == BlockKind::Todo {
                         palette.muted
+                    } else if block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗') {
+                        palette.accent
                     } else {
                         palette.text
                     };

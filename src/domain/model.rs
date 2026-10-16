@@ -162,6 +162,7 @@ pub struct Page {
     pub created_at: i64,
     pub priority: u8,
     pub is_database: bool,
+    pub full_width: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -263,6 +264,30 @@ impl From<&str> for PropertyOption {
 impl From<String> for PropertyOption {
     fn from(s: String) -> Self {
         Self::new(s)
+    }
+}
+
+impl PartialEq<&str> for PropertyOption {
+    fn eq(&self, other: &&str) -> bool {
+        self.name == *other
+    }
+}
+
+impl PartialEq<PropertyOption> for &str {
+    fn eq(&self, other: &PropertyOption) -> bool {
+        *self == other.name
+    }
+}
+
+impl PartialEq<String> for PropertyOption {
+    fn eq(&self, other: &String) -> bool {
+        self.name == *other
+    }
+}
+
+impl PartialEq<PropertyOption> for String {
+    fn eq(&self, other: &PropertyOption) -> bool {
+        *self == other.name
     }
 }
 
@@ -474,6 +499,7 @@ pub struct PageEdit {
     pub cover_image: Option<String>,
     pub cover_x: f32,
     pub cover_y: f32,
+    pub full_width: bool,
 }
 
 impl From<&Page> for PageEdit {
@@ -486,6 +512,7 @@ impl From<&Page> for PageEdit {
             cover_image: page.cover_image.clone(),
             cover_x: page.cover_x,
             cover_y: page.cover_y,
+            full_width: page.full_width,
         }
     }
 }

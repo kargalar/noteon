@@ -25,6 +25,7 @@ fn editor(content: &str, count: usize) -> Editor {
                 created_at: 0,
                 priority: 0,
                 is_database: false,
+                full_width: false,
             },
             outline: (0..count)
                 .map(|position| BlockStub {

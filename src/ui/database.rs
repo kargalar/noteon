@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use eframe::egui::{self, Color32, FontId, RichText, Ui};
 
 use crate::domain::model::{
-    DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView, PROPERTY_TYPES,
+    DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView, PROPERTY_TYPES, PropertyOption,
+};
+use crate::ui::page_properties::{
+    option_base_color, option_pill_colors, resolve_option_color, show_color_palette_grid,
 };
 use crate::worker::Action;
 
@@ -1768,12 +1771,34 @@ fn show_property_edit_menu(
                 .show(ui, |ui| {
                     for (opt_idx, option) in property.options.iter().enumerate() {
                         let opt_draft_id =
-                            egui::Id::new(("prop-option-edit", property.id, opt_idx, option));
+                            egui::Id::new(("prop-option-edit", property.id, opt_idx, &option.name));
                         let mut opt_text = ui
                             .ctx()
                             .data(|d| d.get_temp::<String>(opt_draft_id))
-                            .unwrap_or_else(|| option.clone());
+                            .unwrap_or_else(|| option.name.clone());
+                        let opt_color = resolve_option_color(option.color.as_deref());
+                        let dot_color = option_base_color(palette, &property.kind, &option.name, opt_color);
                         ui.horizontal(|ui| {
+                            ui.menu_button(
+                                RichText::new("●")
+                                    .font(FontId::proportional(14.0))
+                                    .color(dot_color),
+                                |ui| {
+                                    show_color_palette_grid(ui, palette, opt_color, |new_color| {
+                                        let mut reordered = property.options.clone();
+                                        if let Some(target) = reordered.get_mut(opt_idx) {
+                                            target.color = new_color;
+                                            intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
+                                                property: property.id,
+                                                options: reordered,
+                                            }));
+                                        }
+                                    });
+                                },
+                            )
+                            .response
+                            .on_hover_text("Change color");
+
                             let resp = ui.add_enabled(
                                 !busy,
                                 egui::TextEdit::singleline(&mut opt_text).desired_width(145.0),
@@ -1785,11 +1810,11 @@ fn show_property_edit_menu(
                             let commit = resp.lost_focus()
                                 || (resp.has_focus()
                                     && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                            if commit && !opt_text.trim().is_empty() && opt_text.trim() != option {
+                            if commit && !opt_text.trim().is_empty() && opt_text.trim() != option.name {
                                 intents.push(Intent::Action(
                                     Action::RenameDatabasePropertyOption {
                                         property: property.id,
-                                        old_option: option.clone(),
+                                        old_option: option.name.clone(),
                                         new_option: opt_text.trim().to_owned(),
                                     },
                                 ));
@@ -1829,7 +1854,7 @@ fn show_property_edit_menu(
                                 intents.push(Intent::Action(
                                     Action::RemoveDatabasePropertyOption {
                                         property: property.id,
-                                        option: option.clone(),
+                                        option: option.name.clone(),
                                     },
                                 ));
                             }
@@ -1863,8 +1888,8 @@ fn show_property_edit_menu(
             if (enter_add || add_clicked) && !new_opt.trim().is_empty() {
                 let mut updated = property.options.clone();
                 for part in new_opt.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                    if !updated.iter().any(|existing| existing == part) {
-                        updated.push(part.to_owned());
+                    if !updated.iter().any(|existing| existing.name == part) {
+                        updated.push(PropertyOption::new(part));
                     }
                 }
                 intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
@@ -1997,26 +2022,20 @@ fn property_editor(
     };
     match property.kind.as_str() {
         "select" | "status" => {
+            let (pill_fill, text_color, pill_stroke) = if value.is_empty() {
+                (Color32::TRANSPARENT, palette.muted, egui::Stroke::NONE)
+            } else {
+                let opt_col = resolve_option_color(property.option_color(&value));
+                let (bg, text, border) =
+                    option_pill_colors(palette, &property.kind, &value, opt_col);
+                (bg, text, egui::Stroke::new(1.0, border))
+            };
             let display_text = if value.is_empty() { "—" } else { &value };
-            let text_color = if value.is_empty() {
-                palette.muted
-            } else {
-                palette.text
-            };
-            let pill_fill = if value.is_empty() {
-                Color32::TRANSPARENT
-            } else {
-                palette.accent_soft
-            };
             ui.scope(|ui| {
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
                 ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_fill;
                 ui.style_mut().visuals.widgets.inactive.bg_fill = pill_fill;
-                ui.style_mut().visuals.widgets.inactive.bg_stroke = if value.is_empty() {
-                    egui::Stroke::NONE
-                } else {
-                    egui::Stroke::new(1.0, palette.accent.linear_multiply(0.3))
-                };
+                ui.style_mut().visuals.widgets.inactive.bg_stroke = pill_stroke;
                 ui.menu_button(
                     RichText::new(display_text)
                         .font(FontId::proportional(12.0))
@@ -2032,12 +2051,38 @@ fn property_editor(
                             ui.close_menu();
                         }
                         for option in &property.options {
-                            if ui.selectable_label(value == *option, option).clicked()
-                                && value != *option
-                            {
-                                intents.push(action(option.clone()));
-                                ui.close_menu();
-                            }
+                            let opt_color = resolve_option_color(option.color.as_deref());
+                            let dot_color = option_base_color(palette, &property.kind, &option.name, opt_color);
+                            ui.horizontal(|ui| {
+                                ui.menu_button(
+                                    RichText::new("●")
+                                        .font(FontId::proportional(13.0))
+                                        .color(dot_color),
+                                    |ui| {
+                                        show_color_palette_grid(ui, palette, opt_color, |new_color| {
+                                            let mut opts = property.options.clone();
+                                            if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
+                                                target.color = new_color;
+                                                intents.push(Intent::Action(
+                                                    Action::SetDatabasePropertyOptions {
+                                                        property: property.id,
+                                                        options: opts,
+                                                    },
+                                                ));
+                                            }
+                                        });
+                                    },
+                                )
+                                .response
+                                .on_hover_text("Change color");
+
+                                if ui.selectable_label(value == option.name, &option.name).clicked()
+                                    && value != option.name
+                                {
+                                    intents.push(action(option.name.clone()));
+                                    ui.close_menu();
+                                }
+                            });
                         }
                         ui.separator();
                         let quick_opt_id =
@@ -2063,8 +2108,8 @@ fn property_editor(
                             {
                                 let trimmed = new_opt.trim().to_owned();
                                 let mut opts = property.options.clone();
-                                if !opts.contains(&trimmed) {
-                                    opts.push(trimmed.clone());
+                                if !opts.iter().any(|o| o.name == trimmed) {
+                                    opts.push(PropertyOption::new(&trimmed));
                                     intents.push(Intent::Action(
                                         Action::SetDatabasePropertyOptions {
                                             property: property.id,
@@ -2113,25 +2158,25 @@ fn property_editor(
                     joined
                 }
             };
-            let text_color = if selected.is_empty() {
-                palette.muted
+            let (pill_fill, text_color, pill_stroke) = if selected.is_empty() {
+                (Color32::TRANSPARENT, palette.muted, egui::Stroke::NONE)
+            } else if selected.len() == 1 {
+                let opt_col = resolve_option_color(property.option_color(&selected[0]));
+                let (bg, text, border) =
+                    option_pill_colors(palette, "multi-select", &selected[0], opt_col);
+                (bg, text, egui::Stroke::new(1.0, border))
             } else {
-                palette.text
-            };
-            let pill_fill = if selected.is_empty() {
-                Color32::TRANSPARENT
-            } else {
-                palette.accent_soft
+                (
+                    palette.accent_soft,
+                    palette.text,
+                    egui::Stroke::new(1.0, palette.accent.linear_multiply(0.3)),
+                )
             };
             ui.scope(|ui| {
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
                 ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_fill;
                 ui.style_mut().visuals.widgets.inactive.bg_fill = pill_fill;
-                ui.style_mut().visuals.widgets.inactive.bg_stroke = if selected.is_empty() {
-                    egui::Stroke::NONE
-                } else {
-                    egui::Stroke::new(1.0, palette.accent.linear_multiply(0.3))
-                };
+                ui.style_mut().visuals.widgets.inactive.bg_stroke = pill_stroke;
                 ui.menu_button(
                     RichText::new(selected_label)
                         .font(FontId::proportional(12.0))
@@ -2147,16 +2192,42 @@ fn property_editor(
                             );
                         }
                         for option in &property.options {
-                            let mut enabled = selected.contains(option);
-                            if ui.checkbox(&mut enabled, option).changed() {
-                                let mut next = selected.clone();
-                                if enabled && !next.contains(option) {
-                                    next.push(option.clone());
-                                } else if !enabled {
-                                    next.retain(|item| item != option);
+                            let mut enabled = selected.contains(&option.name);
+                            let opt_color = resolve_option_color(option.color.as_deref());
+                            let dot_color = option_base_color(palette, "multi-select", &option.name, opt_color);
+                            ui.horizontal(|ui| {
+                                ui.menu_button(
+                                    RichText::new("●")
+                                        .font(FontId::proportional(13.0))
+                                        .color(dot_color),
+                                    |ui| {
+                                        show_color_palette_grid(ui, palette, opt_color, |new_color| {
+                                            let mut opts = property.options.clone();
+                                            if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
+                                                target.color = new_color;
+                                                intents.push(Intent::Action(
+                                                    Action::SetDatabasePropertyOptions {
+                                                        property: property.id,
+                                                        options: opts,
+                                                    },
+                                                ));
+                                            }
+                                        });
+                                    },
+                                )
+                                .response
+                                .on_hover_text("Change color");
+
+                                if ui.checkbox(&mut enabled, &option.name).changed() {
+                                    let mut next = selected.clone();
+                                    if enabled && !next.contains(&option.name) {
+                                        next.push(option.name.clone());
+                                    } else if !enabled {
+                                        next.retain(|item| item != &option.name);
+                                    }
+                                    intents.push(action(next.join("|")));
                                 }
-                                intents.push(action(next.join("|")));
-                            }
+                            });
                         }
                         ui.separator();
                         let quick_opt_id =
@@ -2182,8 +2253,8 @@ fn property_editor(
                             {
                                 let trimmed = new_opt.trim().to_owned();
                                 let mut opts = property.options.clone();
-                                if !opts.contains(&trimmed) {
-                                    opts.push(trimmed.clone());
+                                if !opts.iter().any(|o| o.name == trimmed) {
+                                    opts.push(PropertyOption::new(&trimmed));
                                     intents.push(Intent::Action(
                                         Action::SetDatabasePropertyOptions {
                                             property: property.id,
@@ -2602,7 +2673,11 @@ fn show_board(
                     database: data.page_id,
                     name: "Status".into(),
                     kind: "status".into(),
-                    options: vec!["Todo".into(), "In progress".into(), "Done".into()],
+                    options: vec![
+                        PropertyOption::new("Todo"),
+                        PropertyOption::new("In progress"),
+                        PropertyOption::new("Done"),
+                    ],
                 }));
             }
         });
@@ -2613,8 +2688,8 @@ fn show_board(
 
     let mut groups = vec!["No selection".to_owned()];
     for option in &status.options {
-        if !groups.iter().any(|group| group == option) {
-            groups.push(option.clone());
+        if !groups.iter().any(|group| group == &option.name) {
+            groups.push(option.name.clone());
         }
     }
     let sorted = sorted_rows(data);
@@ -2682,10 +2757,13 @@ fn show_board(
                             ui.set_min_width(board_col_width);
                             // Column Header
                             ui.horizontal(|ui| {
-                                let pill_fill = if group == "No selection" {
-                                    palette.hover
+                                let (pill_fill, pill_text_color) = if group == "No selection" {
+                                    (palette.hover, palette.muted)
                                 } else {
-                                    palette.accent_soft
+                                    let opt_col = resolve_option_color(status.option_color(group));
+                                    let (bg, text, _) =
+                                        option_pill_colors(palette, "status", group, opt_col);
+                                    (bg, text)
                                 };
                                 let pill_frame = egui::Frame::new()
                                     .fill(pill_fill)
@@ -2695,11 +2773,7 @@ fn show_board(
                                     ui.label(
                                         RichText::new(group)
                                             .font(FontId::proportional(12.5))
-                                            .color(if group == "No selection" {
-                                                palette.muted
-                                            } else {
-                                                palette.text
-                                            })
+                                            .color(pill_text_color)
                                             .strong(),
                                     );
                                 });
@@ -2928,15 +3002,15 @@ fn show_board(
                                             }
                                             for option in &status.options {
                                                 if ui
-                                                    .selectable_label(current == *option, option)
+                                                    .selectable_label(current == option.name, &option.name)
                                                     .clicked()
-                                                    && current != *option
+                                                    && current != option.name
                                                 {
                                                     intents.push(Intent::Action(
                                                         Action::SetDatabaseProperty {
                                                             page: row.page.id,
                                                             property: status.id,
-                                                            value: option.clone(),
+                                                            value: option.name.clone(),
                                                         },
                                                     ));
                                                     ui.close_menu();
@@ -3078,8 +3152,8 @@ fn show_board(
                         {
                             let trimmed = grp_name.trim().to_owned();
                             let mut opts = status.options.clone();
-                            if !opts.contains(&trimmed) {
-                                opts.push(trimmed);
+                            if !opts.iter().any(|o| o.name == trimmed) {
+                                opts.push(PropertyOption::new(&trimmed));
                                 intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
                                     property: status.id,
                                     options: opts,

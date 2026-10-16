@@ -198,12 +198,106 @@ impl DatabaseView {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PropertyOption {
+    pub name: String,
+    pub color: Option<String>,
+}
+
+impl PropertyOption {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            color: None,
+        }
+    }
+
+    pub fn with_color(name: impl Into<String>, color: Option<String>) -> Self {
+        Self {
+            name: name.into(),
+            color,
+        }
+    }
+
+    pub fn parse(line: &str) -> Option<Self> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if let Some((name, color_part)) = trimmed.rsplit_once("::") {
+            let name = name.trim();
+            let color = color_part.trim();
+            if !name.is_empty() && is_valid_hex_color(color) {
+                let hex = if color.starts_with('#') {
+                    color.to_ascii_uppercase()
+                } else {
+                    format!("#{color}").to_ascii_uppercase()
+                };
+                return Some(Self {
+                    name: name.to_owned(),
+                    color: Some(hex),
+                });
+            }
+        }
+        Some(Self {
+            name: trimmed.to_owned(),
+            color: None,
+        })
+    }
+
+    pub fn serialize(&self) -> String {
+        if let Some(color) = &self.color {
+            format!("{}::{}", self.name.trim(), color.trim())
+        } else {
+            self.name.trim().to_owned()
+        }
+    }
+}
+
+impl From<&str> for PropertyOption {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<String> for PropertyOption {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+pub fn is_valid_hex_color(s: &str) -> bool {
+    let s = s.strip_prefix('#').unwrap_or(s);
+    s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+pub fn parse_property_options(raw: &str) -> Vec<PropertyOption> {
+    raw.lines().filter_map(PropertyOption::parse).collect()
+}
+
+pub fn serialize_property_options(options: &[PropertyOption]) -> String {
+    options
+        .iter()
+        .map(PropertyOption::serialize)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatabaseProperty {
     pub id: i64,
     pub name: String,
     pub kind: String,
-    pub options: Vec<String>,
+    pub options: Vec<PropertyOption>,
+}
+
+impl DatabaseProperty {
+    pub fn option_color(&self, option_name: &str) -> Option<&str> {
+        self.options
+            .iter()
+            .find(|opt| opt.name == option_name)
+            .and_then(|opt| opt.color.as_deref())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -358,8 +452,17 @@ pub struct PageProperty {
     pub id: i64,
     pub name: String,
     pub kind: String,
-    pub options: Vec<String>,
+    pub options: Vec<PropertyOption>,
     pub value: String,
+}
+
+impl PageProperty {
+    pub fn option_color(&self, option_name: &str) -> Option<&str> {
+        self.options
+            .iter()
+            .find(|opt| opt.name == option_name)
+            .and_then(|opt| opt.color.as_deref())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -407,3 +510,51 @@ pub struct SearchHit {
     pub preview: String,
     pub position: Option<usize>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn property_option_round_trip() {
+        let opt_plain = PropertyOption::parse("Feature").unwrap();
+        assert_eq!(opt_plain.name, "Feature");
+        assert_eq!(opt_plain.color, None);
+        assert_eq!(opt_plain.serialize(), "Feature");
+
+        let opt_colored = PropertyOption::parse("Bug::#ef4444").unwrap();
+        assert_eq!(opt_colored.name, "Bug");
+        assert_eq!(opt_colored.color.as_deref(), Some("#EF4444"));
+        assert_eq!(opt_colored.serialize(), "Bug::#EF4444");
+
+        let raw = "Design::#8B5CF6\nReview\nDone::#10B981";
+        let parsed = parse_property_options(raw);
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].name, "Design");
+        assert_eq!(parsed[0].color.as_deref(), Some("#8B5CF6"));
+        assert_eq!(parsed[1].name, "Review");
+        assert_eq!(parsed[1].color, None);
+        assert_eq!(parsed[2].name, "Done");
+        assert_eq!(parsed[2].color.as_deref(), Some("#10B981"));
+
+        let serialized = serialize_property_options(&parsed);
+        assert_eq!(serialized, raw);
+    }
+
+    #[test]
+    fn database_property_option_color_lookup() {
+        let prop = DatabaseProperty {
+            id: 1,
+            name: "Tags".into(),
+            kind: "multi-select".into(),
+            options: vec![
+                PropertyOption::with_color("Urgent", Some("#ef4444".into())),
+                PropertyOption::new("Low"),
+            ],
+        };
+        assert_eq!(prop.option_color("Urgent"), Some("#ef4444"));
+        assert_eq!(prop.option_color("Low"), None);
+        assert_eq!(prop.option_color("Unknown"), None);
+    }
+}
+

@@ -1,12 +1,31 @@
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use eframe::egui::{self, Color32, FontId, RichText, Sense, Stroke, Ui, vec2};
 
-use crate::domain::model::{DEFAULT_DATABASE_STATUS_OPTIONS, PROPERTY_TYPES, PageId, PageProperty};
+use crate::domain::model::{
+    DEFAULT_DATABASE_STATUS_OPTIONS, PROPERTY_TYPES, PageId, PageProperty, PropertyOption,
+};
 use crate::ui::{Intent, palette::Palette};
 use crate::worker::Action;
 
 pub const LABEL_COLUMN_WIDTH: f32 = 168.0;
 const ROW_MIN_HEIGHT: f32 = 30.0;
+
+pub const PRESET_OPTION_COLORS: [(&str, Color32); 10] = [
+    ("Default", Color32::from_rgb(140, 140, 140)),
+    ("Red", Color32::from_rgb(224, 62, 62)),
+    ("Orange", Color32::from_rgb(217, 115, 13)),
+    ("Yellow", Color32::from_rgb(204, 148, 56)),
+    ("Green", Color32::from_rgb(76, 154, 102)),
+    ("Teal", Color32::from_rgb(78, 156, 142)),
+    ("Blue", Color32::from_rgb(68, 132, 206)),
+    ("Purple", Color32::from_rgb(146, 106, 190)),
+    ("Pink", Color32::from_rgb(184, 102, 144)),
+    ("Brown", Color32::from_rgb(154, 114, 88)),
+];
+
+pub fn resolve_option_color(color_hex: Option<&str>) -> Option<Color32> {
+    color_hex.and_then(Palette::from_setting)
+}
 
 #[derive(Clone, Copy)]
 pub struct PagePropertyTarget {
@@ -36,9 +55,17 @@ pub fn type_label(kind: &str) -> &'static str {
         .unwrap_or("Text")
 }
 
-pub fn option_pill_colors(palette: Palette, kind: &str, option: &str) -> (Color32, Color32, Color32) {
+pub fn option_base_color(
+    palette: Palette,
+    kind: &str,
+    option: &str,
+    custom_color: Option<Color32>,
+) -> Color32 {
+    if let Some(custom) = custom_color {
+        return custom;
+    }
     let lower = option.trim().to_lowercase();
-    let base_tint = if matches!(
+    if matches!(
         lower.as_str(),
         "done" | "complete" | "completed" | "tamamlandı" | "bitti" | "aktif" | "onaylandı" | "low"
     ) {
@@ -78,12 +105,95 @@ pub fn option_pill_colors(palette: Palette, kind: &str, option: &str) -> (Color3
             .bytes()
             .fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(usize::from(b)));
         palette_wheel[hash % palette_wheel.len()]
-    };
+    }
+}
 
+pub fn option_pill_colors(
+    palette: Palette,
+    kind: &str,
+    option: &str,
+    custom_color: Option<Color32>,
+) -> (Color32, Color32, Color32) {
+    let base_tint = option_base_color(palette, kind, option, custom_color);
     let bg = blend_color(palette.background, base_tint, 0.18);
     let border = blend_color(palette.background, base_tint, 0.42);
     let text = blend_color(palette.text, base_tint, 0.35);
     (bg, border, text)
+}
+
+pub fn show_color_palette_grid<F>(
+    ui: &mut Ui,
+    palette: Palette,
+    current_color: Option<Color32>,
+    mut on_select: F,
+) where
+    F: FnMut(Option<String>),
+{
+    ui.set_min_width(170.0);
+    ui.label(
+        RichText::new("Color")
+            .font(FontId::proportional(11.0))
+            .color(palette.muted),
+    );
+    ui.add_space(3.0);
+
+    egui::Grid::new(ui.id().with("color_palette_grid"))
+        .spacing(vec2(6.0, 6.0))
+        .show(ui, |ui| {
+            for (idx, (name, color)) in PRESET_OPTION_COLORS.iter().enumerate() {
+                let is_selected = current_color == Some(*color);
+                let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                ui.painter().circle_filled(rect.center(), 8.5, *color);
+                if is_selected {
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        10.0,
+                        Stroke::new(2.0, palette.text),
+                    );
+                } else if resp.hovered() {
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        10.0,
+                        Stroke::new(1.5, palette.accent),
+                    );
+                }
+                if resp.on_hover_text(*name).clicked() {
+                    on_select(Some(Palette::to_setting(*color)));
+                    ui.close_menu();
+                }
+                if (idx + 1) % 5 == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+
+    ui.add_space(4.0);
+    let mut custom = current_color.unwrap_or(palette.accent);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Custom")
+                .font(FontId::proportional(11.0))
+                .color(palette.muted),
+        );
+        if ui.color_edit_button_srgba(&mut custom).changed() {
+            on_select(Some(Palette::to_setting(custom)));
+        }
+    });
+
+    ui.add_space(2.0);
+    ui.separator();
+    if ui
+        .button(
+            RichText::new("↺  Reset to auto")
+                .font(FontId::proportional(11.5))
+                .color(palette.muted),
+        )
+        .on_hover_text("Use automatic color")
+        .clicked()
+    {
+        on_select(None);
+        ui.close_menu();
+    }
 }
 
 fn blend_color(from: Color32, to: Color32, t: f32) -> Color32 {
@@ -634,13 +744,31 @@ pub fn show_property_edit_panel(
                 .max_height(175.0)
                 .show(ui, |ui| {
                     for (idx, opt) in property.options.iter().enumerate() {
-                        let opt_id = ("page-prop-opt-edit", page, property.id, idx, opt);
-                        let mut edited_opt = read_draft(ui, opt_id, opt);
-                        let (pill_bg, _, _) = option_pill_colors(palette, &property.kind, opt);
+                        let opt_id = ("page-prop-opt-edit", page, property.id, idx, &opt.name);
+                        let mut edited_opt = read_draft(ui, opt_id, &opt.name);
+                        let opt_color = resolve_option_color(opt.color.as_deref());
+                        let dot_color = option_base_color(palette, &property.kind, &opt.name, opt_color);
                         ui.horizontal(|ui| {
-                            let (dot_rect, _) =
-                                ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                            ui.painter().circle_filled(dot_rect.center(), 4.0, pill_bg);
+                            ui.menu_button(
+                                RichText::new("●")
+                                    .font(FontId::proportional(14.0))
+                                    .color(dot_color),
+                                |ui| {
+                                    show_color_palette_grid(ui, palette, opt_color, |new_color| {
+                                        let mut reordered = property.options.clone();
+                                        if let Some(target) = reordered.get_mut(idx) {
+                                            target.color = new_color;
+                                            intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                                page,
+                                                property: property.id,
+                                                options: reordered,
+                                            }));
+                                        }
+                                    });
+                                },
+                            )
+                            .response
+                            .on_hover_text("Change color");
 
                             let resp = ui.add_enabled(
                                 !busy,
@@ -650,11 +778,11 @@ pub fn show_property_edit_panel(
                             let commit = resp.lost_focus()
                                 || (resp.has_focus()
                                     && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                            if commit && !edited_opt.trim().is_empty() && edited_opt.trim() != opt {
+                            if commit && !edited_opt.trim().is_empty() && edited_opt.trim() != opt.name {
                                 intents.push(Intent::Action(Action::RenamePagePropertyOption {
                                     page,
                                     property: property.id,
-                                    old_option: opt.clone(),
+                                    old_option: opt.name.clone(),
                                     new_option: edited_opt.trim().to_owned(),
                                 }));
                                 clear_draft(ui, opt_id);
@@ -695,7 +823,7 @@ pub fn show_property_edit_panel(
                                 intents.push(Intent::Action(Action::RemovePagePropertyOption {
                                     page,
                                     property: property.id,
-                                    option: opt.clone(),
+                                    option: opt.name.clone(),
                                 }));
                             }
                         });
@@ -723,8 +851,8 @@ pub fn show_property_edit_panel(
             if (enter || add_clicked) && !new_opt.trim().is_empty() {
                 let mut updated = property.options.clone();
                 for part in split_options(&new_opt) {
-                    if !updated.contains(&part) {
-                        updated.push(part);
+                    if !updated.iter().any(|o| o.name == part) {
+                        updated.push(PropertyOption::new(part));
                     }
                 }
                 intents.push(Intent::Action(Action::SetPagePropertyOptions {
@@ -849,10 +977,11 @@ fn show_single_option_editor(
     intents: &mut Vec<Intent>,
 ) {
     let is_empty = property.value.is_empty();
+    let current_color = resolve_option_color(property.option_color(&property.value));
     let (pill_bg, pill_border, pill_text) = if is_empty {
         (Color32::TRANSPARENT, Color32::TRANSPARENT, palette.muted)
     } else {
-        option_pill_colors(palette, &property.kind, &property.value)
+        option_pill_colors(palette, &property.kind, &property.value, current_color)
     };
     let display_label = if is_empty {
         "Empty".to_owned()
@@ -877,7 +1006,7 @@ fn show_single_option_editor(
                     .font(FontId::proportional(12.5))
                     .color(pill_text),
                 |ui| {
-                    ui.set_min_width(195.0);
+                    ui.set_min_width(205.0);
                     if !is_empty
                         && ui
                             .selectable_label(false, RichText::new("—  Clear").color(palette.muted))
@@ -887,24 +1016,49 @@ fn show_single_option_editor(
                         ui.close_menu();
                     }
                     for option in &property.options {
-                        let selected = property.value == *option;
+                        let selected = property.value == option.name;
+                        let opt_color = resolve_option_color(option.color.as_deref());
                         let (_, _, opt_text_col) =
-                            option_pill_colors(palette, &property.kind, option);
-                        let item_text = if property.kind == "status" {
-                            format!("●  {option}")
-                        } else {
-                            option.clone()
-                        };
-                        if ui
-                            .selectable_label(
-                                selected,
-                                RichText::new(item_text).color(opt_text_col),
+                            option_pill_colors(palette, &property.kind, &option.name, opt_color);
+                        let dot_color = option_base_color(palette, &property.kind, &option.name, opt_color);
+                        ui.horizontal(|ui| {
+                            ui.menu_button(
+                                RichText::new("●")
+                                    .font(FontId::proportional(13.0))
+                                    .color(dot_color),
+                                |ui| {
+                                    show_color_palette_grid(ui, palette, opt_color, |new_color| {
+                                        let mut opts = property.options.clone();
+                                        if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
+                                            target.color = new_color;
+                                            intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                                page,
+                                                property: property.id,
+                                                options: opts,
+                                            }));
+                                        }
+                                    });
+                                },
                             )
-                            .clicked()
-                        {
-                            set_value(intents, page, property.id, option.clone());
-                            ui.close_menu();
-                        }
+                            .response
+                            .on_hover_text("Change color");
+
+                            let item_text = if property.kind == "status" {
+                                format!("●  {}", option.name)
+                            } else {
+                                option.name.clone()
+                            };
+                            if ui
+                                .selectable_label(
+                                    selected,
+                                    RichText::new(item_text).color(opt_text_col),
+                                )
+                                .clicked()
+                            {
+                                set_value(intents, page, property.id, option.name.clone());
+                                ui.close_menu();
+                            }
+                        });
                     }
                     ui.separator();
                     let quick_id = ("page-prop-quick-opt", page, property.id);
@@ -921,8 +1075,8 @@ fn show_single_option_editor(
                         if (enter || ui.small_button("+").clicked()) && !new_opt.trim().is_empty() {
                             let trimmed = new_opt.trim().to_owned();
                             let mut opts = property.options.clone();
-                            if !opts.contains(&trimmed) {
-                                opts.push(trimmed.clone());
+                            if !opts.iter().any(|o| o.name == trimmed) {
+                                opts.push(PropertyOption::new(&trimmed));
                                 intents.push(Intent::Action(Action::SetPagePropertyOptions {
                                     page,
                                     property: property.id,
@@ -961,8 +1115,9 @@ fn show_multi_option_editor(
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
 
         for item in &selected {
+            let item_color = resolve_option_color(property.option_color(item));
             let (pill_bg, pill_border, pill_text) =
-                option_pill_colors(palette, "multi-select", item);
+                option_pill_colors(palette, "multi-select", item, item_color);
             let pill_btn = egui::Button::new(
                 RichText::new(format!("{item}  ✕"))
                     .font(FontId::proportional(12.0))
@@ -972,15 +1127,27 @@ fn show_multi_option_editor(
             .stroke(Stroke::new(1.0, pill_border))
             .corner_radius(4);
 
-            if ui
+            let resp = ui
                 .add_enabled(!busy, pill_btn)
-                .on_hover_text(format!("Remove '{item}'"))
-                .clicked()
-            {
+                .on_hover_text(format!("Click to remove '{item}' · Right-click to change color"));
+            if resp.clicked() {
                 let mut updated = selected.clone();
                 updated.retain(|candidate| candidate != item);
                 set_value(intents, page, property.id, updated.join("|"));
             }
+            resp.context_menu(|ui| {
+                show_color_palette_grid(ui, palette, item_color, |new_color| {
+                    let mut opts = property.options.clone();
+                    if let Some(target) = opts.iter_mut().find(|o| o.name == *item) {
+                        target.color = new_color;
+                        intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                            page,
+                            property: property.id,
+                            options: opts,
+                        }));
+                    }
+                });
+            });
         }
 
         let trigger_label = if selected.is_empty() { "Empty" } else { "+" };
@@ -1012,18 +1179,43 @@ fn show_multi_option_editor(
                             );
                         }
                         for option in &property.options {
-                            let mut checked = selected.contains(option);
-                            if ui.checkbox(&mut checked, option).changed() {
-                                let mut updated = selected.clone();
-                                if checked {
-                                    if !updated.contains(option) {
-                                        updated.push(option.clone());
+                            let mut checked = selected.contains(&option.name);
+                            let opt_color = resolve_option_color(option.color.as_deref());
+                            let dot_color = option_base_color(palette, "multi-select", &option.name, opt_color);
+                            ui.horizontal(|ui| {
+                                ui.menu_button(
+                                    RichText::new("●")
+                                        .font(FontId::proportional(13.0))
+                                        .color(dot_color),
+                                    |ui| {
+                                        show_color_palette_grid(ui, palette, opt_color, |new_color| {
+                                            let mut opts = property.options.clone();
+                                            if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
+                                                target.color = new_color;
+                                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                                    page,
+                                                    property: property.id,
+                                                    options: opts,
+                                                }));
+                                            }
+                                        });
+                                    },
+                                )
+                                .response
+                                .on_hover_text("Change color");
+
+                                if ui.checkbox(&mut checked, &option.name).changed() {
+                                    let mut updated = selected.clone();
+                                    if checked {
+                                        if !updated.contains(&option.name) {
+                                            updated.push(option.name.clone());
+                                        }
+                                    } else {
+                                        updated.retain(|value| value != &option.name);
                                     }
-                                } else {
-                                    updated.retain(|value| value != option);
+                                    set_value(intents, page, property.id, updated.join("|"));
                                 }
-                                set_value(intents, page, property.id, updated.join("|"));
-                            }
+                            });
                         }
                         ui.separator();
                         let quick_id = ("page-prop-multi-quick-opt", page, property.id);
@@ -1042,8 +1234,8 @@ fn show_multi_option_editor(
                             {
                                 let trimmed = new_opt.trim().to_owned();
                                 let mut opts = property.options.clone();
-                                if !opts.contains(&trimmed) {
-                                    opts.push(trimmed.clone());
+                                if !opts.iter().any(|o| o.name == trimmed) {
+                                    opts.push(PropertyOption::new(&trimmed));
                                     intents.push(Intent::Action(Action::SetPagePropertyOptions {
                                         page,
                                         property: property.id,
@@ -1436,7 +1628,7 @@ fn show_add_property_panel(
             let options = if kind == "status" {
                 DEFAULT_DATABASE_STATUS_OPTIONS
                     .iter()
-                    .map(|s| (*s).to_owned())
+                    .map(|s| PropertyOption::new(*s))
                     .collect()
             } else {
                 Vec::new()

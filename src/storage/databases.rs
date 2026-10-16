@@ -4,7 +4,8 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::domain::model::{
     DEFAULT_DATABASE_STATUS_OPTIONS, DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView,
-    DatabaseViewSettings, PROPERTY_TYPES, PageId,
+    DatabaseViewSettings, PROPERTY_TYPES, PageId, PropertyOption, parse_property_options,
+    serialize_property_options,
 };
 use crate::error::{Error, Result};
 
@@ -240,12 +241,7 @@ impl Repository {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     kind: row.get(2)?,
-                    options: options
-                        .lines()
-                        .map(str::trim)
-                        .filter(|option| !option.is_empty())
-                        .map(str::to_owned)
-                        .collect(),
+                    options: parse_property_options(&options),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -351,7 +347,7 @@ impl Repository {
         database: PageId,
         name: &str,
         kind: &str,
-        options: &[String],
+        options: &[PropertyOption],
     ) -> Result<()> {
         const KINDS: &[&str] = &[
             "text",
@@ -366,7 +362,7 @@ impl Repository {
         if name.is_empty() || name.len() > 80 || !KINDS.contains(&kind) {
             return Err(Error::Invalid("Invalid property name or type.".into()));
         }
-        let options = options.join("\n");
+        let options = serialize_property_options(options);
         self.connection.execute(
             "INSERT INTO database_properties(database_page_id,name,kind,options,position) VALUES(?1,?2,?3,?4,(SELECT COALESCE(MAX(position)+1,0) FROM database_properties WHERE database_page_id=?1))",
             params![database, name, kind, options],
@@ -402,22 +398,25 @@ impl Repository {
         Ok(())
     }
 
-    pub fn set_database_property_options(&self, id: i64, options: &[String]) -> Result<()> {
+    pub fn set_database_property_options(&self, id: i64, options: &[PropertyOption]) -> Result<()> {
         let mut normalized = Vec::new();
-        for value in options {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() && !normalized.iter().any(|existing: &String| existing == trimmed) {
-                normalized.push(trimmed.to_owned());
+        for opt in options {
+            let trimmed = opt.name.trim();
+            if !trimmed.is_empty() && !normalized.iter().any(|existing: &PropertyOption| existing.name == trimmed) {
+                normalized.push(PropertyOption {
+                    name: trimmed.to_owned(),
+                    color: opt.color.as_deref().map(|c| c.trim().to_ascii_uppercase()),
+                });
             }
         }
-        if normalized.len() > 100 || normalized.iter().any(|value| value.len() > 80) {
+        if normalized.len() > 100 || normalized.iter().any(|opt| opt.name.len() > 80) {
             return Err(Error::Invalid(
                 "You can add up to 100 options; each option must be 80 characters or fewer.".into(),
             ));
         }
         self.connection.execute(
             "UPDATE database_properties SET options=?1 WHERE id=?2",
-            params![normalized.join("\n"), id],
+            params![serialize_property_options(&normalized), id],
         )?;
         Ok(())
     }
@@ -441,26 +440,21 @@ impl Repository {
             [id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let mut options: Vec<String> = raw_options
-            .lines()
-            .map(str::trim)
-            .filter(|opt| !opt.is_empty())
-            .map(str::to_owned)
-            .collect();
-        if let Some(pos) = options.iter().position(|opt| opt == old_option) {
-            options[pos] = new_option.to_owned();
-        } else if !options.iter().any(|opt| opt == new_option) {
-            options.push(new_option.to_owned());
+        let mut options = parse_property_options(&raw_options);
+        if let Some(pos) = options.iter().position(|opt| opt.name == old_option) {
+            options[pos].name = new_option.to_owned();
+        } else if !options.iter().any(|opt| opt.name == new_option) {
+            options.push(PropertyOption::new(new_option));
         }
         let mut deduped = Vec::new();
         for opt in options {
-            if !deduped.contains(&opt) {
+            if !deduped.iter().any(|existing: &PropertyOption| existing.name == opt.name) {
                 deduped.push(opt);
             }
         }
         transaction.execute(
             "UPDATE database_properties SET options=?1 WHERE id=?2",
-            params![deduped.join("\n"), id],
+            params![serialize_property_options(&deduped), id],
         )?;
         if old_option != new_option {
             if kind == "multi-select" {
@@ -508,15 +502,11 @@ impl Repository {
             [id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let options: Vec<String> = raw_options
-            .lines()
-            .map(str::trim)
-            .filter(|opt| !opt.is_empty() && *opt != option_to_remove)
-            .map(str::to_owned)
-            .collect();
+        let mut options = parse_property_options(&raw_options);
+        options.retain(|opt| opt.name != option_to_remove);
         transaction.execute(
             "UPDATE database_properties SET options=?1 WHERE id=?2",
-            params![options.join("\n"), id],
+            params![serialize_property_options(&options), id],
         )?;
         if kind == "multi-select" {
             let mut stmt = transaction.prepare(
@@ -724,12 +714,21 @@ pub(crate) fn validate_property_value(kind: &str, raw_options: &str, value: &str
         "date" => !value.is_empty() && !is_iso_date(value),
         "checkbox" => !matches!(value, "true" | "false"),
         "select" | "status" => {
-            !value.is_empty() && !raw_options.lines().any(|option| option.trim() == value)
+            !value.is_empty()
+                && !raw_options
+                    .lines()
+                    .filter_map(PropertyOption::parse)
+                    .any(|opt| opt.name == value)
         }
         "multi-select" => value
             .split('|')
             .filter(|option| !option.is_empty())
-            .any(|value| !raw_options.lines().any(|option| option.trim() == value)),
+            .any(|val| {
+                !raw_options
+                    .lines()
+                    .filter_map(PropertyOption::parse)
+                    .any(|opt| opt.name == val)
+            }),
         _ => false,
     };
     if invalid {

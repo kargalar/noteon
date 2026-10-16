@@ -176,12 +176,34 @@ def media_paths_from_json(content: str) -> set[str]:
 
 def normalize_property_value(kind: str, raw: str) -> str:
     value = json_value(raw, raw)
-    if kind == "multi-select" and isinstance(value, list):
-        return " | ".join(str(item) for item in value)
-    if kind == "date" and isinstance(value, dict):
-        start = value.get("start", "")
-        end = value.get("end", "")
-        return f"{start} – {end}" if end else str(start)
+    if kind == "multi-select":
+        if isinstance(value, list):
+            return "|".join(str(item) for item in value)
+        if isinstance(value, str):
+            import re
+            return "|".join(t.strip() for t in re.split(r'[,|]', value) if t.strip())
+    if kind == "date":
+        if isinstance(value, dict):
+            start = value.get("start", "")
+            return str(start).strip()
+        val = str(value).strip()
+        if "–" in val:
+            return val.split("–")[0].strip()
+        if " - " in val:
+            return val.split(" - ")[0].strip()
+        return val
+    if kind == "checkbox":
+        lv = str(value).strip().lower()
+        return "true" if lv in {"yes", "true", "evet", "1"} else "false"
+    if kind == "number":
+        nv = str(value).replace(',', '.').strip()
+        if nv.lower() in {'not rated', 'n/a', 'none', '-', 'yok'}:
+            return ""
+        try:
+            float(nv)
+            return nv
+        except ValueError:
+            return ""
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, bool):

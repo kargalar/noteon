@@ -1,6 +1,9 @@
 use rusqlite::{OptionalExtension, params};
 
-use crate::domain::model::{PROPERTY_TYPES, PageId, PageProperty};
+use crate::domain::model::{
+    DEFAULT_DATABASE_STATUS_OPTIONS, PROPERTY_TYPES, PageId, PageProperty, PropertyOption,
+    parse_property_options, serialize_property_options,
+};
 use crate::error::{Error, Result};
 
 use super::Repository;
@@ -20,12 +23,7 @@ impl Repository {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     kind: row.get(2)?,
-                    options: options
-                        .lines()
-                        .map(str::trim)
-                        .filter(|option| !option.is_empty())
-                        .map(str::to_owned)
-                        .collect(),
+                    options: parse_property_options(&options),
                     value: row.get(4)?,
                 })
             })?
@@ -37,21 +35,21 @@ impl Repository {
         page: PageId,
         name: &str,
         kind: &str,
-        options: &[String],
+        options: &[PropertyOption],
     ) -> Result<()> {
         let name = validate_property_name(name)?;
         validate_property_kind(kind)?;
         let mut options = normalize_options(options)?;
         if kind == "status" && options.is_empty() {
-            options = crate::domain::model::DEFAULT_DATABASE_STATUS_OPTIONS
+            options = DEFAULT_DATABASE_STATUS_OPTIONS
                 .iter()
-                .map(|s| (*s).to_owned())
+                .map(|s| PropertyOption::new(*s))
                 .collect();
         }
         self.connection.execute(
             "INSERT INTO custom_page_properties(page_id,name,kind,options,position) \
              VALUES(?1,?2,?3,?4,(SELECT COALESCE(MAX(position)+1,0) FROM custom_page_properties WHERE page_id=?1))",
-            params![page, name, kind, options.join("\n")],
+            params![page, name, kind, serialize_property_options(&options)],
         )?;
         Ok(())
     }
@@ -110,13 +108,13 @@ impl Repository {
         &self,
         page: PageId,
         property: i64,
-        options: &[String],
+        options: &[PropertyOption],
     ) -> Result<()> {
         let options = normalize_options(options)?;
         ensure_property_exists(self, page, property)?;
         self.connection.execute(
             "UPDATE custom_page_properties SET options=?1 WHERE page_id=?2 AND id=?3",
-            params![options.join("\n"), page, property],
+            params![serialize_property_options(&options), page, property],
         )?;
         Ok(())
     }
@@ -146,26 +144,21 @@ impl Repository {
         let Some((kind, raw_options)) = definition else {
             return Err(Error::Invalid("Page property not found.".into()));
         };
-        let mut options: Vec<String> = raw_options
-            .lines()
-            .map(str::trim)
-            .filter(|opt| !opt.is_empty())
-            .map(str::to_owned)
-            .collect();
-        if let Some(pos) = options.iter().position(|opt| opt == old_option) {
-            options[pos] = new_option.to_owned();
-        } else if !options.iter().any(|opt| opt == new_option) {
-            options.push(new_option.to_owned());
+        let mut options = parse_property_options(&raw_options);
+        if let Some(pos) = options.iter().position(|opt| opt.name == old_option) {
+            options[pos].name = new_option.to_owned();
+        } else if !options.iter().any(|opt| opt.name == new_option) {
+            options.push(PropertyOption::new(new_option));
         }
         let mut deduped = Vec::new();
         for opt in options {
-            if !deduped.contains(&opt) {
+            if !deduped.iter().any(|existing: &PropertyOption| existing.name == opt.name) {
                 deduped.push(opt);
             }
         }
         transaction.execute(
             "UPDATE custom_page_properties SET options=?1 WHERE page_id=?2 AND id=?3",
-            params![deduped.join("\n"), page, property],
+            params![serialize_property_options(&deduped), page, property],
         )?;
         if old_option != new_option {
             let current_val: Option<String> = transaction
@@ -221,15 +214,11 @@ impl Repository {
         let Some((kind, raw_options)) = definition else {
             return Err(Error::Invalid("Page property not found.".into()));
         };
-        let options: Vec<String> = raw_options
-            .lines()
-            .map(str::trim)
-            .filter(|opt| !opt.is_empty() && *opt != option_to_remove)
-            .map(str::to_owned)
-            .collect();
+        let mut options = parse_property_options(&raw_options);
+        options.retain(|opt| opt.name != option_to_remove);
         transaction.execute(
             "UPDATE custom_page_properties SET options=?1 WHERE page_id=?2 AND id=?3",
-            params![options.join("\n"), page, property],
+            params![serialize_property_options(&options), page, property],
         )?;
         let current_val: Option<String> = transaction
             .query_row(
@@ -345,15 +334,18 @@ fn validate_property_kind(kind: &str) -> Result<()> {
     }
 }
 
-fn normalize_options(options: &[String]) -> Result<Vec<String>> {
+fn normalize_options(options: &[PropertyOption]) -> Result<Vec<PropertyOption>> {
     let mut normalized = Vec::new();
-    for value in options {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() && !normalized.iter().any(|existing| existing == trimmed) {
-            normalized.push(trimmed.to_owned());
+    for opt in options {
+        let trimmed = opt.name.trim();
+        if !trimmed.is_empty() && !normalized.iter().any(|existing: &PropertyOption| existing.name == trimmed) {
+            normalized.push(PropertyOption {
+                name: trimmed.to_owned(),
+                color: opt.color.as_deref().map(|c| c.trim().to_ascii_uppercase()),
+            });
         }
     }
-    if normalized.len() > 100 || normalized.iter().any(|value| value.len() > 80) {
+    if normalized.len() > 100 || normalized.iter().any(|opt| opt.name.len() > 80) {
         return Err(Error::Invalid(
             "You can add up to 100 options; each option must be 80 characters or fewer.".into(),
         ));

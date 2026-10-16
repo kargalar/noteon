@@ -7,7 +7,7 @@ use eframe::egui;
 use crate::config::{BLOCK_BATCH_SIZE, SettingKey};
 use crate::domain::model::{
     Block, BlockId, BlockKind, BulkBlockStyleOp, DatabaseData, DatabaseView, DatabaseViewSettings,
-    Document, DropPlacement, Page, PageId, SaveBatch, SearchHit, TextStyleRange,
+    Document, DropPlacement, Page, PageId, PropertyOption, SaveBatch, SearchHit, TextStyleRange,
 };
 use crate::error::{Error, Result};
 use crate::storage::Repository;
@@ -118,7 +118,7 @@ pub enum Action {
         database: PageId,
         name: String,
         kind: String,
-        options: Vec<String>,
+        options: Vec<PropertyOption>,
     },
     RenameDatabaseProperty {
         property: i64,
@@ -130,7 +130,7 @@ pub enum Action {
     },
     SetDatabasePropertyOptions {
         property: i64,
-        options: Vec<String>,
+        options: Vec<PropertyOption>,
     },
     RenameDatabasePropertyOption {
         property: i64,
@@ -155,7 +155,7 @@ pub enum Action {
         page: PageId,
         name: String,
         kind: String,
-        options: Vec<String>,
+        options: Vec<PropertyOption>,
     },
     RenamePageProperty {
         page: PageId,
@@ -170,7 +170,7 @@ pub enum Action {
     SetPagePropertyOptions {
         page: PageId,
         property: i64,
-        options: Vec<String>,
+        options: Vec<PropertyOption>,
     },
     RenamePagePropertyOption {
         page: PageId,

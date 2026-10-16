@@ -83,9 +83,9 @@ fn property_row(
         }));
     }
 
-    property_value_editor(ui, page, property, busy, intents);
-    ui.menu_button("···", |ui| {
-        ui.label("Type");
+    let open_edit_menu = |ui: &mut Ui, intents: &mut Vec<Intent>| {
+        ui.set_min_width(210.0);
+        ui.label(RichText::new("Type").small().color(palette.muted));
         for (kind, label) in PROPERTY_TYPES {
             if ui.selectable_label(property.kind == kind, label).clicked() {
                 intents.push(Intent::Action(Action::SetPagePropertyType {
@@ -98,19 +98,68 @@ fn property_row(
         }
         if matches!(property.kind.as_str(), "select" | "status" | "multi-select") {
             ui.separator();
-            let options_id = ("property-options", page, property.id);
-            let mut options = read_draft(ui, options_id, &property.options.join(", "));
-            ui.label("Options (comma-separated)");
-            let response = ui.text_edit_singleline(&mut options);
-            save_draft(ui, options_id, &options, response.changed());
-            if ui.button("Save options").clicked() {
-                intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                    page,
-                    property: property.id,
-                    options: split_options(&options),
-                }));
-                ui.close_menu();
+            ui.label(RichText::new("Options").small().color(palette.muted));
+            for (idx, opt) in property.options.iter().enumerate() {
+                let opt_id = ("page-prop-opt-edit", page, property.id, idx, opt);
+                let mut edited_opt = read_draft(ui, opt_id, opt);
+                ui.horizontal(|ui| {
+                    let resp = ui.add_enabled(
+                        !busy,
+                        egui::TextEdit::singleline(&mut edited_opt).desired_width(135.0),
+                    );
+                    save_draft(ui, opt_id, &edited_opt, resp.changed());
+                    let commit = resp.lost_focus()
+                        || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    if commit && !edited_opt.trim().is_empty() && edited_opt.trim() != opt {
+                        let mut updated = property.options.clone();
+                        updated[idx] = edited_opt.trim().to_owned();
+                        intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                            page,
+                            property: property.id,
+                            options: updated,
+                        }));
+                    }
+                    if ui
+                        .small_button(RichText::new("✕").color(palette.danger))
+                        .clicked()
+                    {
+                        let mut updated = property.options.clone();
+                        updated.remove(idx);
+                        intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                            page,
+                            property: property.id,
+                            options: updated,
+                        }));
+                    }
+                });
             }
+            let new_opt_id = ("page-prop-new-opt", page, property.id);
+            let mut new_opt = read_draft(ui, new_opt_id, "");
+            ui.horizontal(|ui| {
+                let resp = ui.add_enabled(
+                    !busy,
+                    egui::TextEdit::singleline(&mut new_opt)
+                        .hint_text("New option…")
+                        .desired_width(135.0),
+                );
+                save_draft(ui, new_opt_id, &new_opt, resp.changed());
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (enter || ui.small_button("+ Add").clicked()) && !new_opt.trim().is_empty() {
+                    let mut updated = property.options.clone();
+                    for part in split_options(&new_opt) {
+                        if !updated.contains(&part) {
+                            updated.push(part);
+                        }
+                    }
+                    intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                        page,
+                        property: property.id,
+                        options: updated,
+                    }));
+                    let id = ui.id().with(new_opt_id);
+                    ui.ctx().data_mut(|d| d.remove::<String>(id));
+                }
+            });
         }
         ui.separator();
         if ui
@@ -123,7 +172,11 @@ fn property_row(
             }));
             ui.close_menu();
         }
-    });
+    };
+
+    name_response.context_menu(|ui| open_edit_menu(ui, intents));
+    property_value_editor(ui, page, property, busy, intents);
+    ui.menu_button("···", |ui| open_edit_menu(ui, intents));
 }
 
 fn property_value_editor(
@@ -209,7 +262,7 @@ fn property_value_editor(
             let hint = if property.kind == "number" {
                 "Number"
             } else if property.kind == "date" {
-                "YYYY-AA-GG"
+                "YYYY-MM-DD"
             } else {
                 "Value"
             };
@@ -269,7 +322,7 @@ fn add_property_button(
             .ctx()
             .data(|data| data.get_temp::<String>(name_id))
             .unwrap_or_default();
-        ui.label("Ad");
+        ui.label("Name");
         if ui.text_edit_singleline(&mut name).changed() {
             ui.ctx()
                 .data_mut(|data| data.insert_temp(name_id, name.clone()));
@@ -294,7 +347,7 @@ fn add_property_button(
             .data(|data| data.get_temp::<String>(options_id))
             .unwrap_or_default();
         if matches!(kind.as_str(), "select" | "status" | "multi-select") {
-            ui.label("Options (comma-separated)");
+            ui.label("Options (comma-separated, optional)");
             if ui.text_edit_singleline(&mut options).changed() {
                 ui.ctx()
                     .data_mut(|data| data.insert_temp(options_id, options.clone()));
@@ -359,5 +412,5 @@ fn type_label(kind: &str) -> &'static str {
     PROPERTY_TYPES
         .iter()
         .find_map(|(candidate, label)| (*candidate == kind).then_some(*label))
-        .unwrap_or("Metin")
+        .unwrap_or("Text")
 }

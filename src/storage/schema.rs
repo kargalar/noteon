@@ -136,7 +136,12 @@ pub fn migrate(connection: &Connection) -> Result<()> {
         connection.pragma_update(None, "user_version", 10)?;
     }
     if version <= 10 {
-        if !has_column(connection, "blocks", "text_styles")? {
+        let has_blocks: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_blocks && !has_column(connection, "blocks", "text_styles")? {
             connection.execute_batch(
                 "ALTER TABLE blocks ADD COLUMN text_styles TEXT NOT NULL DEFAULT '[]';",
             )?;

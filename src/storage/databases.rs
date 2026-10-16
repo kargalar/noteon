@@ -122,7 +122,7 @@ impl Repository {
         let page_id = transaction.last_insert_rowid();
         transaction.execute("INSERT INTO databases(page_id) VALUES(?1)", [page_id])?;
         transaction.execute(
-            "INSERT INTO database_properties(database_page_id,name,kind,options,position) VALUES(?1,'Durum','status',?2,0)",
+            "INSERT INTO database_properties(database_page_id,name,kind,options,position) VALUES(?1,'Status','status',?2,0)",
             params![page_id, DEFAULT_DATABASE_STATUS_OPTIONS.join("\n")],
         )?;
         transaction.execute(
@@ -134,6 +134,14 @@ impl Repository {
     }
 
     pub fn create_database_record(&mut self, database: PageId) -> Result<PageId> {
+        self.create_database_record_with_property(database, None)
+    }
+
+    pub fn create_database_record_with_property(
+        &mut self,
+        database: PageId,
+        initial_property: Option<(i64, &str)>,
+    ) -> Result<PageId> {
         let transaction = self.connection.transaction()?;
         let valid: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM databases WHERE page_id=?1) AND EXISTS(SELECT 1 FROM pages WHERE id=?1 AND trashed_by IS NULL)",
@@ -152,8 +160,49 @@ impl Repository {
             "INSERT INTO blocks(page_id,position) VALUES(?1,0)",
             [page_id],
         )?;
+        if let Some((property, value)) = initial_property
+            && !value.is_empty()
+        {
+            let definition: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT kind,options FROM database_properties WHERE database_page_id=?1 AND id=?2",
+                    params![database, property],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((kind, options)) = definition {
+                validate_property_value(&kind, &options, value)?;
+                transaction.execute(
+                    "INSERT INTO page_property_values(page_id,property_id,value) VALUES(?1,?2,?3)",
+                    params![page_id, property, value],
+                )?;
+            }
+        }
         transaction.commit()?;
         Ok(page_id)
+    }
+
+    pub fn move_database_record(
+        &mut self,
+        record: PageId,
+        property: i64,
+        value: &str,
+        target: Option<(PageId, bool)>,
+    ) -> Result<Option<PageId>> {
+        let parent_id = self.page(record)?.parent_id;
+        self.set_database_property(record, property, value)?;
+        if let Some((target_id, after)) = target
+            && target_id != record
+        {
+            self.reorder_page(record, target_id, after)?;
+            if let Some(database) = parent_id {
+                self.connection.execute(
+                    "UPDATE databases SET sort_key='manual',sort_descending=0 WHERE page_id=?1",
+                    [database],
+                )?;
+            }
+        }
+        Ok(parent_id)
     }
 
     pub fn database(&self, page_id: PageId) -> Result<DatabaseData> {
@@ -183,13 +232,13 @@ impl Repository {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut page_statement = self.connection.prepare_cached(&format!(
-            "SELECT {PAGE_COLUMNS},(SELECT content FROM blocks WHERE page_id=pages.id AND kind!='divider' ORDER BY position LIMIT 1) FROM pages WHERE parent_id=?1 AND trashed_by IS NULL"
+            "SELECT {PAGE_COLUMNS},(SELECT content FROM blocks WHERE page_id=pages.id AND kind!='divider' ORDER BY position LIMIT 1) FROM pages WHERE parent_id=?1 AND trashed_by IS NULL ORDER BY sort_order,id"
         ))?;
         let pages = page_statement
             .query_map([page_id], |row| {
                 Ok((
                     read_page(row)?,
-                    row.get::<_, Option<String>>(12)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(16)?.unwrap_or_default(),
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -225,16 +274,25 @@ impl Repository {
             .is_some_and(|property| property.kind == "number");
         rows.sort_by(|left, right| {
             let ordering = match sort_key.as_str() {
+                "manual" => left
+                    .page
+                    .sort_order
+                    .cmp(&right.page.sort_order)
+                    .then_with(|| left.page.id.cmp(&right.page.id)),
                 "title" => left
                     .page
                     .display_title()
                     .to_lowercase()
                     .cmp(&right.page.display_title().to_lowercase()),
                 "priority" => left.page.priority.cmp(&right.page.priority),
-                "created_at" => left.page.created_at.cmp(&right.page.created_at),
+                "created_at" => left
+                    .page
+                    .created_at
+                    .cmp(&right.page.created_at)
+                    .then_with(|| left.page.sort_order.cmp(&right.page.sort_order)),
                 key => {
                     let property = key.parse::<i64>().unwrap_or_default();
-                    if numeric_sort {
+                    let cmp = if numeric_sort {
                         compare_optional_numbers(
                             left.values
                                 .get(&property)
@@ -246,7 +304,8 @@ impl Repository {
                         )
                     } else {
                         left.values.get(&property).cmp(&right.values.get(&property))
-                    }
+                    };
+                    cmp.then_with(|| left.page.sort_order.cmp(&right.page.sort_order))
                 }
             };
             if sort_descending {
@@ -325,20 +384,148 @@ impl Repository {
     }
 
     pub fn set_database_property_options(&self, id: i64, options: &[String]) -> Result<()> {
-        let options: Vec<_> = options
-            .iter()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .collect();
-        if options.len() > 100 || options.iter().any(|value| value.len() > 80) {
+        let mut normalized = Vec::new();
+        for value in options {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() && !normalized.iter().any(|existing: &String| existing == trimmed) {
+                normalized.push(trimmed.to_owned());
+            }
+        }
+        if normalized.len() > 100 || normalized.iter().any(|value| value.len() > 80) {
             return Err(Error::Invalid(
                 "You can add up to 100 options; each option must be 80 characters or fewer.".into(),
             ));
         }
         self.connection.execute(
             "UPDATE database_properties SET options=?1 WHERE id=?2",
+            params![normalized.join("\n"), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn rename_database_property_option(
+        &mut self,
+        id: i64,
+        old_option: &str,
+        new_option: &str,
+    ) -> Result<()> {
+        let new_option = new_option.trim();
+        let old_option = old_option.trim();
+        if new_option.is_empty() || new_option.len() > 80 {
+            return Err(Error::Invalid(
+                "Option names must be 1–80 characters long.".into(),
+            ));
+        }
+        let transaction = self.connection.transaction()?;
+        let (kind, raw_options): (String, String) = transaction.query_row(
+            "SELECT kind,options FROM database_properties WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut options: Vec<String> = raw_options
+            .lines()
+            .map(str::trim)
+            .filter(|opt| !opt.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if let Some(pos) = options.iter().position(|opt| opt == old_option) {
+            options[pos] = new_option.to_owned();
+        } else if !options.iter().any(|opt| opt == new_option) {
+            options.push(new_option.to_owned());
+        }
+        let mut deduped = Vec::new();
+        for opt in options {
+            if !deduped.contains(&opt) {
+                deduped.push(opt);
+            }
+        }
+        transaction.execute(
+            "UPDATE database_properties SET options=?1 WHERE id=?2",
+            params![deduped.join("\n"), id],
+        )?;
+        if old_option != new_option {
+            if kind == "multi-select" {
+                let mut stmt = transaction.prepare(
+                    "SELECT page_id,value FROM page_property_values WHERE property_id=?1 AND value != ''",
+                )?;
+                let rows = stmt
+                    .query_map([id], |row| {
+                        Ok((row.get::<_, PageId>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                drop(stmt);
+                for (page_id, val) in rows {
+                    let parts: Vec<&str> = val.split('|').filter(|s| !s.is_empty()).collect();
+                    if parts.contains(&old_option) {
+                        let mut updated_parts = Vec::new();
+                        for part in parts {
+                            let target = if part == old_option { new_option } else { part };
+                            if !updated_parts.contains(&target) {
+                                updated_parts.push(target);
+                            }
+                        }
+                        transaction.execute(
+                            "UPDATE page_property_values SET value=?1 WHERE page_id=?2 AND property_id=?3",
+                            params![updated_parts.join("|"), page_id, id],
+                        )?;
+                    }
+                }
+            } else {
+                transaction.execute(
+                    "UPDATE page_property_values SET value=?1 WHERE property_id=?2 AND value=?3",
+                    params![new_option, id, old_option],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_database_property_option(&mut self, id: i64, option_to_remove: &str) -> Result<()> {
+        let option_to_remove = option_to_remove.trim();
+        let transaction = self.connection.transaction()?;
+        let (kind, raw_options): (String, String) = transaction.query_row(
+            "SELECT kind,options FROM database_properties WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let options: Vec<String> = raw_options
+            .lines()
+            .map(str::trim)
+            .filter(|opt| !opt.is_empty() && *opt != option_to_remove)
+            .map(str::to_owned)
+            .collect();
+        transaction.execute(
+            "UPDATE database_properties SET options=?1 WHERE id=?2",
             params![options.join("\n"), id],
         )?;
+        if kind == "multi-select" {
+            let mut stmt = transaction.prepare(
+                "SELECT page_id,value FROM page_property_values WHERE property_id=?1 AND value != ''",
+            )?;
+            let rows = stmt
+                .query_map([id], |row| {
+                    Ok((row.get::<_, PageId>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            for (page_id, val) in rows {
+                let parts: Vec<&str> = val
+                    .split('|')
+                    .filter(|s| !s.is_empty() && *s != option_to_remove)
+                    .collect();
+                transaction.execute(
+                    "UPDATE page_property_values SET value=?1 WHERE page_id=?2 AND property_id=?3",
+                    params![parts.join("|"), page_id, id],
+                )?;
+            }
+        } else {
+            transaction.execute(
+                "UPDATE page_property_values SET value='' WHERE property_id=?1 AND value=?2",
+                params![id, option_to_remove],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -433,7 +620,7 @@ impl Repository {
     }
 
     pub fn set_database_sort(&self, page: PageId, key: &str, descending: bool) -> Result<()> {
-        let valid = matches!(key, "title" | "priority" | "created_at")
+        let valid = matches!(key, "title" | "priority" | "created_at" | "manual")
             || self.connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM database_properties WHERE database_page_id=?1 AND id=?2)",
                 params![page, key.parse::<i64>().unwrap_or_default()],

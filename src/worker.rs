@@ -67,6 +67,17 @@ pub enum Action {
         replace_block: Option<i64>,
     },
     CreateDatabaseRecord(PageId),
+    CreateDatabaseRecordWithProperty {
+        database: PageId,
+        property: i64,
+        value: String,
+    },
+    MoveDatabaseRecord {
+        record: PageId,
+        property: i64,
+        value: String,
+        target: Option<(PageId, bool)>,
+    },
     AddDatabaseProperty {
         database: PageId,
         name: String,
@@ -84,6 +95,15 @@ pub enum Action {
     SetDatabasePropertyOptions {
         property: i64,
         options: Vec<String>,
+    },
+    RenameDatabasePropertyOption {
+        property: i64,
+        old_option: String,
+        new_option: String,
+    },
+    RemoveDatabasePropertyOption {
+        property: i64,
+        option: String,
     },
     DeleteDatabaseProperty(i64),
     SetDatabaseProperty {
@@ -416,6 +436,24 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
             refresh_database = Some(database);
             None
         }
+        Action::CreateDatabaseRecordWithProperty {
+            database,
+            property,
+            value,
+        } => {
+            repository.create_database_record_with_property(database, Some((property, &value)))?;
+            refresh_database = Some(database);
+            None
+        }
+        Action::MoveDatabaseRecord {
+            record,
+            property,
+            value,
+            target,
+        } => {
+            refresh_database = repository.move_database_record(record, property, &value, target)?;
+            None
+        }
         Action::AddDatabaseProperty {
             database,
             name,
@@ -439,6 +477,20 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
         Action::SetDatabasePropertyOptions { property, options } => {
             refresh_database = repository.database_property_owner(property)?;
             repository.set_database_property_options(property, &options)?;
+            None
+        }
+        Action::RenameDatabasePropertyOption {
+            property,
+            old_option,
+            new_option,
+        } => {
+            refresh_database = repository.database_property_owner(property)?;
+            repository.rename_database_property_option(property, &old_option, &new_option)?;
+            None
+        }
+        Action::RemoveDatabasePropertyOption { property, option } => {
+            refresh_database = repository.database_property_owner(property)?;
+            repository.remove_database_property_option(property, &option)?;
             None
         }
         Action::DeleteDatabaseProperty(property) => {

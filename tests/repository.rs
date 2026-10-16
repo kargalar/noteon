@@ -661,3 +661,66 @@ fn virtual_layout_handles_large_document_without_linear_row_lookup() {
     assert_eq!(layout.total(), 3_600_036.0);
     assert_eq!(layout.row_at(layout.top(99_000)), 99_000);
 }
+
+#[test]
+fn database_options_rename_remove_and_board_reorder_persist() {
+    let (_directory, mut repository) = database();
+    let db_page = repository.create_database(None).unwrap();
+    repository
+        .add_database_property(db_page, "Tags", "multi-select", &[])
+        .unwrap();
+    let data = repository.database(db_page).unwrap();
+    let tags_prop = data
+        .properties
+        .iter()
+        .find(|p| p.name == "Tags")
+        .unwrap()
+        .clone();
+    assert!(tags_prop.options.is_empty());
+
+    repository
+        .set_database_property_options(
+            tags_prop.id,
+            &["Alpha".to_owned(), "Beta".to_owned(), "Gamma".to_owned()],
+        )
+        .unwrap();
+
+    let rec1 = repository.create_database_record(db_page).unwrap();
+    let rec2 = repository.create_database_record(db_page).unwrap();
+    repository
+        .set_database_property(rec1, tags_prop.id, "Alpha|Beta")
+        .unwrap();
+    repository
+        .set_database_property(rec2, tags_prop.id, "Beta|Gamma")
+        .unwrap();
+
+    repository
+        .rename_database_property_option(tags_prop.id, "Beta", "Beta2")
+        .unwrap();
+    let data = repository.database(db_page).unwrap();
+    let r1 = data.rows.iter().find(|r| r.page.id == rec1).unwrap();
+    assert_eq!(r1.values.get(&tags_prop.id).unwrap(), "Alpha|Beta2");
+
+    repository
+        .remove_database_property_option(tags_prop.id, "Alpha")
+        .unwrap();
+    let data = repository.database(db_page).unwrap();
+    let r1 = data.rows.iter().find(|r| r.page.id == rec1).unwrap();
+    assert_eq!(r1.values.get(&tags_prop.id).unwrap(), "Beta2");
+
+    let status_prop = data
+        .properties
+        .iter()
+        .find(|p| p.kind == "status")
+        .unwrap()
+        .clone();
+    repository
+        .move_database_record(rec2, status_prop.id, "Done", Some((rec1, false)))
+        .unwrap();
+    let data = repository.database(db_page).unwrap();
+    assert_eq!(data.sort_key, "manual");
+    assert_eq!(data.rows[0].page.id, rec2);
+    assert_eq!(data.rows[1].page.id, rec1);
+    assert_eq!(data.rows[0].values.get(&status_prop.id).unwrap(), "Done");
+}
+

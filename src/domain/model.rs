@@ -191,8 +191,8 @@ impl DatabaseView {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Table => "Tablo",
-            Self::Gallery => "Galeri",
+            Self::Table => "Table",
+            Self::Gallery => "Gallery",
             Self::Board => "Board",
         }
     }
@@ -229,6 +229,9 @@ pub struct DatabaseViewSettings {
     pub gallery_visible_properties: Option<Vec<i64>>,
     pub table_show_created_at: bool,
     pub table_visible_properties: Option<Vec<i64>>,
+    pub table_column_widths: std::collections::HashMap<i64, f32>,
+    pub table_name_width: Option<f32>,
+    pub table_created_width: Option<f32>,
     pub board_show_description: bool,
     pub board_visible_properties: Option<Vec<i64>>,
 }
@@ -243,6 +246,9 @@ impl Default for DatabaseViewSettings {
             gallery_visible_properties: None,
             table_show_created_at: true,
             table_visible_properties: None,
+            table_column_widths: std::collections::HashMap::new(),
+            table_name_width: None,
+            table_created_width: None,
             board_show_description: false,
             board_visible_properties: None,
         }

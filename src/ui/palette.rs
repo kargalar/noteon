@@ -18,16 +18,16 @@ impl Palette {
     pub fn new(dark: bool) -> Self {
         if dark {
             Self {
-                background: Color32::from_rgb(22, 24, 22),
-                sidebar: Color32::from_rgb(17, 19, 17),
-                text: Color32::from_rgb(228, 230, 220),
-                muted: Color32::from_rgb(146, 152, 140),
-                border: Color32::from_rgb(43, 47, 42),
-                accent: Color32::from_rgb(171, 197, 136),
-                accent_soft: Color32::from_rgb(43, 54, 38),
-                hover: Color32::from_rgb(33, 38, 32),
+                background: Color32::from_rgb(20, 20, 20),
+                sidebar: Color32::from_rgb(14, 14, 14),
+                text: Color32::from_rgb(230, 230, 230),
+                muted: Color32::from_rgb(140, 140, 140),
+                border: Color32::from_rgb(38, 38, 38),
+                accent: Color32::from_rgb(210, 210, 210),
+                accent_soft: Color32::from_rgb(45, 45, 45),
+                hover: Color32::from_rgb(32, 32, 32),
                 danger: Color32::from_rgb(232, 133, 124),
-                code: Color32::from_rgb(31, 35, 30),
+                code: Color32::from_rgb(28, 28, 28),
             }
         } else {
             Self {
@@ -58,7 +58,11 @@ impl Palette {
             Color32::BLACK
         };
         self.background = background;
-        self.sidebar = mix(background, surface, 0.035);
+        self.sidebar = mix(
+            background,
+            surface,
+            if light_foreground { 0.035 } else { 0.25 },
+        );
         self.text = contrast_palette.text;
         self.muted = contrast_palette.muted;
         self.danger = contrast_palette.danger;

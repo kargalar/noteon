@@ -396,6 +396,10 @@ impl NoteonApp {
 
     fn page_changed(&mut self, page: PageEdit) {
         self.sidebar.update_title(page.id, &page.title, &page.icon);
+        if let Some(database) = self.databases.get_mut(&page.id) {
+            database.title.clone_from(&page.title);
+            database.icon.clone_from(&page.icon);
+        }
         for database in self.databases.values_mut() {
             if let Some(row) = database.rows.iter_mut().find(|row| row.page.id == page.id) {
                 row.page.title.clone_from(&page.title);
@@ -457,7 +461,25 @@ impl NoteonApp {
                         self.loading = false;
                     }
                 }
-                Intent::Action(action) => self.action(action),
+                Intent::Action(action) => {
+                    if let Action::SetDatabaseRecordIcon { page, ref icon } = action {
+                        let current_title = self
+                            .sidebar
+                            .page(page)
+                            .map(|p| p.title.clone())
+                            .unwrap_or_default();
+                        self.sidebar.update_title(page, &current_title, icon);
+                        if let Some(database) = self.databases.get_mut(&page) {
+                            database.icon = icon.clone();
+                        }
+                        for database in self.databases.values_mut() {
+                            if let Some(row) = database.rows.iter_mut().find(|row| row.page.id == page) {
+                                row.page.icon = icon.clone();
+                            }
+                        }
+                    }
+                    self.action(action);
+                }
                 Intent::BlockChanged(block) => {
                     if block.position == 0 && block.kind != crate::domain::model::BlockKind::Divider
                     {
@@ -597,10 +619,15 @@ impl NoteonApp {
 
     fn shortcuts(&mut self, context: &egui::Context) {
         let mut intents = Vec::new();
+        let has_selected_blocks = self
+            .editors
+            .values()
+            .any(|editor| !editor.selected_blocks.is_empty());
         let deletable_page = if self.ready
             && !self.busy
             && !self.closing
             && !self.trash
+            && !has_selected_blocks
             && !context.wants_keyboard_input()
         {
             self.selected.filter(|id| {

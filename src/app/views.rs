@@ -339,7 +339,11 @@ fn show_window_chrome(
     active_page: Option<&crate::domain::model::Page>,
 ) {
     const HEIGHT: f32 = 38.0;
-    const CONTROL_WIDTH: f32 = 46.0;
+    const CONTROL_WIDTH: f32 = 34.0;
+    const CONTROL_HEIGHT: f32 = 28.0;
+    const CONTROL_SPACING: f32 = 4.0;
+    const CONTROL_RADIUS: f32 = 6.0;
+    const RIGHT_PADDING: f32 = 8.0;
 
     egui::TopBottomPanel::top("window-chrome")
         .exact_height(HEIGHT)
@@ -349,8 +353,8 @@ fn show_window_chrome(
                 .stroke(Stroke::new(1.0, palette.border)),
         )
         .show(context, |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add_space(12.0);
                 let (logo_rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), egui::Sense::hover());
                 ui.painter().rect_filled(logo_rect, 6.0, palette.accent);
@@ -364,7 +368,9 @@ fn show_window_chrome(
                 ui.add_space(8.0);
                 ui.label(RichText::new(config::APP_NAME).strong().color(palette.text));
 
-                let drag_width = (ui.available_width() - CONTROL_WIDTH * 3.0 - 12.0).max(0.0);
+                let controls_total_width =
+                    CONTROL_WIDTH * 3.0 + CONTROL_SPACING * 2.0 + RIGHT_PADDING;
+                let drag_width = (ui.available_width() - controls_total_width).max(0.0);
                 let (drag_rect, drag_response) =
                     ui.allocate_exact_size(vec2(drag_width, HEIGHT), egui::Sense::click_and_drag());
                 if drag_response.drag_started_by(egui::PointerButton::Primary) {
@@ -383,15 +389,28 @@ fn show_window_chrome(
                     );
                 }
 
-                if chrome_button(ui, "×", CONTROL_WIDTH, HEIGHT, palette, true).clicked() {
-                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                if chrome_button(
+                    ui,
+                    "−",
+                    CONTROL_WIDTH,
+                    CONTROL_HEIGHT,
+                    CONTROL_RADIUS,
+                    palette,
+                    false,
+                )
+                .clicked()
+                {
+                    context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
+                ui.add_space(CONTROL_SPACING);
+
                 let maximized = context.input(|input| input.viewport().maximized.unwrap_or(false));
                 if chrome_button(
                     ui,
                     if maximized { "❐" } else { "□" },
                     CONTROL_WIDTH,
-                    HEIGHT,
+                    CONTROL_HEIGHT,
+                    CONTROL_RADIUS,
                     palette,
                     false,
                 )
@@ -399,9 +418,22 @@ fn show_window_chrome(
                 {
                     toggle_maximized(context);
                 }
-                if chrome_button(ui, "−", CONTROL_WIDTH, HEIGHT, palette, false).clicked() {
-                    context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                ui.add_space(CONTROL_SPACING);
+
+                if chrome_button(
+                    ui,
+                    "×",
+                    CONTROL_WIDTH,
+                    CONTROL_HEIGHT,
+                    CONTROL_RADIUS,
+                    palette,
+                    true,
+                )
+                .clicked()
+                {
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+                ui.add_space(RIGHT_PADDING);
             });
         });
 }
@@ -411,6 +443,7 @@ fn chrome_button(
     icon: &str,
     width: f32,
     height: f32,
+    radius: f32,
     palette: Palette,
     close: bool,
 ) -> egui::Response {
@@ -418,7 +451,7 @@ fn chrome_button(
     if response.hovered() {
         ui.painter().rect_filled(
             rect,
-            0.0,
+            radius,
             if close { palette.danger } else { palette.hover },
         );
     }
@@ -426,7 +459,7 @@ fn chrome_button(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
-        egui::FontId::proportional(if close { 22.0 } else { 16.0 }),
+        egui::FontId::proportional(if close { 18.0 } else { 14.0 }),
         if close && response.hovered() {
             palette.background
         } else {

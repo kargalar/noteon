@@ -1,9 +1,9 @@
 use super::{DatabaseContext, Editor, block, header::Canvas};
-use crate::domain::model::{BlockKind, PageId};
+use crate::domain::model::{BlockId, BlockKind, BulkBlockStyleOp, InlineFontFamily, PageId};
 use crate::domain::virtual_layout::VirtualLayout;
 use crate::ui::{Intent, palette::Palette};
 use crate::worker::Action;
-use eframe::egui::{self, Rect, Sense, Ui, pos2, vec2};
+use eframe::egui::{self, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 struct RowDrawContext<'a, 'database> {
     viewport: Rect,
@@ -143,6 +143,7 @@ impl Editor {
     fn scroll_area(&mut self, page_id: PageId) -> egui::ScrollArea {
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt(("document", page_id))
+            .drag_to_scroll(false)
             .auto_shrink([false, false]);
         if let Some(position) = self.jump_to {
             let row = self
@@ -192,6 +193,8 @@ impl Editor {
         } else {
             (self.layout.row_at(viewport.max.y + 90.0) + 1).min(self.layout.len())
         };
+        let bulk_selection_active = !self.selected_blocks.is_empty() || self.marquee_active;
+        let mut visible_handles = Vec::new();
         for row_index in start..end {
             let row = self.visual_rows[row_index].clone();
             let top = self.layout.top(row_index);
@@ -220,10 +223,53 @@ impl Editor {
                     rect.min + vec2(x - rect.left(), 0.0),
                     vec2(block_width, rect.height()),
                 );
+                let block_id = document.outline[position].id;
+                let is_selected = self.selected_blocks.contains(&block_id);
+                visible_handles.push((
+                    block_id,
+                    Rect::from_min_size(block_rect.min, vec2(block::HANDLE_WIDTH - 3.0, 27.0)),
+                ));
+                if is_selected {
+                    let highlight_rect = block_rect.shrink2(vec2(1.0, 1.0));
+                    ui.painter().rect_filled(
+                        highlight_rect,
+                        6.0,
+                        Color32::from_rgba_unmultiplied(
+                            palette.accent.r(),
+                            palette.accent.g(),
+                            palette.accent.b(),
+                            34,
+                        ),
+                    );
+                    ui.painter().rect_stroke(
+                        highlight_rect,
+                        6.0,
+                        Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(
+                                palette.accent.r(),
+                                palette.accent.g(),
+                                palette.accent.b(),
+                                120,
+                            ),
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                }
                 if let Some(block) = self.cache.blocks.get_mut(&position) {
                     self.rendered_blocks += 1;
                     let focus = self.focus_position == Some(position);
-                    if block::show(ui, block_rect, block, focus, palette, widget_scope, intents) {
+                    if block::show(
+                        ui,
+                        block_rect,
+                        block,
+                        focus,
+                        is_selected,
+                        bulk_selection_active,
+                        palette,
+                        widget_scope,
+                        intents,
+                    ) {
                         self.cache.needs_measure.insert(position);
                     }
                     if block.kind == BlockKind::Database
@@ -231,9 +277,14 @@ impl Editor {
                     {
                         databases.visible.insert(database_id);
                         if let Some(database) = databases.databases.get_mut(&database_id) {
+                            let desired_h =
+                                crate::ui::database::desired_embedded_height(ui, database);
+                            if (self.layout.height(row_index) - desired_h).abs() > 1.0 {
+                                self.layout.set(row_index, desired_h);
+                            }
                             let database_rect = Rect::from_min_max(
                                 block_rect.min + vec2(block::HANDLE_WIDTH, 0.0),
-                                block_rect.max,
+                                pos2(block_rect.max.x, block_rect.min.y + desired_h),
                             );
                             ui.scope_builder(
                                 egui::UiBuilder::new().max_rect(database_rect),
@@ -241,7 +292,7 @@ impl Editor {
                                     ui.push_id(("embedded-database", block.id), |ui| {
                                         egui::Frame::NONE.show(ui, |ui| {
                                             ui.set_min_width(ui.available_width());
-                                            ui.set_min_height(block::DATABASE_BLOCK_HEIGHT - 16.0);
+                                            ui.set_min_height((desired_h - 16.0).max(120.0));
                                             crate::ui::database::show_embedded(
                                                 ui,
                                                 database,
@@ -356,10 +407,10 @@ impl Editor {
             .interact(
                 append_area,
                 ui.id().with(("append-block", page_id, widget_scope)),
-                Sense::click(),
+                Sense::click_and_drag(),
             )
             .on_hover_cursor(egui::CursorIcon::Text);
-        if append_response.clicked() {
+        if append_response.clicked() && !self.marquee_active && self.selected_blocks.is_empty() {
             intents.push(Intent::Action(Action::InsertBlock {
                 page: page_id,
                 position: document.outline.len(),
@@ -414,6 +465,577 @@ impl Editor {
         }
         for position in touched {
             self.cache.touch(position);
+        }
+        self.handle_marquee_and_bulk_selection(
+            ui,
+            origin,
+            document_width,
+            page_id,
+            generation,
+            widget_scope,
+            palette,
+            &visible_handles,
+            intents,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_marquee_and_bulk_selection(
+        &mut self,
+        ui: &mut Ui,
+        origin: Pos2,
+        document_width: f32,
+        page_id: PageId,
+        generation: u64,
+        widget_scope: Option<u64>,
+        palette: Palette,
+        visible_handles: &[(BlockId, Rect)],
+        intents: &mut Vec<Intent>,
+    ) {
+        let screen_viewport = ui.clip_rect();
+        let margin_bounds = Rect::from_min_max(
+            pos2(screen_viewport.min.x, (screen_viewport.min.y - 120.0).max(40.0)),
+            screen_viewport.max,
+        );
+        let bulk_menu_id = egui::Id::new(("bulk-block-menu", page_id, widget_scope));
+        let (
+            primary_pressed,
+            primary_down,
+            primary_released,
+            secondary_clicked,
+            pointer_pos,
+            additive_modifier,
+        ) = ui.input(|input| {
+            (
+                input.pointer.button_pressed(egui::PointerButton::Primary),
+                input.pointer.button_down(egui::PointerButton::Primary),
+                input.pointer.button_released(egui::PointerButton::Primary),
+                input.pointer.button_clicked(egui::PointerButton::Secondary),
+                input
+                    .pointer
+                    .interact_pos()
+                    .or_else(|| input.pointer.latest_pos()),
+                input.modifiers.shift || input.modifiers.command || input.modifiers.ctrl,
+            )
+        });
+
+        let pointer_inside_bulk_menu = pointer_pos.is_some_and(|pos| {
+            let inside_area = ui
+                .ctx()
+                .memory(|m| m.area_rect(bulk_menu_id))
+                .is_some_and(|r| r.expand(6.0).contains(pos));
+            let any_popup = ui.ctx().memory(|m| m.any_popup_open());
+            let top_layer = ui.ctx().memory(|m| m.layer_id_at(pos));
+            let inside_popup =
+                any_popup && top_layer.is_some_and(|l| l.order == egui::Order::Foreground);
+            inside_area || (self.bulk_menu_pos.is_some() && inside_popup)
+        });
+
+        if primary_pressed
+            && let Some(pos) = pointer_pos
+            && !pointer_inside_bulk_menu
+        {
+            self.bulk_menu_pos = None;
+            if margin_bounds.contains(pos) {
+                let on_selected_handle = !self.selected_blocks.is_empty()
+                    && visible_handles
+                        .iter()
+                        .any(|(id, rect)| self.selected_blocks.contains(id) && rect.contains(pos));
+                if on_selected_handle {
+                    self.bulk_menu_pos = Some(pos);
+                } else {
+                    let on_any_handle = visible_handles.iter().any(|(_, rect)| rect.contains(pos));
+                    let in_left_margin = pos.x < origin.x + block::HANDLE_WIDTH && !on_any_handle;
+                    let in_right_margin = pos.x > origin.x + document_width - 4.0;
+                    let in_vertical_margin = screen_viewport.contains(pos)
+                        && (pos.y < origin.y || pos.y > origin.y + self.layout.total());
+                    if in_left_margin || in_right_margin || in_vertical_margin {
+                        self.marquee_anchor = Some(pos2(pos.x - origin.x, pos.y - origin.y));
+                        self.marquee_active = false;
+                        self.marquee_base_selection = if additive_modifier {
+                            self.selected_blocks.clone()
+                        } else {
+                            self.selected_blocks.clear();
+                            std::collections::HashSet::new()
+                        };
+                    } else if !additive_modifier {
+                        self.marquee_anchor = None;
+                        self.marquee_active = false;
+                        self.selected_blocks.clear();
+                    }
+                }
+            } else if !additive_modifier {
+                self.marquee_anchor = None;
+                self.marquee_active = false;
+                self.selected_blocks.clear();
+            }
+        }
+
+        if primary_down
+            && let (Some(anchor_rel), Some(pos)) = (self.marquee_anchor, pointer_pos)
+        {
+            let anchor_screen = origin + anchor_rel.to_vec2();
+            if !self.marquee_active && (pos - anchor_screen).length() > 4.0 {
+                self.marquee_active = true;
+                self.bulk_menu_pos = None;
+            }
+            if self.marquee_active {
+                if let Some(focused) = ui.ctx().memory(|m| m.focused()) {
+                    ui.ctx().memory_mut(|m| m.surrender_focus(focused));
+                }
+                let edge_zone = 32.0;
+                if pos.y < screen_viewport.top() + edge_zone && self.scroll_offset > 0.0 {
+                    let speed =
+                        ((screen_viewport.top() + edge_zone - pos.y) * 0.45).clamp(2.0, 18.0);
+                    ui.scroll_with_delta(vec2(0.0, speed));
+                    ui.ctx().request_repaint();
+                } else if pos.y > screen_viewport.bottom() - edge_zone {
+                    let speed =
+                        ((pos.y - (screen_viewport.bottom() - edge_zone)) * 0.45).clamp(2.0, 18.0);
+                    ui.scroll_with_delta(vec2(0.0, -speed));
+                    ui.ctx().request_repaint();
+                }
+                let selection_rect = Rect::from_two_pos(anchor_screen, pos);
+                self.update_marquee_selection(
+                    origin,
+                    document_width,
+                    selection_rect,
+                    page_id,
+                    generation,
+                    intents,
+                );
+                let painter = ui
+                    .ctx()
+                    .layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new(("marquee-painter", page_id, widget_scope)),
+                    ))
+                    .with_clip_rect(margin_bounds);
+                painter.rect_filled(
+                    selection_rect,
+                    3.0,
+                    Color32::from_rgba_unmultiplied(
+                        palette.accent.r(),
+                        palette.accent.g(),
+                        palette.accent.b(),
+                        28,
+                    ),
+                );
+                painter.rect_stroke(
+                    selection_rect,
+                    3.0,
+                    Stroke::new(1.2, palette.accent),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+
+        if primary_released {
+            self.marquee_anchor = None;
+            self.marquee_active = false;
+            self.marquee_base_selection.clear();
+        }
+
+        if secondary_clicked
+            && !self.selected_blocks.is_empty()
+            && let Some(pos) = pointer_pos
+            && screen_viewport.contains(pos)
+        {
+            self.bulk_menu_pos = Some(pos);
+        }
+
+        if !self.selected_blocks.is_empty() && !ui.ctx().wants_keyboard_input() {
+            let ordered_ids = self.ordered_selected_block_ids();
+            let mut clear_selection = false;
+            ui.input_mut(|input| {
+                if input.consume_key(Modifiers::NONE, Key::Escape) {
+                    clear_selection = true;
+                } else if input.consume_key(Modifiers::NONE, Key::Delete)
+                    || input.consume_key(Modifiers::NONE, Key::Backspace)
+                {
+                    intents.push(Intent::Action(Action::DeleteBlocks {
+                        page: page_id,
+                        blocks: ordered_ids.clone(),
+                    }));
+                    clear_selection = true;
+                } else if input.consume_key(Modifiers::COMMAND, Key::D)
+                    || input.consume_key(Modifiers::CTRL, Key::D)
+                {
+                    intents.push(Intent::Action(Action::DuplicateBlocks {
+                        page: page_id,
+                        blocks: ordered_ids.clone(),
+                    }));
+                } else if input.consume_key(Modifiers::COMMAND, Key::C)
+                    || input.consume_key(Modifiers::CTRL, Key::C)
+                    || input.events.iter().any(|e| matches!(e, egui::Event::Copy))
+                {
+                    let copied = self.selected_blocks_plain_text();
+                    if !copied.is_empty() {
+                        ui.ctx().copy_text(copied);
+                    }
+                }
+            });
+            if clear_selection {
+                self.selected_blocks.clear();
+                self.bulk_menu_pos = None;
+            }
+        }
+
+        if self.bulk_menu_pos.is_some() && !self.selected_blocks.is_empty() {
+            self.show_bulk_context_menu(ui, bulk_menu_id, page_id, palette, intents);
+        }
+    }
+
+    fn update_marquee_selection(
+        &mut self,
+        origin: Pos2,
+        document_width: f32,
+        selection_rect: Rect,
+        page_id: PageId,
+        generation: u64,
+        intents: &mut Vec<Intent>,
+    ) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let mut next_selected = self.marquee_base_selection.clone();
+        let mut missing_positions = Vec::new();
+        for (row_index, row) in self.visual_rows.iter().enumerate() {
+            let top = origin.y + self.layout.top(row_index);
+            let height = self.layout.height(row_index);
+            if top + height < selection_rect.min.y || top > selection_rect.max.y {
+                continue;
+            }
+            let mut ratios: Vec<_> = row
+                .iter()
+                .map(|position| document.outline[*position].column_width.max(0.08))
+                .collect();
+            if let Some(group) = document.outline[row[0]].column_group {
+                for boundary in 0..row.len().saturating_sub(1) {
+                    if let Some((left, right)) = self.column_resize_preview.get(&(group, boundary))
+                    {
+                        ratios[boundary] = *left;
+                        ratios[boundary + 1] = *right;
+                    }
+                }
+            }
+            let widths = widths_for_ratios(&ratios, document_width);
+            let mut x = origin.x;
+            for (column, position) in row.iter().copied().enumerate() {
+                let block_width = widths[column];
+                let block_rect = Rect::from_min_size(pos2(x, top), vec2(block_width, height));
+                if selection_rect.intersects(block_rect) {
+                    next_selected.insert(document.outline[position].id);
+                    if !self.cache.blocks.contains_key(&position) {
+                        missing_positions.push(position);
+                    }
+                }
+                x += block_width + COLUMN_GAP;
+            }
+        }
+        self.selected_blocks = next_selected;
+        for position in missing_positions {
+            if let Some(load_start) = self.cache.request(position) {
+                intents.push(Intent::LoadBlocks {
+                    page: page_id,
+                    generation,
+                    start: load_start,
+                });
+            }
+        }
+    }
+
+    fn ordered_selected_block_ids(&self) -> Vec<BlockId> {
+        let Some(document) = &self.document else {
+            return Vec::new();
+        };
+        document
+            .outline
+            .iter()
+            .filter_map(|stub| {
+                self.selected_blocks
+                    .contains(&stub.id)
+                    .then_some(stub.id)
+            })
+            .collect()
+    }
+
+    fn selected_blocks_plain_text(&self) -> String {
+        let Some(document) = &self.document else {
+            return String::new();
+        };
+        let mut lines = Vec::new();
+        for (position, stub) in document.outline.iter().enumerate() {
+            if self.selected_blocks.contains(&stub.id)
+                && let Some(block) = self.cache.blocks.get(&position)
+            {
+                lines.push(block.content.as_str());
+            }
+        }
+        lines.join("\n")
+    }
+
+    fn show_bulk_context_menu(
+        &mut self,
+        ui: &mut Ui,
+        menu_id: egui::Id,
+        page_id: PageId,
+        palette: Palette,
+        intents: &mut Vec<Intent>,
+    ) {
+        let Some(anchor_pos) = self.bulk_menu_pos else {
+            return;
+        };
+        let ordered_ids = self.ordered_selected_block_ids();
+        if ordered_ids.is_empty() {
+            self.bulk_menu_pos = None;
+            return;
+        }
+        let count = ordered_ids.len();
+        let (has_todo, has_columns, can_group_columns) = self
+            .document
+            .as_ref()
+            .map(|doc| {
+                let selected_stubs: Vec<_> = doc
+                    .outline
+                    .iter()
+                    .filter(|stub| self.selected_blocks.contains(&stub.id))
+                    .collect();
+                let todo = selected_stubs.iter().any(|s| s.kind == BlockKind::Todo);
+                let cols = selected_stubs.iter().any(|s| s.column_group.is_some());
+                let non_db = selected_stubs
+                    .iter()
+                    .filter(|s| s.kind != BlockKind::Database)
+                    .count();
+                (todo, cols, (2..=4).contains(&non_db))
+            })
+            .unwrap_or((false, false, false));
+
+        let screen = ui.ctx().screen_rect();
+        let clamped_pos = pos2(
+            anchor_pos.x.clamp(screen.left() + 8.0, (screen.right() - 250.0).max(8.0)),
+            anchor_pos.y.clamp(screen.top() + 8.0, (screen.bottom() - 320.0).max(8.0)),
+        );
+        let mut close_menu = false;
+        let mut clear_selection = false;
+
+        egui::Area::new(menu_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(clamped_pos)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    ui.label(
+                        RichText::new(if count == 1 {
+                            "1 BLOCK SELECTED".to_owned()
+                        } else {
+                            format!("{count} BLOCKS SELECTED")
+                        })
+                        .small()
+                        .strong()
+                        .color(palette.muted),
+                    );
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        for (label, tooltip, op) in [
+                            ("B", "Bold", BulkBlockStyleOp::ToggleBold),
+                            ("I", "Italic", BulkBlockStyleOp::ToggleItalic),
+                            ("U", "Underline", BulkBlockStyleOp::ToggleUnderline),
+                            ("S", "Strikethrough", BulkBlockStyleOp::ToggleStrikethrough),
+                        ] {
+                            if ui.button(RichText::new(label).strong()).on_hover_text(tooltip).clicked() {
+                                intents.push(Intent::Action(Action::FormatBlocks {
+                                    page: page_id,
+                                    blocks: ordered_ids.clone(),
+                                    op,
+                                }));
+                                close_menu = true;
+                            }
+                        }
+                        ui.menu_button("Font", |ui| {
+                            for (label, family) in [
+                                ("Default", None),
+                                ("Serif", Some(InlineFontFamily::Serif)),
+                                ("Monospace", Some(InlineFontFamily::Monospace)),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    intents.push(Intent::Action(Action::FormatBlocks {
+                                        page: page_id,
+                                        blocks: ordered_ids.clone(),
+                                        op: BulkBlockStyleOp::SetFont(family),
+                                    }));
+                                    close_menu = true;
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        ui.menu_button(RichText::new("A").strong(), |ui| {
+                            ui.label(RichText::new("Text color").small().color(palette.muted));
+                            for (name, color) in [
+                                ("Default", None),
+                                ("Accent", Some(palette.accent.to_array())),
+                                ("Gray", Some(palette.muted.to_array())),
+                                ("Red", Some(Color32::from_rgb(212, 76, 71).to_array())),
+                                ("Orange", Some(Color32::from_rgb(217, 115, 13).to_array())),
+                                ("Green", Some(Color32::from_rgb(68, 131, 97).to_array())),
+                                ("Blue", Some(Color32::from_rgb(51, 126, 169).to_array())),
+                                ("Purple", Some(Color32::from_rgb(144, 101, 176).to_array())),
+                            ] {
+                                let label = if let Some(rgba) = color {
+                                    RichText::new(format!("●  {name}")).color(
+                                        Color32::from_rgba_unmultiplied(
+                                            rgba[0], rgba[1], rgba[2], rgba[3],
+                                        ),
+                                    )
+                                } else {
+                                    RichText::new(format!("○  {name}")).color(palette.text)
+                                };
+                                if ui.button(label).clicked() {
+                                    intents.push(Intent::Action(Action::FormatBlocks {
+                                        page: page_id,
+                                        blocks: ordered_ids.clone(),
+                                        op: BulkBlockStyleOp::SetTextColor(color),
+                                    }));
+                                    close_menu = true;
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        ui.menu_button("Highlight", |ui| {
+                            ui.label(RichText::new("Background highlight").small().color(palette.muted));
+                            for (name, color) in [
+                                ("None", None),
+                                ("Yellow", Some(Color32::from_rgba_unmultiplied(255, 230, 120, 110).to_array())),
+                                ("Green", Some(Color32::from_rgba_unmultiplied(120, 220, 150, 100).to_array())),
+                                ("Blue", Some(Color32::from_rgba_unmultiplied(120, 190, 255, 100).to_array())),
+                                ("Pink", Some(Color32::from_rgba_unmultiplied(245, 145, 185, 100).to_array())),
+                                ("Purple", Some(Color32::from_rgba_unmultiplied(190, 150, 245, 100).to_array())),
+                            ] {
+                                if ui.button(name).clicked() {
+                                    intents.push(Intent::Action(Action::FormatBlocks {
+                                        page: page_id,
+                                        blocks: ordered_ids.clone(),
+                                        op: BulkBlockStyleOp::SetHighlight(color),
+                                    }));
+                                    close_menu = true;
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    });
+                    if ui.button("✕  Clear text formatting").clicked() {
+                        intents.push(Intent::Action(Action::FormatBlocks {
+                            page: page_id,
+                            blocks: ordered_ids.clone(),
+                            op: BulkBlockStyleOp::ClearFormatting,
+                        }));
+                        close_menu = true;
+                    }
+                    ui.separator();
+                    ui.menu_button("⇄  Turn into", |ui| {
+                        ui.set_min_width(170.0);
+                        for kind in BlockKind::ALL {
+                            if ui.button(kind.label()).clicked() {
+                                intents.push(Intent::Action(Action::SetBlocksKind {
+                                    page: page_id,
+                                    blocks: ordered_ids.clone(),
+                                    kind,
+                                }));
+                                close_menu = true;
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                    if has_todo {
+                        if ui.button("☑  Mark to-dos as done").clicked() {
+                            intents.push(Intent::Action(Action::SetBlocksChecked {
+                                page: page_id,
+                                blocks: ordered_ids.clone(),
+                                checked: true,
+                            }));
+                            close_menu = true;
+                        }
+                        if ui.button("☐  Mark to-dos as not done").clicked() {
+                            intents.push(Intent::Action(Action::SetBlocksChecked {
+                                page: page_id,
+                                blocks: ordered_ids.clone(),
+                                checked: false,
+                            }));
+                            close_menu = true;
+                        }
+                    }
+                    if can_group_columns && ui.button("▥  Arrange in columns").clicked() {
+                        intents.push(Intent::Action(Action::GroupBlocksInColumns {
+                            page: page_id,
+                            blocks: ordered_ids.clone(),
+                        }));
+                        close_menu = true;
+                    }
+                    if has_columns && ui.button("▤  Separate columns").clicked() {
+                        intents.push(Intent::Action(Action::UngroupBlockColumns {
+                            page: page_id,
+                            blocks: ordered_ids.clone(),
+                        }));
+                        close_menu = true;
+                    }
+                    ui.separator();
+                    if ui.button("▲  Move up").clicked() {
+                        intents.push(Intent::Action(Action::MoveBlocks {
+                            page: page_id,
+                            blocks: ordered_ids.clone(),
+                            direction: -1,
+                        }));
+                        close_menu = true;
+                    }
+                    if ui.button("▼  Move down").clicked() {
+                        intents.push(Intent::Action(Action::MoveBlocks {
+                            page: page_id,
+                            blocks: ordered_ids.clone(),
+                            direction: 1,
+                        }));
+                        close_menu = true;
+                    }
+                    if ui.button("⧉  Duplicate blocks").clicked() {
+                        intents.push(Intent::Action(Action::DuplicateBlocks {
+                            page: page_id,
+                            blocks: ordered_ids.clone(),
+                        }));
+                        close_menu = true;
+                    }
+                    if ui.button("📋  Copy text").clicked() {
+                        let copied = self.selected_blocks_plain_text();
+                        if !copied.is_empty() {
+                            ui.ctx().copy_text(copied);
+                        }
+                        close_menu = true;
+                    }
+                    ui.separator();
+                    if ui
+                        .button(
+                            RichText::new(if count == 1 {
+                                "Delete block".to_owned()
+                            } else {
+                                format!("Delete {count} blocks")
+                            })
+                            .color(palette.danger),
+                        )
+                        .clicked()
+                    {
+                        intents.push(Intent::Action(Action::DeleteBlocks {
+                            page: page_id,
+                            blocks: ordered_ids,
+                        }));
+                        close_menu = true;
+                        clear_selection = true;
+                    }
+                });
+            });
+
+        if close_menu {
+            self.bulk_menu_pos = None;
+        }
+        if clear_selection {
+            self.selected_blocks.clear();
         }
     }
 }

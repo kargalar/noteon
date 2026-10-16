@@ -87,16 +87,28 @@ pub fn measured_height(ui: &Ui, block: &Block, width: f32) -> f32 {
     (galley.size().y + BLOCK_PADDING * 2.0).clamp(36.0, MAX_BLOCK_HEIGHT)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     rect: Rect,
     block: &mut Block,
     focus: bool,
+    selected: bool,
+    bulk_selection_active: bool,
     palette: Palette,
     widget_scope: Option<u64>,
     intents: &mut Vec<Intent>,
 ) -> bool {
-    let mut changed = show_menu(ui, rect, block, palette, widget_scope, intents);
+    let mut changed = show_menu(
+        ui,
+        rect,
+        block,
+        selected,
+        bulk_selection_active,
+        palette,
+        widget_scope,
+        intents,
+    );
     if block.kind == BlockKind::Database {
         return changed;
     }
@@ -217,10 +229,13 @@ fn show_media(
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_menu(
     ui: &mut Ui,
     rect: Rect,
     block: &mut Block,
+    selected: bool,
+    bulk_selection_active: bool,
     palette: Palette,
     widget_scope: Option<u64>,
     intents: &mut Vec<Intent>,
@@ -235,7 +250,9 @@ fn show_menu(
     let mut kind_change = None;
     let handle = ui.put(
         handle_rect,
-        egui::Button::new(RichText::new("⠿").color(if row_response.hovered() {
+        egui::Button::new(RichText::new("⠿").color(if selected {
+            palette.accent
+        } else if row_response.hovered() {
             palette.muted
         } else {
             egui::Color32::TRANSPARENT
@@ -288,14 +305,17 @@ fn show_menu(
         }
     }
     let popup_id = block_widget_id("block-menu", block.id, widget_scope);
-    let right_clicked_on_row = ui.input(|input| {
-        input.pointer.button_clicked(egui::PointerButton::Secondary)
-            && input
-                .pointer
-                .interact_pos()
-                .is_some_and(|position| rect.contains(position))
-    });
-    if handle.clicked() || handle.secondary_clicked() || right_clicked_on_row {
+    let right_clicked_on_row = !bulk_selection_active
+        && ui.input(|input| {
+            input.pointer.button_clicked(egui::PointerButton::Secondary)
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| rect.contains(position))
+        });
+    if !bulk_selection_active
+        && (handle.clicked() || handle.secondary_clicked() || right_clicked_on_row)
+    {
         ui.memory_mut(|memory| memory.toggle_popup(popup_id));
     }
     egui::popup::popup_below_widget(
@@ -528,7 +548,68 @@ fn show_text(
                         .filter(|range| range.start < range.end);
                     let editor_id = block_widget_id("block", block.id, widget_scope);
                     let active_selection_id = egui::Id::new("active-text-format-selection");
-                    if output.response.has_focus() {
+                    let mut dismiss_selection = false;
+                    let active_editor = ui
+                        .ctx()
+                        .data(|data| data.get_temp::<egui::Id>(active_selection_id));
+                    let is_active = active_editor == Some(editor_id);
+
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        dismiss_selection = true;
+                    } else if is_active {
+                        let pointer_pressed =
+                            ui.input(|i| i.pointer.any_pressed() || i.pointer.any_click());
+                        if pointer_pressed {
+                            let press_pos = ui
+                                .input(|i| i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()));
+                            if let Some(pos) = press_pos {
+                                let toolbar_area_id =
+                                    block_widget_id("text-format-toolbar", block.id, widget_scope);
+                                let toolbar_rect =
+                                    ui.ctx().memory(|m| m.area_rect(toolbar_area_id));
+                                let inside_toolbar =
+                                    toolbar_rect.is_some_and(|r| r.expand(4.0).contains(pos));
+                                let any_popup = ui.ctx().memory(|m| m.any_popup_open());
+                                let top_layer = ui.ctx().memory(|m| m.layer_id_at(pos));
+                                let inside_popup = any_popup
+                                    && top_layer
+                                        .is_some_and(|l| l.order == egui::Order::Foreground);
+                                let inside_panel = inside_toolbar || inside_popup;
+
+                                if !inside_panel {
+                                    let selecting_in_editor =
+                                        output.response.rect.contains(pos) && current_range.is_some();
+                                    if !selecting_in_editor {
+                                        dismiss_selection = true;
+                                        if !output.response.rect.contains(pos) {
+                                            output.response.surrender_focus();
+                                        }
+                                    }
+                                }
+                            } else {
+                                dismiss_selection = true;
+                            }
+                        }
+                    }
+
+                    if dismiss_selection {
+                        ui.ctx().data_mut(|data| {
+                            data.remove::<std::ops::Range<usize>>(selection_id);
+                            if data.get_temp::<egui::Id>(active_selection_id) == Some(editor_id) {
+                                data.remove::<egui::Id>(active_selection_id);
+                            }
+                        });
+                        if let Some(mut state) =
+                            egui::text_edit::TextEditState::load(ui.ctx(), output.response.id)
+                        {
+                            if let Some(cursor_range) = state.cursor.char_range() {
+                                state.cursor.set_char_range(Some(
+                                    egui::text::CCursorRange::one(cursor_range.primary),
+                                ));
+                                state.store(ui.ctx(), output.response.id);
+                            }
+                        }
+                    } else if output.response.has_focus() {
                         ui.ctx().data_mut(|data| {
                             if let Some(range) = current_range.clone() {
                                 data.insert_temp(selection_id, range);
@@ -542,9 +623,13 @@ fn show_text(
                             }
                         });
                     }
-                    let active_editor = ui
-                        .ctx()
-                        .data(|data| data.get_temp::<egui::Id>(active_selection_id));
+
+                    let active_editor = if dismiss_selection {
+                        None
+                    } else {
+                        ui.ctx()
+                            .data(|data| data.get_temp::<egui::Id>(active_selection_id))
+                    };
                     let selected_range = if active_editor == Some(editor_id) {
                         current_range.or_else(|| {
                             ui.ctx()

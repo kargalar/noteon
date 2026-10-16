@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use eframe::egui::{self, Align2, FontId, RichText, Sense, Stroke, Ui, vec2};
+use eframe::egui::{self, Align2, FontFamily, FontId, RichText, Sense, Stroke, Ui, vec2};
 
 use crate::domain::model::{Page, PageId};
 use crate::worker::Action;
@@ -215,6 +215,15 @@ impl Sidebar {
 fn show_header(ui: &mut Ui, palette: Palette, intents: &mut Vec<Intent>) {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
+        let (icon_rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
+        ui.painter().rect_filled(icon_rect, 6.0, palette.text);
+        ui.painter().text(
+            icon_rect.center() - vec2(0.0, 0.5),
+            Align2::CENTER_CENTER,
+            "n",
+            FontId::new(15.0, FontFamily::Name("noteon-bold".into())),
+            palette.sidebar,
+        );
         ui.label(RichText::new("noteon").size(24.0).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if quiet_button(ui, "⌕", palette.muted)
@@ -225,22 +234,7 @@ fn show_header(ui: &mut Ui, palette: Palette, intents: &mut Vec<Intent>) {
             }
         });
     });
-    ui.add_space(15.0);
-    ui.add_space(2.0);
-    ui.menu_button(
-        RichText::new("+   New").color(palette.accent).strong(),
-        |ui| {
-            if ui.button("New page").clicked() {
-                intents.push(Intent::Action(Action::CreatePage(None)));
-                ui.close_menu();
-            }
-            if ui.button("New database").clicked() {
-                intents.push(Intent::Action(Action::CreateDatabase(None)));
-                ui.close_menu();
-            }
-        },
-    );
-    ui.add_space(14.0);
+    ui.add_space(16.0);
 }
 
 fn show_footer(ui: &mut Ui, trash: bool, palette: Palette, intents: &mut Vec<Intent>) {

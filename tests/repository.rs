@@ -184,11 +184,35 @@ fn custom_page_properties_persist_values_and_validate_their_types() {
     assert_eq!(document.properties[2].value, "Siyah|Kırmızı");
 
     drop(repository);
-    let reopened = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+    let mut reopened = Repository::open(&directory.path().join("test.sqlite")).unwrap();
     assert_eq!(
         reopened.document(page).unwrap().properties[0].value,
         "2499.90"
     );
+
+    // Rename option updates selected value automatically
+    reopened
+        .rename_page_property_option(page, color.id, "Kırmızı", "Bordo")
+        .unwrap();
+    let props = reopened.page_properties(page).unwrap();
+    let updated_color = props.iter().find(|item| item.id == color.id).unwrap();
+    assert_eq!(updated_color.options, ["Siyah", "Beyaz", "Bordo"]);
+    assert_eq!(updated_color.value, "Siyah|Bordo");
+
+    // Remove option cleans selected value automatically
+    reopened
+        .remove_page_property_option(page, color.id, "Siyah")
+        .unwrap();
+    let props = reopened.page_properties(page).unwrap();
+    let updated_color = props.iter().find(|item| item.id == color.id).unwrap();
+    assert_eq!(updated_color.options, ["Beyaz", "Bordo"]);
+    assert_eq!(updated_color.value, "Bordo");
+
+    // Reorder page properties
+    reopened.move_page_property(page, color.id, -1).unwrap();
+    let props = reopened.page_properties(page).unwrap();
+    assert_eq!(props[1].id, color.id);
+    assert_eq!(props[2].id, delivery.id);
 }
 
 #[test]
@@ -723,4 +747,70 @@ fn database_options_rename_remove_and_board_reorder_persist() {
     assert_eq!(data.rows[1].page.id, rec1);
     assert_eq!(data.rows[0].values.get(&status_prop.id).unwrap(), "Done");
 }
+
+#[test]
+fn bulk_block_operations_edit_move_duplicate_group_and_delete() {
+    use noteon::domain::model::BulkBlockStyleOp;
+
+    let (_directory, mut repository) = database();
+    let page = repository.create_page(None, "Toplu Düzenleme").unwrap();
+    repository
+        .append_blocks(
+            page,
+            1,
+            &[
+                (BlockKind::Text, "Birinci".into(), false),
+                (BlockKind::Text, "İkinci".into(), false),
+                (BlockKind::Text, "Üçüncü".into(), false),
+            ],
+        )
+        .unwrap();
+    let initial = repository.blocks(page, 0, 10).unwrap();
+    let target_ids = vec![initial[1].id, initial[2].id];
+
+    repository
+        .set_blocks_kind(page, &target_ids, BlockKind::Todo)
+        .unwrap();
+    repository
+        .set_blocks_checked(page, &target_ids, true)
+        .unwrap();
+    repository
+        .format_blocks(page, &target_ids, BulkBlockStyleOp::ToggleBold)
+        .unwrap();
+
+    let updated = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(updated[1].kind, BlockKind::Todo);
+    assert_eq!(updated[2].kind, BlockKind::Todo);
+    assert!(updated[1].checked);
+    assert!(updated[2].checked);
+    assert!(updated[1].text_styles[0].style.bold);
+    assert!(updated[2].text_styles[0].style.bold);
+
+    repository
+        .group_blocks_in_columns(page, &target_ids)
+        .unwrap();
+    let grouped = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(grouped[1].column_group, Some(target_ids[0]));
+    assert_eq!(grouped[2].column_group, Some(target_ids[0]));
+
+    repository
+        .ungroup_block_columns(page, &target_ids)
+        .unwrap();
+    let ungrouped = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(ungrouped[1].column_group, None);
+    assert_eq!(ungrouped[2].column_group, None);
+
+    repository.move_blocks(page, &target_ids, -1).unwrap();
+    let moved = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(moved[0].id, target_ids[0]);
+    assert_eq!(moved[1].id, target_ids[1]);
+
+    let duplicated = repository.duplicate_blocks(page, &target_ids).unwrap();
+    assert_eq!(duplicated.len(), 2);
+
+    repository.delete_blocks(page, &target_ids).unwrap();
+    let remaining = repository.blocks(page, 0, 10).unwrap();
+    assert!(!remaining.iter().any(|b| target_ids.contains(&b.id)));
+}
+
 

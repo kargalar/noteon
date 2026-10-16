@@ -6,8 +6,8 @@ use eframe::egui;
 
 use crate::config::{BLOCK_BATCH_SIZE, SettingKey};
 use crate::domain::model::{
-    Block, BlockId, BlockKind, DatabaseData, DatabaseView, DatabaseViewSettings, Document,
-    DropPlacement, Page, PageId, SaveBatch, SearchHit, TextStyleRange,
+    Block, BlockId, BlockKind, BulkBlockStyleOp, DatabaseData, DatabaseView, DatabaseViewSettings,
+    Document, DropPlacement, Page, PageId, SaveBatch, SearchHit, TextStyleRange,
 };
 use crate::error::{Error, Result};
 use crate::storage::Repository;
@@ -41,6 +41,42 @@ pub enum Action {
     DeleteBlock {
         page: PageId,
         block: BlockId,
+    },
+    DeleteBlocks {
+        page: PageId,
+        blocks: Vec<BlockId>,
+    },
+    SetBlocksKind {
+        page: PageId,
+        blocks: Vec<BlockId>,
+        kind: BlockKind,
+    },
+    SetBlocksChecked {
+        page: PageId,
+        blocks: Vec<BlockId>,
+        checked: bool,
+    },
+    FormatBlocks {
+        page: PageId,
+        blocks: Vec<BlockId>,
+        op: BulkBlockStyleOp,
+    },
+    MoveBlocks {
+        page: PageId,
+        blocks: Vec<BlockId>,
+        direction: i32,
+    },
+    DuplicateBlocks {
+        page: PageId,
+        blocks: Vec<BlockId>,
+    },
+    GroupBlocksInColumns {
+        page: PageId,
+        blocks: Vec<BlockId>,
+    },
+    UngroupBlockColumns {
+        page: PageId,
+        blocks: Vec<BlockId>,
     },
     MoveBlock {
         page: PageId,
@@ -105,6 +141,10 @@ pub enum Action {
         property: i64,
         option: String,
     },
+    MoveDatabaseProperty {
+        property: i64,
+        direction: i32,
+    },
     DeleteDatabaseProperty(i64),
     SetDatabaseProperty {
         page: PageId,
@@ -132,6 +172,22 @@ pub enum Action {
         property: i64,
         options: Vec<String>,
     },
+    RenamePagePropertyOption {
+        page: PageId,
+        property: i64,
+        old_option: String,
+        new_option: String,
+    },
+    RemovePagePropertyOption {
+        page: PageId,
+        property: i64,
+        option: String,
+    },
+    MovePageProperty {
+        page: PageId,
+        property: i64,
+        direction: i32,
+    },
     DeletePageProperty {
         page: PageId,
         property: i64,
@@ -148,6 +204,10 @@ pub enum Action {
     RenameDatabaseRecord {
         page: PageId,
         title: String,
+    },
+    SetDatabaseRecordIcon {
+        page: PageId,
+        icon: String,
     },
     SetDatabaseView {
         page: PageId,
@@ -493,6 +553,14 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
             repository.remove_database_property_option(property, &option)?;
             None
         }
+        Action::MoveDatabaseProperty {
+            property,
+            direction,
+        } => {
+            refresh_database = repository.database_property_owner(property)?;
+            repository.move_database_property(property, direction)?;
+            None
+        }
         Action::DeleteDatabaseProperty(property) => {
             refresh_database = repository.database_property_owner(property)?;
             repository.delete_database_property(property)?;
@@ -544,6 +612,39 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
             refresh_page_properties = Some(property_page);
             None
         }
+        Action::RenamePagePropertyOption {
+            page: property_page,
+            property,
+            old_option,
+            new_option,
+        } => {
+            repository.rename_page_property_option(
+                property_page,
+                property,
+                &old_option,
+                &new_option,
+            )?;
+            refresh_page_properties = Some(property_page);
+            None
+        }
+        Action::RemovePagePropertyOption {
+            page: property_page,
+            property,
+            option,
+        } => {
+            repository.remove_page_property_option(property_page, property, &option)?;
+            refresh_page_properties = Some(property_page);
+            None
+        }
+        Action::MovePageProperty {
+            page: property_page,
+            property,
+            direction,
+        } => {
+            repository.move_page_property(property_page, property, direction)?;
+            refresh_page_properties = Some(property_page);
+            None
+        }
         Action::DeletePageProperty {
             page: property_page,
             property,
@@ -569,6 +670,16 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
         Action::RenameDatabaseRecord { page, title } => {
             refresh_database = repository.page(page)?.parent_id;
             repository.rename_database_record(page, &title)?;
+            None
+        }
+        Action::SetDatabaseRecordIcon { page, icon } => {
+            let page_info = repository.page(page)?;
+            refresh_database = if page_info.is_database {
+                None
+            } else {
+                page_info.parent_id
+            };
+            repository.set_page_icon(page, &icon)?;
             None
         }
         Action::SetDatabaseView { page, view } => {
@@ -674,6 +785,46 @@ fn perform_action(repository: &mut Repository, action: Action) -> Result<Event> 
         }
         Action::DeleteBlock { page, block } => {
             repository.delete_block(block)?;
+            Some(page)
+        }
+        Action::DeleteBlocks { page, blocks } => {
+            repository.delete_blocks(page, &blocks)?;
+            Some(page)
+        }
+        Action::SetBlocksKind { page, blocks, kind } => {
+            repository.set_blocks_kind(page, &blocks, kind)?;
+            Some(page)
+        }
+        Action::SetBlocksChecked {
+            page,
+            blocks,
+            checked,
+        } => {
+            repository.set_blocks_checked(page, &blocks, checked)?;
+            Some(page)
+        }
+        Action::FormatBlocks { page, blocks, op } => {
+            repository.format_blocks(page, &blocks, op)?;
+            Some(page)
+        }
+        Action::MoveBlocks {
+            page,
+            blocks,
+            direction,
+        } => {
+            repository.move_blocks(page, &blocks, direction)?;
+            Some(page)
+        }
+        Action::DuplicateBlocks { page, blocks } => {
+            repository.duplicate_blocks(page, &blocks)?;
+            Some(page)
+        }
+        Action::GroupBlocksInColumns { page, blocks } => {
+            repository.group_blocks_in_columns(page, &blocks)?;
+            Some(page)
+        }
+        Action::UngroupBlockColumns { page, blocks } => {
+            repository.ungroup_block_columns(page, &blocks)?;
             Some(page)
         }
         Action::MoveBlock {

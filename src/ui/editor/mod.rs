@@ -4,12 +4,12 @@ mod header;
 pub(super) mod media;
 mod viewport;
 
-use crate::domain::model::{DatabaseData, Document, PageId};
+use crate::domain::model::{BlockId, DatabaseData, Document, PageId};
 use crate::domain::virtual_layout::VirtualLayout;
 use crate::ui::{Intent, palette::Palette, text};
 use crate::worker::Action;
 pub use cache::BlockCache;
-use eframe::egui::{RichText, Ui};
+use eframe::egui::{Pos2, RichText, Ui};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
@@ -23,6 +23,11 @@ pub struct Editor {
     pub rendered_blocks: usize,
     pub visual_rows: Vec<Vec<usize>>,
     pub position_to_row: Vec<usize>,
+    pub selected_blocks: HashSet<BlockId>,
+    pub(super) marquee_anchor: Option<Pos2>,
+    pub(super) marquee_base_selection: HashSet<BlockId>,
+    pub(super) marquee_active: bool,
+    pub(super) bulk_menu_pos: Option<Pos2>,
     column_resize_preview: HashMap<(i64, usize), (f32, f32)>,
     title_focus: bool,
     last_width: f32,
@@ -46,6 +51,19 @@ impl Editor {
             .document
             .as_ref()
             .is_some_and(|old| old.page.id == document.page.id);
+        if same_page {
+            let valid_ids: HashSet<_> = document.outline.iter().map(|stub| stub.id).collect();
+            self.selected_blocks.retain(|id| valid_ids.contains(id));
+            if self.selected_blocks.is_empty() {
+                self.bulk_menu_pos = None;
+            }
+        } else {
+            self.selected_blocks.clear();
+            self.marquee_anchor = None;
+            self.marquee_base_selection.clear();
+            self.marquee_active = false;
+            self.bulk_menu_pos = None;
+        }
         self.title_focus = !same_page && document.page.title.is_empty();
         self.document = Some(document);
         self.cache = BlockCache::default();
@@ -166,6 +184,8 @@ impl Editor {
             widget_scope,
             header::RecordPropertiesContext {
                 record: record_properties,
+                property_drafts: context.property_drafts,
+                title_drafts: context.title_drafts,
                 value_drafts: context.value_drafts,
             },
         );

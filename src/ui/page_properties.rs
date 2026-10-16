@@ -1,14 +1,98 @@
-use eframe::egui::{self, RichText, Ui};
+use chrono::{Datelike, Duration, Local, NaiveDate};
+use eframe::egui::{self, Color32, FontId, RichText, Sense, Stroke, Ui, vec2};
 
-use crate::domain::model::{PROPERTY_TYPES, PageId, PageProperty};
-use crate::ui::{Intent, palette::Palette, small_label};
+use crate::domain::model::{DEFAULT_DATABASE_STATUS_OPTIONS, PROPERTY_TYPES, PageId, PageProperty};
+use crate::ui::{Intent, palette::Palette};
 use crate::worker::Action;
+
+pub const LABEL_COLUMN_WIDTH: f32 = 168.0;
+const ROW_MIN_HEIGHT: f32 = 30.0;
 
 #[derive(Clone, Copy)]
 pub struct PagePropertyTarget {
     pub page: PageId,
     pub widget_scope: Option<u64>,
     pub indent: f32,
+    pub max_width: f32,
+}
+
+pub fn property_icon(kind: &str) -> &'static str {
+    match kind {
+        "text" => "Aa",
+        "number" => "#",
+        "date" => "📅",
+        "status" => "○",
+        "select" => "🏷",
+        "multi-select" => "☰",
+        "checkbox" => "☑",
+        _ => "•",
+    }
+}
+
+pub fn type_label(kind: &str) -> &'static str {
+    PROPERTY_TYPES
+        .iter()
+        .find_map(|(candidate, label)| (*candidate == kind).then_some(*label))
+        .unwrap_or("Text")
+}
+
+pub fn option_pill_colors(palette: Palette, kind: &str, option: &str) -> (Color32, Color32, Color32) {
+    let lower = option.trim().to_lowercase();
+    let base_tint = if matches!(
+        lower.as_str(),
+        "done" | "complete" | "completed" | "tamamlandı" | "bitti" | "aktif" | "onaylandı" | "low"
+    ) {
+        Color32::from_rgb(76, 154, 102)
+    } else if matches!(
+        lower.as_str(),
+        "in progress" | "doing" | "devam ediyor" | "devam" | "working" | "active"
+    ) {
+        Color32::from_rgb(68, 132, 206)
+    } else if matches!(
+        lower.as_str(),
+        "review" | "beklemede" | "pending" | "medium" | "orta" | "planned"
+    ) {
+        Color32::from_rgb(204, 148, 56)
+    } else if matches!(
+        lower.as_str(),
+        "high" | "urgent" | "blocked" | "iptal" | "acil" | "yüksek" | "bug" | "critical"
+    ) {
+        Color32::from_rgb(206, 88, 82)
+    } else if kind == "status"
+        || matches!(
+            lower.as_str(),
+            "to do" | "todo" | "bekliyor" | "not started" | "none" | "backlog"
+        )
+    {
+        palette.muted
+    } else {
+        let palette_wheel = [
+            Color32::from_rgb(92, 138, 198),
+            Color32::from_rgb(146, 106, 190),
+            Color32::from_rgb(196, 118, 84),
+            Color32::from_rgb(78, 156, 142),
+            Color32::from_rgb(184, 102, 144),
+            Color32::from_rgb(122, 154, 78),
+        ];
+        let hash = option
+            .bytes()
+            .fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(usize::from(b)));
+        palette_wheel[hash % palette_wheel.len()]
+    };
+
+    let bg = blend_color(palette.background, base_tint, 0.18);
+    let border = blend_color(palette.background, base_tint, 0.42);
+    let text = blend_color(palette.text, base_tint, 0.35);
+    (bg, border, text)
+}
+
+fn blend_color(from: Color32, to: Color32, t: f32) -> Color32 {
+    let mix = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+    Color32::from_rgb(
+        mix(from.r(), to.r()),
+        mix(from.g(), to.g()),
+        mix(from.b(), to.b()),
+    )
 }
 
 pub fn show(
@@ -24,356 +108,1418 @@ pub fn show(
         page,
         widget_scope,
         indent,
+        max_width,
     } = target;
+    let scope_id = widget_scope.unwrap_or_default();
+    let section_width = max_width.clamp(300.0, 680.0);
+    let collapse_id = egui::Id::new(("page-properties-collapsed", page, scope_id));
+    let mut collapsed = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(collapse_id))
+        .unwrap_or(false);
+
     ui.horizontal(|ui| {
         ui.add_space(indent);
         ui.vertical(|ui| {
-            ui.set_max_width(440.0);
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 2.0);
-            ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
-            ui.push_id(("page-properties", page), |ui| {
+            ui.set_max_width(section_width);
+            ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
+            ui.push_id(("page-properties", page, scope_id), |ui| {
+                // Section header bar
                 ui.horizontal(|ui| {
-                    small_label(ui, "Created", palette.muted);
-                    ui.add_sized(
-                        [120.0, 20.0],
-                        egui::Label::new(crate::ui::database::format_date(created_at)),
-                    );
+                    let arrow = if collapsed { "▸" } else { "▾" };
+                    let count_text = if properties.is_empty() {
+                        format!("{arrow}  PROPERTIES")
+                    } else {
+                        format!("{arrow}  PROPERTIES  ·  {}", properties.len())
+                    };
+                    let header_btn = ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(count_text)
+                                    .font(FontId::proportional(11.0))
+                                    .strong()
+                                    .color(palette.muted),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text("Click to collapse/expand · Right-click to manage properties");
+
+                    if header_btn.clicked() {
+                        collapsed = !collapsed;
+                        ui.ctx().data_mut(|d| d.insert_temp(collapse_id, collapsed));
+                    }
+
+                    header_btn.context_menu(|ui| {
+                        show_section_context_menu(
+                            ui,
+                            page,
+                            scope_id,
+                            properties,
+                            &mut collapsed,
+                            collapse_id,
+                            busy,
+                            palette,
+                            intents,
+                        );
+                    });
                 });
 
-                for property in properties {
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        property_row(ui, page, property, busy, palette, intents);
-                    });
+                if collapsed {
+                    return;
                 }
+
+                ui.add_space(2.0);
+
+                // Created date row
+                show_created_row(ui, created_at, section_width, palette);
+
+                // Custom property rows
+                let total = properties.len();
+                for (index, property) in properties.iter().enumerate() {
+                    show_property_row(
+                        ui,
+                        page,
+                        scope_id,
+                        property,
+                        index,
+                        total,
+                        section_width,
+                        busy,
+                        palette,
+                        intents,
+                    );
+                }
+
+                // Bottom quick "+ Add property" button row
+                ui.add_space(2.0);
+                let add_row_id = ui.id().with(("add-prop-bottom-row", page, scope_id));
+                let add_menu_open_id = ui.id().with(("add-prop-menu-open", page, scope_id));
+                let was_hovered = ui
+                    .ctx()
+                    .data(|d| d.get_temp::<bool>(add_row_id))
+                    .unwrap_or(false);
+                let was_menu_open = ui
+                    .ctx()
+                    .data(|d| d.get_temp::<bool>(add_menu_open_id))
+                    .unwrap_or(false);
+
+                let is_active = was_hovered || was_menu_open;
+                let row_bg = if is_active {
+                    blend_color(palette.background, palette.hover, 0.55)
+                } else {
+                    Color32::TRANSPARENT
+                };
+
+                let mut is_now_open = false;
+                let row_resp = egui::Frame::new()
+                    .fill(row_bg)
+                    .corner_radius(5)
+                    .inner_margin(egui::Margin::symmetric(6, 3))
+                    .show(ui, |ui| {
+                        ui.set_min_width(section_width - 12.0);
+                        ui.horizontal(|ui| {
+                            let text_color = if is_active {
+                                palette.text
+                            } else {
+                                palette.muted
+                            };
+                            let menu_resp = ui.menu_button(
+                                RichText::new("+  Add property")
+                                    .font(FontId::proportional(12.5))
+                                    .color(text_color),
+                                |ui| {
+                                    show_add_property_panel(
+                                        ui, page, scope_id, properties, busy, palette, intents,
+                                    );
+                                },
+                            );
+                            if menu_resp.inner.is_some() {
+                                is_now_open = true;
+                            }
+                            let ctx_resp = menu_resp.response.context_menu(|ui| {
+                                show_add_property_panel(
+                                    ui, page, scope_id, properties, busy, palette, intents,
+                                );
+                            });
+                            if ctx_resp.is_some() {
+                                is_now_open = true;
+                            }
+                        });
+                    });
+
+                let hovered_now = ui.rect_contains_pointer(row_resp.response.rect);
+                if hovered_now != was_hovered || is_now_open != was_menu_open {
+                    ui.ctx().request_repaint();
+                }
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(add_row_id, hovered_now);
+                    d.insert_temp(add_menu_open_id, is_now_open);
+                });
             });
-            add_property_button(ui, page, widget_scope, busy, palette, intents);
         });
     });
-    ui.add_space(3.0);
+    ui.add_space(6.0);
 }
 
-fn property_row(
+fn show_section_context_menu(
     ui: &mut Ui,
     page: PageId,
-    property: &PageProperty,
+    scope_id: u64,
+    properties: &[PageProperty],
+    collapsed: &mut bool,
+    collapse_id: egui::Id,
     busy: bool,
     palette: Palette,
     intents: &mut Vec<Intent>,
 ) {
-    let mut name = read_draft(ui, ("property-name", page, property.id), &property.name);
-    let name_response = ui.add_enabled(
-        !busy,
-        egui::TextEdit::singleline(&mut name)
-            .hint_text("Property name")
-            .margin(egui::Margin::symmetric(4, 2))
-            .desired_width(105.0),
+    ui.set_min_width(230.0);
+    ui.label(
+        RichText::new("MANAGE PROPERTIES")
+            .font(FontId::proportional(10.5))
+            .strong()
+            .color(palette.muted),
     );
-    save_draft(
-        ui,
-        ("property-name", page, property.id),
-        &name,
-        name_response.changed(),
-    );
-    if name_response.lost_focus() && name.trim() != property.name {
-        intents.push(Intent::Action(Action::RenamePageProperty {
-            page,
-            property: property.id,
-            name,
-        }));
+    ui.add_space(4.0);
+    if ui
+        .button(if *collapsed {
+            "▾  Expand properties"
+        } else {
+            "▸  Collapse properties"
+        })
+        .clicked()
+    {
+        *collapsed = !*collapsed;
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(collapse_id, *collapsed));
+        ui.close_menu();
     }
-
-    let open_edit_menu = |ui: &mut Ui, intents: &mut Vec<Intent>| {
-        ui.set_min_width(210.0);
-        ui.label(RichText::new("Type").small().color(palette.muted));
-        for (kind, label) in PROPERTY_TYPES {
-            if ui.selectable_label(property.kind == kind, label).clicked() {
-                intents.push(Intent::Action(Action::SetPagePropertyType {
-                    page,
-                    property: property.id,
-                    kind: kind.into(),
-                }));
-                ui.close_menu();
-            }
-        }
-        if matches!(property.kind.as_str(), "select" | "status" | "multi-select") {
-            ui.separator();
-            ui.label(RichText::new("Options").small().color(palette.muted));
-            for (idx, opt) in property.options.iter().enumerate() {
-                let opt_id = ("page-prop-opt-edit", page, property.id, idx, opt);
-                let mut edited_opt = read_draft(ui, opt_id, opt);
-                ui.horizontal(|ui| {
-                    let resp = ui.add_enabled(
-                        !busy,
-                        egui::TextEdit::singleline(&mut edited_opt).desired_width(135.0),
-                    );
-                    save_draft(ui, opt_id, &edited_opt, resp.changed());
-                    let commit = resp.lost_focus()
-                        || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                    if commit && !edited_opt.trim().is_empty() && edited_opt.trim() != opt {
-                        let mut updated = property.options.clone();
-                        updated[idx] = edited_opt.trim().to_owned();
-                        intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                            page,
-                            property: property.id,
-                            options: updated,
-                        }));
-                    }
-                    if ui
-                        .small_button(RichText::new("✕").color(palette.danger))
-                        .clicked()
-                    {
-                        let mut updated = property.options.clone();
-                        updated.remove(idx);
-                        intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                            page,
-                            property: property.id,
-                            options: updated,
-                        }));
-                    }
-                });
-            }
-            let new_opt_id = ("page-prop-new-opt", page, property.id);
-            let mut new_opt = read_draft(ui, new_opt_id, "");
-            ui.horizontal(|ui| {
-                let resp = ui.add_enabled(
-                    !busy,
-                    egui::TextEdit::singleline(&mut new_opt)
-                        .hint_text("New option…")
-                        .desired_width(135.0),
-                );
-                save_draft(ui, new_opt_id, &new_opt, resp.changed());
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (enter || ui.small_button("+ Add").clicked()) && !new_opt.trim().is_empty() {
-                    let mut updated = property.options.clone();
-                    for part in split_options(&new_opt) {
-                        if !updated.contains(&part) {
-                            updated.push(part);
-                        }
-                    }
-                    intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                        page,
-                        property: property.id,
-                        options: updated,
-                    }));
-                    let id = ui.id().with(new_opt_id);
-                    ui.ctx().data_mut(|d| d.remove::<String>(id));
-                }
+    ui.separator();
+    ui.menu_button("+  Add new property", |ui| {
+        show_add_property_panel(ui, page, scope_id, properties, busy, palette, intents);
+    });
+    if !properties.is_empty() {
+        ui.separator();
+        ui.label(
+            RichText::new("Existing properties (click to edit)")
+                .small()
+                .color(palette.muted),
+        );
+        let total = properties.len();
+        for (idx, prop) in properties.iter().enumerate() {
+            let icon = property_icon(&prop.kind);
+            ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                show_property_edit_panel(ui, page, prop, idx, total, busy, palette, intents);
             });
         }
-        ui.separator();
-        if ui
-            .button(RichText::new("Delete property").color(palette.danger))
-            .clicked()
-        {
-            intents.push(Intent::Action(Action::DeletePageProperty {
-                page,
-                property: property.id,
-            }));
-            ui.close_menu();
-        }
+    }
+}
+
+fn show_created_row(ui: &mut Ui, created_at: i64, section_width: f32, palette: Palette) {
+    let row_resp = egui::Frame::new()
+        .corner_radius(5)
+        .inner_margin(egui::Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            ui.set_min_width(section_width - 12.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.allocate_ui_with_layout(
+                    vec2(LABEL_COLUMN_WIDTH, 24.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            RichText::new("🕒")
+                                .font(FontId::proportional(12.5))
+                                .color(palette.muted),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new("Created")
+                                .font(FontId::proportional(13.0))
+                                .color(palette.muted),
+                        );
+                    },
+                );
+                ui.label(
+                    RichText::new(crate::ui::database::format_date(created_at))
+                        .font(FontId::proportional(13.0))
+                        .color(palette.muted),
+                );
+            });
+        });
+    if row_resp.response.hovered() {
+        ui.painter().rect_filled(
+            row_resp.response.rect,
+            5.0,
+            Color32::from_rgba_unmultiplied(
+                palette.hover.r(),
+                palette.hover.g(),
+                palette.hover.b(),
+                70,
+            ),
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_property_row(
+    ui: &mut Ui,
+    page: PageId,
+    scope_id: u64,
+    property: &PageProperty,
+    index: usize,
+    total: usize,
+    section_width: f32,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let row_id = ui.id().with(("prop-row", page, scope_id, property.id));
+    let is_row_hovered = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(row_id))
+        .unwrap_or(false);
+
+    let bg_fill = if is_row_hovered {
+        blend_color(palette.background, palette.hover, 0.55)
+    } else {
+        Color32::TRANSPARENT
     };
 
-    name_response.context_menu(|ui| open_edit_menu(ui, intents));
-    property_value_editor(ui, page, property, busy, intents);
-    ui.menu_button("···", |ui| open_edit_menu(ui, intents));
+    let frame_resp = egui::Frame::new()
+        .fill(bg_fill)
+        .corner_radius(5)
+        .inner_margin(egui::Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            ui.set_min_width(section_width - 12.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+
+                // Left column: Property Header Button (supports both left-click and right-click to open edit panel)
+                show_property_header_button(
+                    ui, page, property, index, total, busy, palette, is_row_hovered, intents,
+                );
+
+                // Right column: Property Value Editor
+                let value_width = (section_width - LABEL_COLUMN_WIDTH - 32.0).max(120.0);
+                ui.allocate_ui_with_layout(
+                    vec2(value_width, ROW_MIN_HEIGHT - 6.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        property_value_editor(
+                            ui,
+                            page,
+                            property,
+                            value_width,
+                            busy,
+                            palette,
+                            intents,
+                        );
+                    },
+                );
+            });
+        });
+
+    let hovered_now = ui.rect_contains_pointer(frame_resp.response.rect);
+    ui.ctx().data_mut(|d| d.insert_temp(row_id, hovered_now));
+
+    frame_resp.response.context_menu(|ui| {
+        show_property_edit_panel(ui, page, property, index, total, busy, palette, intents);
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_property_header_button(
+    ui: &mut Ui,
+    page: PageId,
+    property: &PageProperty,
+    index: usize,
+    total: usize,
+    busy: bool,
+    palette: Palette,
+    row_hovered: bool,
+    intents: &mut Vec<Intent>,
+) {
+    let icon = property_icon(&property.kind);
+    let label_text = if row_hovered {
+        format!("{icon}   {}", property.name)
+    } else {
+        format!("{icon}   {}", property.name)
+    };
+
+    ui.allocate_ui_with_layout(
+        vec2(LABEL_COLUMN_WIDTH, 24.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let btn_width = if row_hovered {
+                LABEL_COLUMN_WIDTH - 26.0
+            } else {
+                LABEL_COLUMN_WIDTH
+            };
+            ui.scope(|ui| {
+                ui.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+                ui.spacing_mut().button_padding = vec2(4.0, 3.0);
+
+                let menu_resp = ui.menu_button(
+                    RichText::new(label_text)
+                        .font(FontId::proportional(13.0))
+                        .color(if row_hovered {
+                            palette.text
+                        } else {
+                            palette.muted
+                        }),
+                    |ui| {
+                        show_property_edit_panel(
+                            ui, page, property, index, total, busy, palette, intents,
+                        );
+                    },
+                );
+                menu_resp
+                    .response
+                    .on_hover_text(format!(
+                        "{} ({}) · Click or right-click to edit property",
+                        property.name,
+                        type_label(&property.kind)
+                    ))
+                    .context_menu(|ui| {
+                        show_property_edit_panel(
+                            ui, page, property, index, total, busy, palette, intents,
+                        );
+                    });
+            });
+
+            let dots_id = ui.id().with(("prop-dots-open", page, property.id));
+            let was_dots_open = ui
+                .ctx()
+                .data(|d| d.get_temp::<bool>(dots_id))
+                .unwrap_or(false);
+            if row_hovered || was_dots_open {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let dots_resp = ui.menu_button(
+                        RichText::new("⋯")
+                            .font(FontId::proportional(13.0))
+                            .color(palette.muted),
+                        |ui| {
+                            show_property_edit_panel(
+                                ui, page, property, index, total, busy, palette, intents,
+                            );
+                        },
+                    );
+                    let mut is_dots_open = dots_resp.inner.is_some();
+                    let ctx_resp = dots_resp
+                        .response
+                        .on_hover_text("Edit property")
+                        .context_menu(|ui| {
+                            show_property_edit_panel(
+                                ui, page, property, index, total, busy, palette, intents,
+                            );
+                        });
+                    if ctx_resp.is_some() {
+                        is_dots_open = true;
+                    }
+                    ui.ctx().data_mut(|d| d.insert_temp(dots_id, is_dots_open));
+                });
+            }
+            let _ = btn_width;
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn show_property_edit_panel(
+    ui: &mut Ui,
+    page: PageId,
+    property: &PageProperty,
+    index: usize,
+    total: usize,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    ui.set_min_width(250.0);
+    ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
+
+    ui.label(
+        RichText::new("EDIT PROPERTY")
+            .font(FontId::proportional(10.5))
+            .strong()
+            .color(palette.muted),
+    );
+
+    // 1. Property Name Editor
+    let draft_key = ("property-name-edit", page, property.id);
+    let mut name = read_draft(ui, draft_key, &property.name);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(property_icon(&property.kind))
+                .font(FontId::proportional(13.0))
+                .color(palette.muted),
+        );
+        let name_changed = name.trim() != property.name && !name.trim().is_empty();
+        let input_w = if name_changed { 175.0 } else { 215.0 };
+        let resp = ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut name)
+                .hint_text("Property name")
+                .desired_width(input_w),
+        );
+        save_draft(ui, draft_key, &name, resp.changed());
+        let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let apply_clicked = name_changed
+            && ui
+                .small_button(RichText::new("✓").color(palette.accent).strong())
+                .on_hover_text("Save name")
+                .clicked();
+        if (resp.lost_focus() || enter_pressed || apply_clicked) && name_changed {
+            intents.push(Intent::Action(Action::RenamePageProperty {
+                page,
+                property: property.id,
+                name: name.trim().to_owned(),
+            }));
+            clear_draft(ui, draft_key);
+        }
+    });
+
+    ui.add_space(2.0);
+
+    // 2. Property Type Selector
+    ui.label(
+        RichText::new("Property type")
+            .font(FontId::proportional(11.5))
+            .color(palette.muted),
+    );
+    egui::ComboBox::from_id_salt(("page-prop-kind-combo", page, property.id))
+        .width(240.0)
+        .selected_text(format!(
+            "{}   {}",
+            property_icon(&property.kind),
+            type_label(&property.kind)
+        ))
+        .show_ui(ui, |ui| {
+            for (kind, label) in PROPERTY_TYPES {
+                let item_label = format!("{}   {label}", property_icon(kind));
+                if ui
+                    .selectable_label(property.kind == kind, item_label)
+                    .clicked()
+                    && property.kind != kind
+                {
+                    intents.push(Intent::Action(Action::SetPagePropertyType {
+                        page,
+                        property: property.id,
+                        kind: kind.into(),
+                    }));
+                }
+            }
+        });
+
+    // 3. Options Manager for Select / Status / Multi-select
+    if matches!(property.kind.as_str(), "select" | "status" | "multi-select") {
+        ui.separator();
+        ui.label(
+            RichText::new("Options")
+                .font(FontId::proportional(11.5))
+                .color(palette.muted),
+        );
+        if property.options.is_empty() {
+            ui.label(
+                RichText::new("No options yet. Add one below.")
+                    .small()
+                    .italics()
+                    .color(palette.muted),
+            );
+        } else {
+            egui::ScrollArea::vertical()
+                .id_salt(("page-prop-options-scroll", page, property.id))
+                .max_height(175.0)
+                .show(ui, |ui| {
+                    for (idx, opt) in property.options.iter().enumerate() {
+                        let opt_id = ("page-prop-opt-edit", page, property.id, idx, opt);
+                        let mut edited_opt = read_draft(ui, opt_id, opt);
+                        let (pill_bg, _, _) = option_pill_colors(palette, &property.kind, opt);
+                        ui.horizontal(|ui| {
+                            let (dot_rect, _) =
+                                ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                            ui.painter().circle_filled(dot_rect.center(), 4.0, pill_bg);
+
+                            let resp = ui.add_enabled(
+                                !busy,
+                                egui::TextEdit::singleline(&mut edited_opt).desired_width(135.0),
+                            );
+                            save_draft(ui, opt_id, &edited_opt, resp.changed());
+                            let commit = resp.lost_focus()
+                                || (resp.has_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                            if commit && !edited_opt.trim().is_empty() && edited_opt.trim() != opt {
+                                intents.push(Intent::Action(Action::RenamePagePropertyOption {
+                                    page,
+                                    property: property.id,
+                                    old_option: opt.clone(),
+                                    new_option: edited_opt.trim().to_owned(),
+                                }));
+                                clear_draft(ui, opt_id);
+                            }
+                            if idx > 0
+                                && ui
+                                    .small_button("↑")
+                                    .on_hover_text("Move option up")
+                                    .clicked()
+                            {
+                                let mut reordered = property.options.clone();
+                                reordered.swap(idx, idx - 1);
+                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                    page,
+                                    property: property.id,
+                                    options: reordered,
+                                }));
+                            }
+                            if idx + 1 < property.options.len()
+                                && ui
+                                    .small_button("↓")
+                                    .on_hover_text("Move option down")
+                                    .clicked()
+                            {
+                                let mut reordered = property.options.clone();
+                                reordered.swap(idx, idx + 1);
+                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                    page,
+                                    property: property.id,
+                                    options: reordered,
+                                }));
+                            }
+                            if ui
+                                .small_button(RichText::new("✕").color(palette.danger))
+                                .on_hover_text("Delete option")
+                                .clicked()
+                            {
+                                intents.push(Intent::Action(Action::RemovePagePropertyOption {
+                                    page,
+                                    property: property.id,
+                                    option: opt.clone(),
+                                }));
+                            }
+                        });
+                    }
+                });
+        }
+
+        let new_opt_id = ("page-prop-new-opt", page, property.id);
+        let mut new_opt = read_draft(ui, new_opt_id, "");
+        ui.horizontal(|ui| {
+            let resp = ui.add_enabled(
+                !busy,
+                egui::TextEdit::singleline(&mut new_opt)
+                    .hint_text("New option…")
+                    .desired_width(175.0),
+            );
+            save_draft(ui, new_opt_id, &new_opt, resp.changed());
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let add_clicked = ui
+                .add_enabled(
+                    !busy && !new_opt.trim().is_empty(),
+                    egui::Button::new("+ Add"),
+                )
+                .clicked();
+            if (enter || add_clicked) && !new_opt.trim().is_empty() {
+                let mut updated = property.options.clone();
+                for part in split_options(&new_opt) {
+                    if !updated.contains(&part) {
+                        updated.push(part);
+                    }
+                }
+                intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                    page,
+                    property: property.id,
+                    options: updated,
+                }));
+                clear_draft(ui, new_opt_id);
+            }
+        });
+    }
+
+    // 4. Reorder & Property Actions
+    ui.separator();
+    if total > 1 {
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!busy && index > 0, egui::Button::new("↑ Move up"))
+                .clicked()
+            {
+                intents.push(Intent::Action(Action::MovePageProperty {
+                    page,
+                    property: property.id,
+                    direction: -1,
+                }));
+            }
+            if ui
+                .add_enabled(!busy && index + 1 < total, egui::Button::new("↓ Move down"))
+                .clicked()
+            {
+                intents.push(Intent::Action(Action::MovePageProperty {
+                    page,
+                    property: property.id,
+                    direction: 1,
+                }));
+            }
+        });
+    }
+
+    let has_value = if property.kind == "checkbox" {
+        property.value == "true"
+    } else {
+        !property.value.is_empty()
+    };
+    if has_value
+        && ui
+            .button(RichText::new("⌫  Clear value").color(palette.muted))
+            .clicked()
+    {
+        let cleared = if property.kind == "checkbox" {
+            "false".to_owned()
+        } else {
+            String::new()
+        };
+        set_value(intents, page, property.id, cleared);
+        clear_draft(ui, ("property-value", page, property.id));
+        ui.close_menu();
+    }
+
+    if ui
+        .button(RichText::new("🗑  Delete property").color(palette.danger))
+        .clicked()
+    {
+        intents.push(Intent::Action(Action::DeletePageProperty {
+            page,
+            property: property.id,
+        }));
+        ui.close_menu();
+    }
 }
 
 fn property_value_editor(
     ui: &mut Ui,
     page: PageId,
     property: &PageProperty,
-    busy: bool,
-    intents: &mut Vec<Intent>,
-) {
-    let value_id = ("property-value", page, property.id);
-    let mut value = read_draft(ui, value_id, &property.value);
-    match property.kind.as_str() {
-        "checkbox" => {
-            let mut checked = property.value == "true";
-            if ui
-                .add_enabled(!busy, egui::Checkbox::new(&mut checked, ""))
-                .changed()
-            {
-                set_value(intents, page, property.id, checked.to_string());
-            }
-        }
-        "select" | "status" => {
-            ui.add_enabled_ui(!busy, |ui| {
-                egui::ComboBox::from_id_salt(("property-value-select", page, property.id))
-                    .selected_text(if property.value.is_empty() {
-                        "Select"
-                    } else {
-                        &property.value
-                    })
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(property.value.is_empty(), "—")
-                            .clicked()
-                        {
-                            set_value(intents, page, property.id, String::new());
-                        }
-                        for option in &property.options {
-                            if ui
-                                .selectable_label(property.value == *option, option)
-                                .clicked()
-                            {
-                                set_value(intents, page, property.id, option.clone());
-                            }
-                        }
-                    })
-            });
-        }
-        "multi-select" => {
-            let selected: Vec<_> = property
-                .value
-                .split('|')
-                .filter(|item| !item.is_empty())
-                .collect();
-            let label = if selected.is_empty() {
-                "Select".to_owned()
-            } else {
-                selected.join(", ")
-            };
-            ui.add_enabled_ui(!busy, |ui| {
-                ui.menu_button(label, |ui| {
-                    if property.options.is_empty() {
-                        ui.label("Add an option first.");
-                    }
-                    for option in &property.options {
-                        let mut checked = selected.contains(&option.as_str());
-                        if ui.checkbox(&mut checked, option).changed() {
-                            let mut updated: Vec<String> =
-                                selected.iter().map(|value| (*value).to_owned()).collect();
-                            if checked {
-                                if !updated.iter().any(|value| value == option) {
-                                    updated.push(option.clone());
-                                }
-                            } else {
-                                updated.retain(|value| value != option);
-                            }
-                            set_value(intents, page, property.id, updated.join("|"));
-                        }
-                    }
-                })
-            });
-        }
-        _ => {
-            let hint = if property.kind == "number" {
-                "Number"
-            } else if property.kind == "date" {
-                "YYYY-MM-DD"
-            } else {
-                "Value"
-            };
-            let response = ui.add_enabled(
-                !busy,
-                egui::TextEdit::singleline(&mut value)
-                    .hint_text(hint)
-                    .margin(egui::Margin::symmetric(4, 2))
-                    .desired_width(140.0),
-            );
-            save_draft(ui, value_id, &value, response.changed());
-            if response.lost_focus() && value != property.value {
-                set_value(intents, page, property.id, value);
-            }
-        }
-    }
-}
-
-fn add_property_button(
-    ui: &mut Ui,
-    page: PageId,
-    widget_scope: Option<u64>,
+    available_width: f32,
     busy: bool,
     palette: Palette,
     intents: &mut Vec<Intent>,
 ) {
-    let widget_scope = widget_scope.unwrap_or_default();
-    let form_id = egui::Id::new(("new-page-property-open", page, widget_scope));
-    let mut is_open = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(form_id))
-        .unwrap_or(false);
-    if ui
-        .small_button(RichText::new("+ Property").color(palette.accent))
-        .clicked()
-    {
-        is_open = !is_open;
-        ui.ctx().data_mut(|data| data.insert_temp(form_id, is_open));
-    }
-
-    if !is_open {
-        return;
-    }
-
-    let name_id = egui::Id::new(("new-page-property-name", page, widget_scope));
-    let kind_id = egui::Id::new(("new-page-property-kind", page, widget_scope));
-    let options_id = egui::Id::new(("new-page-property-options", page, widget_scope));
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("New property");
-            if ui.small_button("Cancel").clicked() {
-                ui.ctx().data_mut(|data| data.insert_temp(form_id, false));
-            }
-        });
-
-        let mut name = ui
-            .ctx()
-            .data(|data| data.get_temp::<String>(name_id))
-            .unwrap_or_default();
-        ui.label("Name");
-        if ui.text_edit_singleline(&mut name).changed() {
-            ui.ctx()
-                .data_mut(|data| data.insert_temp(name_id, name.clone()));
-        }
-
-        let mut kind = ui
-            .ctx()
-            .data(|data| data.get_temp::<String>(kind_id))
-            .unwrap_or_else(|| "text".to_owned());
-        egui::ComboBox::from_id_salt(("new-property-kind-choice", page, widget_scope))
-            .selected_text(type_label(&kind))
-            .show_ui(ui, |ui| {
-                for (candidate, label) in PROPERTY_TYPES {
-                    ui.selectable_value(&mut kind, candidate.to_owned(), label);
+    match property.kind.as_str() {
+        "checkbox" => {
+            let mut checked = property.value == "true";
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!busy, egui::Checkbox::without_text(&mut checked))
+                    .changed()
+                {
+                    set_value(intents, page, property.id, checked.to_string());
                 }
             });
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(kind_id, kind.clone()));
+        }
+        "select" | "status" => {
+            show_single_option_editor(ui, page, property, busy, palette, intents);
+        }
+        "multi-select" => {
+            show_multi_option_editor(ui, page, property, available_width, busy, palette, intents);
+        }
+        "date" => {
+            show_date_editor(ui, page, property, busy, palette, intents);
+        }
+        _ => {
+            show_text_or_number_editor(
+                ui,
+                page,
+                property,
+                available_width,
+                busy,
+                palette,
+                intents,
+            );
+        }
+    }
+}
 
-        let mut options = ui
-            .ctx()
-            .data(|data| data.get_temp::<String>(options_id))
-            .unwrap_or_default();
-        if matches!(kind.as_str(), "select" | "status" | "multi-select") {
-            ui.label("Options (comma-separated, optional)");
-            if ui.text_edit_singleline(&mut options).changed() {
-                ui.ctx()
-                    .data_mut(|data| data.insert_temp(options_id, options.clone()));
+fn show_single_option_editor(
+    ui: &mut Ui,
+    page: PageId,
+    property: &PageProperty,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let is_empty = property.value.is_empty();
+    let (pill_bg, pill_border, pill_text) = if is_empty {
+        (Color32::TRANSPARENT, Color32::TRANSPARENT, palette.muted)
+    } else {
+        option_pill_colors(palette, &property.kind, &property.value)
+    };
+    let display_label = if is_empty {
+        "Empty".to_owned()
+    } else if property.kind == "status" {
+        format!("●  {}", property.value)
+    } else {
+        property.value.clone()
+    };
+
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = vec2(8.0, 3.0);
+        ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_bg;
+        ui.style_mut().visuals.widgets.inactive.bg_fill = pill_bg;
+        ui.style_mut().visuals.widgets.inactive.bg_stroke = if is_empty {
+            Stroke::NONE
+        } else {
+            Stroke::new(1.0, pill_border)
+        };
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.menu_button(
+                RichText::new(display_label)
+                    .font(FontId::proportional(12.5))
+                    .color(pill_text),
+                |ui| {
+                    ui.set_min_width(195.0);
+                    if !is_empty
+                        && ui
+                            .selectable_label(false, RichText::new("—  Clear").color(palette.muted))
+                            .clicked()
+                    {
+                        set_value(intents, page, property.id, String::new());
+                        ui.close_menu();
+                    }
+                    for option in &property.options {
+                        let selected = property.value == *option;
+                        let (_, _, opt_text_col) =
+                            option_pill_colors(palette, &property.kind, option);
+                        let item_text = if property.kind == "status" {
+                            format!("●  {option}")
+                        } else {
+                            option.clone()
+                        };
+                        if ui
+                            .selectable_label(
+                                selected,
+                                RichText::new(item_text).color(opt_text_col),
+                            )
+                            .clicked()
+                        {
+                            set_value(intents, page, property.id, option.clone());
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    let quick_id = ("page-prop-quick-opt", page, property.id);
+                    let mut new_opt = read_draft(ui, quick_id, "");
+                    ui.horizontal(|ui| {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut new_opt)
+                                .hint_text("Create option…")
+                                .desired_width(140.0),
+                        );
+                        save_draft(ui, quick_id, &new_opt, resp.changed());
+                        let enter =
+                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (enter || ui.small_button("+").clicked()) && !new_opt.trim().is_empty() {
+                            let trimmed = new_opt.trim().to_owned();
+                            let mut opts = property.options.clone();
+                            if !opts.contains(&trimmed) {
+                                opts.push(trimmed.clone());
+                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                    page,
+                                    property: property.id,
+                                    options: opts,
+                                }));
+                            }
+                            set_value(intents, page, property.id, trimmed);
+                            clear_draft(ui, quick_id);
+                            ui.close_menu();
+                        }
+                    });
+                },
+            );
+        });
+    });
+}
+
+fn show_multi_option_editor(
+    ui: &mut Ui,
+    page: PageId,
+    property: &PageProperty,
+    available_width: f32,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let selected: Vec<String> = property
+        .value
+        .split('|')
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    ui.horizontal_wrapped(|ui| {
+        ui.set_max_width(available_width);
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+
+        for item in &selected {
+            let (pill_bg, pill_border, pill_text) =
+                option_pill_colors(palette, "multi-select", item);
+            let pill_btn = egui::Button::new(
+                RichText::new(format!("{item}  ✕"))
+                    .font(FontId::proportional(12.0))
+                    .color(pill_text),
+            )
+            .fill(pill_bg)
+            .stroke(Stroke::new(1.0, pill_border))
+            .corner_radius(4);
+
+            if ui
+                .add_enabled(!busy, pill_btn)
+                .on_hover_text(format!("Remove '{item}'"))
+                .clicked()
+            {
+                let mut updated = selected.clone();
+                updated.retain(|candidate| candidate != item);
+                set_value(intents, page, property.id, updated.join("|"));
             }
         }
 
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!busy && !name.trim().is_empty(), egui::Button::new("Add"))
+        let trigger_label = if selected.is_empty() { "Empty" } else { "+" };
+        ui.scope(|ui| {
+            ui.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+            ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+            ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.menu_button(
+                    RichText::new(trigger_label)
+                        .font(FontId::proportional(12.5))
+                        .color(palette.muted),
+                    |ui| {
+                        ui.set_min_width(205.0);
+                        if !selected.is_empty()
+                            && ui
+                                .button(RichText::new("Clear all").small().color(palette.muted))
+                                .clicked()
+                        {
+                            set_value(intents, page, property.id, String::new());
+                            ui.close_menu();
+                        }
+                        if property.options.is_empty() {
+                            ui.label(
+                                RichText::new("No options yet. Create one below.")
+                                    .small()
+                                    .italics()
+                                    .color(palette.muted),
+                            );
+                        }
+                        for option in &property.options {
+                            let mut checked = selected.contains(option);
+                            if ui.checkbox(&mut checked, option).changed() {
+                                let mut updated = selected.clone();
+                                if checked {
+                                    if !updated.contains(option) {
+                                        updated.push(option.clone());
+                                    }
+                                } else {
+                                    updated.retain(|value| value != option);
+                                }
+                                set_value(intents, page, property.id, updated.join("|"));
+                            }
+                        }
+                        ui.separator();
+                        let quick_id = ("page-prop-multi-quick-opt", page, property.id);
+                        let mut new_opt = read_draft(ui, quick_id, "");
+                        ui.horizontal(|ui| {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut new_opt)
+                                    .hint_text("Create option…")
+                                    .desired_width(145.0),
+                            );
+                            save_draft(ui, quick_id, &new_opt, resp.changed());
+                            let enter =
+                                resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if (enter || ui.small_button("+").clicked())
+                                && !new_opt.trim().is_empty()
+                            {
+                                let trimmed = new_opt.trim().to_owned();
+                                let mut opts = property.options.clone();
+                                if !opts.contains(&trimmed) {
+                                    opts.push(trimmed.clone());
+                                    intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                        page,
+                                        property: property.id,
+                                        options: opts,
+                                    }));
+                                }
+                                let mut updated = selected.clone();
+                                if !updated.contains(&trimmed) {
+                                    updated.push(trimmed);
+                                }
+                                set_value(intents, page, property.id, updated.join("|"));
+                                clear_draft(ui, quick_id);
+                            }
+                        });
+                    },
+                );
+            });
+        });
+    });
+}
+
+fn show_date_editor(
+    ui: &mut Ui,
+    page: PageId,
+    property: &PageProperty,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let value_id = ("property-value", page, property.id);
+    let mut value = read_draft(ui, value_id, &property.value);
+    if !ui.ctx().memory(|m| m.has_focus(ui.id().with(value_id))) && value != property.value {
+        value = property.value.clone();
+    }
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+
+        // Calendar popup button
+        ui.scope(|ui| {
+            let has_date = !property.value.is_empty();
+            let pill_bg = if has_date {
+                palette.accent_soft
+            } else {
+                Color32::TRANSPARENT
+            };
+            ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_bg;
+            ui.style_mut().visuals.widgets.inactive.bg_fill = pill_bg;
+            ui.style_mut().visuals.widgets.inactive.bg_stroke = if has_date {
+                Stroke::new(1.0, palette.accent.linear_multiply(0.3))
+            } else {
+                Stroke::NONE
+            };
+            ui.spacing_mut().button_padding = vec2(6.0, 2.0);
+
+            let btn_label = if has_date {
+                format!("📅  {}", format_iso_date_pretty(&property.value))
+            } else {
+                "📅".to_owned()
+            };
+            ui.menu_button(
+                RichText::new(btn_label)
+                    .font(FontId::proportional(12.0))
+                    .color(if has_date {
+                        palette.text
+                    } else {
+                        palette.muted
+                    }),
+                |ui| {
+                    if let Some(chosen) = show_date_picker_popup(
+                        ui,
+                        ("page-prop-cal", page, property.id),
+                        &property.value,
+                        palette,
+                    ) {
+                        clear_draft(ui, value_id);
+                        set_value(intents, page, property.id, chosen);
+                        ui.close_menu();
+                    }
+                },
+            )
+            .response
+            .on_hover_text("Open calendar date picker");
+        });
+
+        // Direct inline YYYY-MM-DD editor
+        let response = ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut value)
+                .id(ui.id().with(value_id))
+                .hint_text(if property.value.is_empty() {
+                    "YYYY-MM-DD"
+                } else {
+                    ""
+                })
+                .font(FontId::proportional(12.5))
+                .frame(false)
+                .margin(egui::Margin::symmetric(4, 2))
+                .desired_width(100.0),
+        );
+        save_draft(ui, value_id, &value, response.changed());
+        let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (response.lost_focus() || enter) && value.trim() != property.value {
+            set_value(intents, page, property.id, value.trim().to_owned());
+        }
+    });
+}
+
+pub fn show_date_picker_popup(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + Copy,
+    current_value: &str,
+    palette: Palette,
+) -> Option<String> {
+    ui.set_min_width(236.0);
+    let today = Local::now().date_naive();
+    let parsed_current = NaiveDate::parse_from_str(current_value.trim(), "%Y-%m-%d").ok();
+
+    let nav_id = ui.id().with(("cal-nav-ym", id_salt));
+    let default_ym = parsed_current
+        .map(|d| (d.year(), d.month()))
+        .unwrap_or((today.year(), today.month()));
+    let (mut year, mut month) = ui
+        .ctx()
+        .data(|d| d.get_temp::<(i32, u32)>(nav_id))
+        .unwrap_or(default_ym);
+
+    let mut chosen: Option<String> = None;
+
+    // Quick preset buttons
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if ui.small_button("Today").clicked() {
+            chosen = Some(today.format("%Y-%m-%d").to_string());
+        }
+        if ui.small_button("Tomorrow").clicked() {
+            if let Some(tom) = today.checked_add_signed(Duration::days(1)) {
+                chosen = Some(tom.format("%Y-%m-%d").to_string());
+            }
+        }
+        if ui.small_button("+7d").clicked() {
+            if let Some(next_w) = today.checked_add_signed(Duration::days(7)) {
+                chosen = Some(next_w.format("%Y-%m-%d").to_string());
+            }
+        }
+        if !current_value.is_empty()
+            && ui
+                .small_button(RichText::new("Clear").color(palette.danger))
                 .clicked()
-            {
-                intents.push(Intent::Action(Action::AddPageProperty {
-                    page,
-                    name: name.trim().to_owned(),
-                    kind,
-                    options: split_options(&options),
-                }));
-                ui.ctx().data_mut(|data| {
-                    data.remove::<String>(name_id);
-                    data.remove::<String>(kind_id);
-                    data.remove::<String>(options_id);
-                    data.insert_temp(form_id, false);
-                });
+        {
+            chosen = Some(String::new());
+        }
+    });
+
+    ui.separator();
+
+    // Month / Year Navigation
+    ui.horizontal(|ui| {
+        if ui.small_button("«").on_hover_text("Previous year").clicked() {
+            year -= 1;
+        }
+        if ui.small_button("‹").on_hover_text("Previous month").clicked() {
+            if month == 1 {
+                month = 12;
+                year -= 1;
+            } else {
+                month -= 1;
+            }
+        }
+        ui.label(
+            RichText::new(format!("{} {year}", month_name(month)))
+                .font(FontId::proportional(12.5))
+                .strong(),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("»").on_hover_text("Next year").clicked() {
+                year += 1;
+            }
+            if ui.small_button("›").on_hover_text("Next month").clicked() {
+                if month == 12 {
+                    month = 1;
+                    year += 1;
+                } else {
+                    month += 1;
+                }
             }
         });
     });
+    ui.ctx().data_mut(|d| d.insert_temp(nav_id, (year, month)));
+
+    ui.add_space(2.0);
+
+    // Calendar Grid
+    egui::Grid::new(("cal-grid", id_salt))
+        .num_columns(7)
+        .spacing([2.0, 2.0])
+        .min_col_width(28.0)
+        .show(ui, |ui| {
+            for wd in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"] {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(wd)
+                            .font(FontId::proportional(11.0))
+                            .color(palette.muted)
+                            .strong(),
+                    );
+                });
+            }
+            ui.end_row();
+
+            let first_day = NaiveDate::from_ymd_opt(year, month, 1)
+                .unwrap_or_else(|| NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+            let offset = first_day.weekday().num_days_from_monday() as usize;
+            let days_count = days_in_month(year, month);
+
+            let mut cell = 0usize;
+            for _ in 0..offset {
+                ui.label("");
+                cell += 1;
+            }
+            for day in 1..=days_count {
+                let candidate = NaiveDate::from_ymd_opt(year, month, day);
+                let is_selected = candidate == parsed_current && parsed_current.is_some();
+                let is_today = candidate == Some(today);
+
+                let fill = if is_selected {
+                    palette.accent
+                } else if is_today {
+                    palette.accent_soft
+                } else {
+                    Color32::TRANSPARENT
+                };
+                let text_col = if is_selected {
+                    palette.background
+                } else if is_today {
+                    palette.accent
+                } else {
+                    palette.text
+                };
+                let stroke = if is_today && !is_selected {
+                    Stroke::new(1.0, palette.accent)
+                } else {
+                    Stroke::NONE
+                };
+
+                let btn = egui::Button::new(
+                    RichText::new(day.to_string())
+                        .font(FontId::proportional(11.5))
+                        .color(text_col),
+                )
+                .fill(fill)
+                .stroke(stroke)
+                .corner_radius(4);
+
+                if ui.add_sized([28.0, 24.0], btn).clicked()
+                    && let Some(date) = candidate
+                {
+                    chosen = Some(date.format("%Y-%m-%d").to_string());
+                }
+
+                cell += 1;
+                if cell % 7 == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+
+    chosen
+}
+
+fn show_text_or_number_editor(
+    ui: &mut Ui,
+    page: PageId,
+    property: &PageProperty,
+    available_width: f32,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let value_id = ("property-value", page, property.id);
+    let mut value = read_draft(ui, value_id, &property.value);
+    if !ui.ctx().memory(|m| m.has_focus(ui.id().with(value_id))) && value != property.value {
+        value = property.value.clone();
+    }
+
+    let hint = if property.kind == "number" {
+        "Empty (number)"
+    } else {
+        "Empty"
+    };
+
+    let is_invalid_number = property.kind == "number"
+        && !value.trim().is_empty()
+        && value
+            .trim()
+            .parse::<f64>()
+            .map_or(true, |n| !n.is_finite());
+
+    let response = ui.add_enabled(
+        !busy,
+        egui::TextEdit::singleline(&mut value)
+            .id(ui.id().with(value_id))
+            .hint_text(hint)
+            .font(FontId::proportional(13.0))
+            .frame(false)
+            .margin(egui::Margin::symmetric(4, 2))
+            .desired_width((available_width - 16.0).max(80.0)),
+    );
+    save_draft(ui, value_id, &value, response.changed());
+
+    if is_invalid_number {
+        ui.label(
+            RichText::new("⚠ Invalid number")
+                .font(FontId::proportional(11.0))
+                .color(palette.danger),
+        );
+    } else {
+        let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (response.lost_focus() || enter) && value != property.value {
+            set_value(intents, page, property.id, value);
+        }
+    }
+}
+
+fn show_add_property_panel(
+    ui: &mut Ui,
+    page: PageId,
+    scope_id: u64,
+    existing_properties: &[PageProperty],
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    ui.set_min_width(225.0);
+    ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
+
+    ui.label(
+        RichText::new("NEW PROPERTY")
+            .font(FontId::proportional(10.5))
+            .strong()
+            .color(palette.muted),
+    );
+
+    let name_id = ("new-page-property-name", page, scope_id);
+    let mut name = read_draft(ui, name_id, "");
+    let name_resp = ui.add_enabled(
+        !busy,
+        egui::TextEdit::singleline(&mut name)
+            .hint_text("Property name (optional)…")
+            .desired_width(210.0),
+    );
+    save_draft(ui, name_id, &name, name_resp.changed());
+
+    let enter_pressed = name_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if enter_pressed && !name.trim().is_empty() {
+        let final_name = unique_property_name(existing_properties, name.trim());
+        intents.push(Intent::Action(Action::AddPageProperty {
+            page,
+            name: final_name,
+            kind: "text".into(),
+            options: Vec::new(),
+        }));
+        clear_draft(ui, name_id);
+        ui.close_menu();
+        return;
+    }
+
+    ui.separator();
+    ui.label(
+        RichText::new("Click a type to create")
+            .font(FontId::proportional(11.0))
+            .color(palette.muted),
+    );
+
+    for (kind, label) in PROPERTY_TYPES {
+        let icon = property_icon(kind);
+        let btn = egui::Button::new(
+            RichText::new(format!("{icon}   {label}")).font(FontId::proportional(13.0)),
+        )
+        .frame(false)
+        .min_size(vec2(210.0, 26.0));
+
+        if ui.add_enabled(!busy, btn).clicked() {
+            let base_name = if name.trim().is_empty() {
+                default_name_for_kind(kind)
+            } else {
+                name.trim()
+            };
+            let final_name = unique_property_name(existing_properties, base_name);
+            let options = if kind == "status" {
+                DEFAULT_DATABASE_STATUS_OPTIONS
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            intents.push(Intent::Action(Action::AddPageProperty {
+                page,
+                name: final_name,
+                kind: kind.into(),
+                options,
+            }));
+            clear_draft(ui, name_id);
+            ui.close_menu();
+        }
+    }
+}
+
+fn default_name_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "text" => "Notes",
+        "number" => "Number",
+        "date" => "Date",
+        "status" => "Status",
+        "select" => "Category",
+        "multi-select" => "Tags",
+        "checkbox" => "Done",
+        _ => "Property",
+    }
+}
+
+fn unique_property_name(existing: &[PageProperty], desired: &str) -> String {
+    let desired = desired.trim();
+    if !existing
+        .iter()
+        .any(|p| p.name.eq_ignore_ascii_case(desired))
+    {
+        return desired.to_owned();
+    }
+    let mut counter = 2usize;
+    loop {
+        let candidate = format!("{desired} {counter}");
+        if !existing
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+pub fn format_iso_date_pretty(value: &str) -> String {
+    let Ok(date) = NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d") else {
+        return value.to_owned();
+    };
+    format!("{} {} {}", date.day(), month_name(date.month()), date.year())
+}
+
+fn month_name(month: u32) -> &'static str {
+    match month {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "",
+    }
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 30,
+    }
 }
 
 fn set_value(intents: &mut Vec<Intent>, page: PageId, property: i64, value: String) {
@@ -399,6 +1545,11 @@ fn save_draft(ui: &Ui, key: impl std::hash::Hash, value: &str, changed: bool) {
     }
 }
 
+fn clear_draft(ui: &Ui, key: impl std::hash::Hash) {
+    let id = ui.id().with(key);
+    ui.ctx().data_mut(|data| data.remove::<String>(id));
+}
+
 fn split_options(options: &str) -> Vec<String> {
     options
         .split(',')
@@ -406,11 +1557,4 @@ fn split_options(options: &str) -> Vec<String> {
         .filter(|option| !option.is_empty())
         .map(str::to_owned)
         .collect()
-}
-
-fn type_label(kind: &str) -> &'static str {
-    PROPERTY_TYPES
-        .iter()
-        .find_map(|(candidate, label)| (*candidate == kind).then_some(*label))
-        .unwrap_or("Text")
 }

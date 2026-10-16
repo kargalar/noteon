@@ -206,10 +206,28 @@ impl Repository {
     }
 
     pub fn database(&self, page_id: PageId) -> Result<DatabaseData> {
-        let (view, gallery_columns, view_settings, sort_key, sort_descending, title): (String, u8, String, String, bool, String) = self.connection.query_row(
-            "SELECT d.view_mode,d.gallery_columns,d.view_settings,d.sort_key,d.sort_descending,p.title FROM databases d JOIN pages p ON p.id=d.page_id WHERE d.page_id=?1",
+        let (view, gallery_columns, view_settings, sort_key, sort_descending, title, icon): (
+            String,
+            u8,
+            String,
+            String,
+            bool,
+            String,
+            String,
+        ) = self.connection.query_row(
+            "SELECT d.view_mode,d.gallery_columns,d.view_settings,d.sort_key,d.sort_descending,p.title,p.icon FROM databases d JOIN pages p ON p.id=d.page_id WHERE d.page_id=?1",
             [page_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
         )?;
         let view_settings = serde_json::from_str(&view_settings).unwrap_or_default();
         let mut property_statement = self.connection.prepare_cached(
@@ -317,6 +335,7 @@ impl Repository {
         Ok(DatabaseData {
             page_id,
             title,
+            icon,
             view: DatabaseView::from_db(&view),
             gallery_columns,
             view_settings,
@@ -529,6 +548,41 @@ impl Repository {
         Ok(())
     }
 
+    pub fn move_database_property(&mut self, id: i64, direction: i32) -> Result<()> {
+        let Some(owner) = self.database_property_owner(id)? else {
+            return Err(Error::Invalid("Database property not found.".into()));
+        };
+        let transaction = self.connection.transaction()?;
+        let mut ids: Vec<i64> = {
+            let mut stmt = transaction.prepare(
+                "SELECT id FROM database_properties WHERE database_page_id=?1 ORDER BY position, id",
+            )?;
+            stmt.query_map([owner], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
+            return Err(Error::Invalid("Database property not found.".into()));
+        };
+        let target = if direction < 0 {
+            index.checked_sub(1)
+        } else if direction > 0 && index + 1 < ids.len() {
+            Some(index + 1)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            ids.swap(index, target);
+            for (pos, prop_id) in ids.into_iter().enumerate() {
+                transaction.execute(
+                    "UPDATE database_properties SET position=?1 WHERE id=?2",
+                    params![pos as i64, prop_id],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn delete_database_property(&self, id: i64) -> Result<()> {
         let owner = self.database_property_owner(id)?;
         self.connection
@@ -580,6 +634,17 @@ impl Repository {
         self.connection.execute(
             "UPDATE pages SET title=?1,updated_at=unixepoch() WHERE id=?2 AND trashed_by IS NULL",
             params![title, page],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_page_icon(&self, page: PageId, icon: &str) -> Result<()> {
+        if icon.len() > 64 {
+            return Err(Error::Invalid("Icon is too long.".into()));
+        }
+        self.connection.execute(
+            "UPDATE pages SET icon=?1,updated_at=unixepoch() WHERE id=?2 AND trashed_by IS NULL",
+            params![icon, page],
         )?;
         Ok(())
     }
@@ -701,3 +766,24 @@ fn is_iso_date(value: &str) -> bool {
     };
     (1..=days_in_month).contains(&day)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_icon_can_be_updated() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.sqlite");
+        let mut repo = Repository::open(&db_path).unwrap();
+
+        let db_id = repo.create_database(None).unwrap();
+        let data = repo.database(db_id).unwrap();
+        assert_eq!(data.icon, "▦");
+
+        repo.set_page_icon(db_id, "📊").unwrap();
+        let updated = repo.database(db_id).unwrap();
+        assert_eq!(updated.icon, "📊");
+    }
+}
+

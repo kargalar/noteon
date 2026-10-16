@@ -211,3 +211,127 @@ fn docked_page_tabs_round_trip_with_their_panel_layout() {
     assert!(restored.find_tab(&2).is_some());
     assert!(restored.find_tab(&3).is_some());
 }
+
+#[test]
+fn text_format_toolbar_dismisses_on_click_outside_and_escape() {
+    let context = egui::Context::default();
+    let mut editor = editor("Hello world", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    let active_selection_id = egui::Id::new("active-text-format-selection");
+    let selection_id = egui::Id::new(("format-selection", 1_i64));
+    let editor_id = egui::Id::new(("block", 1_i64));
+
+    context.data_mut(|d| {
+        d.insert_temp(selection_id, 0..5_usize);
+        d.insert_temp(active_selection_id, editor_id);
+    });
+
+    // Frame with selection: toolbar is rendered
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    assert_eq!(
+        context.data(|d| d.get_temp::<egui::Id>(active_selection_id)),
+        Some(editor_id)
+    );
+
+    // Click outside toolbar and editor: toolbar should dismiss
+    let click_outside = Event::PointerButton {
+        pos: egui::pos2(800.0, 800.0),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    };
+    frame(&context, &mut editor, vec![click_outside], Modifiers::NONE);
+
+    assert_eq!(
+        context.data(|d| d.get_temp::<egui::Id>(active_selection_id)),
+        None
+    );
+    assert_eq!(
+        context.data(|d| d.get_temp::<std::ops::Range<usize>>(selection_id)),
+        None
+    );
+
+    // Test Escape dismissal as well
+    context.data_mut(|d| {
+        d.insert_temp(selection_id, 0..5_usize);
+        d.insert_temp(active_selection_id, editor_id);
+    });
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    assert_eq!(
+        context.data(|d| d.get_temp::<egui::Id>(active_selection_id)),
+        Some(editor_id)
+    );
+
+    let escape_key = Event::Key {
+        key: Key::Escape,
+        physical_key: Some(Key::Escape),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    frame(&context, &mut editor, vec![escape_key], Modifiers::NONE);
+
+    assert_eq!(
+        context.data(|d| d.get_temp::<egui::Id>(active_selection_id)),
+        None
+    );
+}
+
+#[test]
+fn marquee_drag_from_margin_selects_blocks_and_delete_removes_them() {
+    let context = egui::Context::default();
+    let mut editor = editor("Satır içeriği", 4);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    let start_pos = egui::pos2(24.0, 140.0);
+    let drag_pos = egui::pos2(600.0, 360.0);
+    frame(
+        &context,
+        &mut editor,
+        vec![
+            Event::PointerMoved(start_pos),
+            Event::PointerButton {
+                pos: start_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+        Modifiers::NONE,
+    );
+    frame(
+        &context,
+        &mut editor,
+        vec![Event::PointerMoved(drag_pos)],
+        Modifiers::NONE,
+    );
+    frame(
+        &context,
+        &mut editor,
+        vec![Event::PointerButton {
+            pos: drag_pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+        Modifiers::NONE,
+    );
+
+    assert!(editor.selected_blocks.len() >= 2);
+
+    let delete_event = Event::Key {
+        key: Key::Delete,
+        physical_key: Some(Key::Delete),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    let intents = frame(&context, &mut editor, vec![delete_event], Modifiers::NONE);
+    assert!(intents.iter().any(|intent| matches!(
+        intent,
+        Intent::Action(noteon::worker::Action::DeleteBlocks { blocks, .. }) if blocks.len() >= 2
+    )));
+    assert!(editor.selected_blocks.is_empty());
+}
+

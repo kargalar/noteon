@@ -210,6 +210,7 @@ pub struct DatabaseProperty {
 pub struct DatabaseData {
     pub page_id: PageId,
     pub title: String,
+    pub icon: String,
     pub view: DatabaseView,
     pub gallery_columns: u8,
     pub view_settings: DatabaseViewSettings,
@@ -232,6 +233,7 @@ pub struct DatabaseViewSettings {
     pub table_column_widths: std::collections::HashMap<i64, f32>,
     pub table_name_width: Option<f32>,
     pub table_created_width: Option<f32>,
+    pub table_height: Option<f32>,
     pub board_show_description: bool,
     pub board_visible_properties: Option<Vec<i64>>,
 }
@@ -249,6 +251,7 @@ impl Default for DatabaseViewSettings {
             table_column_widths: std::collections::HashMap::new(),
             table_name_width: None,
             table_created_width: None,
+            table_height: None,
             board_show_description: false,
             board_visible_properties: None,
         }
@@ -309,6 +312,18 @@ pub struct TextStyleRange {
     pub start: usize,
     pub end: usize,
     pub style: InlineTextStyle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BulkBlockStyleOp {
+    ToggleBold,
+    ToggleItalic,
+    ToggleUnderline,
+    ToggleStrikethrough,
+    SetFont(Option<InlineFontFamily>),
+    SetTextColor(Option<[u8; 4]>),
+    SetHighlight(Option<[u8; 4]>),
+    ClearFormatting,
 }
 
 #[derive(Clone, Debug)]

@@ -1,5 +1,5 @@
 use super::block;
-use crate::config::{PAGE_ICONS, UNTITLED};
+use crate::config::UNTITLED;
 use crate::domain::model::{Document, Page, PageEdit};
 use crate::ui::{Intent, palette::Palette, quiet_button, small_label, text};
 use crate::worker::Action;
@@ -15,6 +15,8 @@ pub(super) struct Canvas {
 
 pub(super) struct RecordPropertiesContext<'a> {
     pub record: Option<(&'a crate::domain::model::DatabaseData, i64)>,
+    pub property_drafts: &'a mut std::collections::HashMap<i64, (String, String)>,
+    pub title_drafts: &'a mut std::collections::HashMap<i64, String>,
     pub value_drafts: &'a mut std::collections::HashMap<(i64, i64), String>,
 }
 
@@ -96,14 +98,18 @@ pub(super) fn show(
     let controls_were_hovered = ui
         .ctx()
         .data(|data| data.get_temp::<bool>(cover_controls_id).unwrap_or_default());
-    let cover_menu_open = ui.ctx().memory(|memory| memory.any_popup_open());
-    if cover_response.hovered() || controls_were_hovered || cover_menu_open {
+    let cover_menu_open_id = egui::Id::new(("cover-menu-open", page.id));
+    let was_cover_menu_open = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(cover_menu_open_id).unwrap_or_default());
+    if cover_response.hovered() || controls_were_hovered || was_cover_menu_open {
+        let mut is_cover_menu_open = false;
         let controls = egui::Area::new(cover_controls_id)
             .order(egui::Order::Foreground)
             .fixed_pos(cover_rect.right_top() + vec2(-96.0, 6.0))
             .show(ui.ctx(), |ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    ui.menu_button("Cover", |ui| {
+                    let menu_resp = ui.menu_button("Cover", |ui| {
                         if ui.button("Choose image…").clicked() {
                             intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
                             ui.close_menu();
@@ -133,6 +139,9 @@ pub(super) fn show(
                             }
                         }
                     });
+                    if menu_resp.inner.is_some() {
+                        is_cover_menu_open = true;
+                    }
                 });
             });
         ui.ctx().data_mut(|data| {
@@ -140,24 +149,30 @@ pub(super) fn show(
                 cover_controls_id,
                 controls.response.hovered() || cover_response.hovered(),
             );
+            data.insert_temp(cover_menu_open_id, is_cover_menu_open);
         });
     } else {
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(cover_controls_id, false));
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(cover_controls_id, false);
+            data.insert_temp(cover_menu_open_id, false);
+        });
     }
     if cover_height > 28.0 {
         ui.add_space(8.0);
     }
     let document_width = (width - 72.0).clamp(200.0, 850.0);
     let inset = ((width - document_width) / 2.0).max(12.0);
+    let props_max_width = (document_width - block::HANDLE_WIDTH).max(280.0);
     page_changed |= title(
         ui,
         page,
+        &document.properties,
         title_focus,
         inset,
         document_width,
         widget_scope,
         palette,
+        &mut intents,
     );
     if page_changed {
         intents.push(Intent::PageChanged(PageEdit::from(&*page)));
@@ -168,6 +183,7 @@ pub(super) fn show(
             page: page.id,
             widget_scope,
             indent: inset + block::HANDLE_WIDTH,
+            max_width: props_max_width,
         },
         page.created_at,
         &document.properties,
@@ -182,15 +198,19 @@ pub(super) fn show(
             crate::ui::database::RecordPropertiesTarget {
                 page_id: record_page,
                 indent: inset + block::HANDLE_WIDTH,
+                max_width: props_max_width,
             },
             false,
             palette,
             &mut intents,
-            record_properties.value_drafts,
+            &mut crate::ui::database::Drafts {
+                properties: record_properties.property_drafts,
+                titles: record_properties.title_drafts,
+                values: record_properties.value_drafts,
+            },
         );
     }
-    toolbar(ui, document.outline.len(), inset, palette);
-    ui.add_space(13.0);
+    ui.add_space(8.0);
     (
         Canvas {
             width,
@@ -276,88 +296,38 @@ fn breadcrumb(
 fn identity(ui: &mut Ui, page: &mut Page, palette: Palette) -> bool {
     let mut page_changed = false;
     ui.horizontal(|ui| {
-        ui.menu_button(
-            RichText::new(&page.icon).size(29.0).color(palette.accent),
-            |ui| {
-                ui.set_min_width(280.0);
-                let search_id = egui::Id::new(("page-icon-search", page.id));
-                let mut query = ui
-                    .ctx()
-                    .data(|data| data.get_temp::<String>(search_id))
-                    .unwrap_or_default();
-                let search = ui.add(
-                    egui::TextEdit::singleline(&mut query)
-                        .hint_text("Search icons")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.ctx()
-                    .data_mut(|data| data.insert_temp(search_id, query.clone()));
-
-                let query = query.trim().to_lowercase();
-                let matching_icons = PAGE_ICONS
-                    .iter()
-                    .filter(|(name, icon)| {
-                        query.is_empty() || name.contains(&query) || icon.contains(query.as_str())
-                    })
-                    .collect::<Vec<_>>();
-                if matching_icons.is_empty() {
-                    ui.label("No icons found");
-                } else {
-                    egui::ScrollArea::vertical()
-                        .max_height(300.0)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            egui::Grid::new(("page-icon-grid", page.id))
-                                .num_columns(8)
-                                .spacing([3.0, 3.0])
-                                .show(ui, |ui| {
-                                    for (index, (name, icon)) in matching_icons.iter().enumerate() {
-                                        if ui
-                                            .add_sized(
-                                                [30.0, 30.0],
-                                                egui::Button::new(RichText::new(*icon).size(19.0)),
-                                            )
-                                            .on_hover_text(*name)
-                                            .clicked()
-                                        {
-                                            page.icon = (*icon).to_string();
-                                            page_changed = true;
-                                            ui.ctx().data_mut(|data| {
-                                                data.insert_temp(search_id, String::new());
-                                            });
-                                            ui.close_menu();
-                                        }
-                                        if (index + 1) % 8 == 0 {
-                                            ui.end_row();
-                                        }
-                                    }
-                                });
-                        });
-                }
-                if search.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                    ui.close_menu();
-                }
-            },
-        );
+        if let Some(new_icon) = crate::ui::icon_picker_button(
+            ui,
+            page.id,
+            &page.icon,
+            29.0,
+            Some(palette.accent),
+        ) {
+            page.icon = new_icon;
+            page_changed = true;
+        }
     });
     page_changed
 }
 
+#[allow(clippy::too_many_arguments)]
 fn title(
     ui: &mut Ui,
     page: &mut Page,
+    properties: &[crate::domain::model::PageProperty],
     title_focus: &mut bool,
     inset: f32,
     document_width: f32,
     widget_scope: Option<u64>,
     palette: Palette,
+    intents: &mut Vec<Intent>,
 ) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.add_space(inset);
         changed = identity(ui, page, palette);
         ui.add_space(4.0);
-        let title = ui.add_sized(
+        let title_resp = ui.add_sized(
             [document_width - 42.0, 51.0],
             egui::TextEdit::singleline(&mut page.title)
                 .id(title_widget_id(page.id, widget_scope))
@@ -366,11 +336,117 @@ fn title(
                 .hint_text(UNTITLED)
                 .margin(egui::Margin::ZERO),
         );
-        changed |= title.changed();
+        changed |= title_resp.changed();
         if *title_focus {
-            title.request_focus();
+            title_resp.request_focus();
             *title_focus = false;
         }
+        title_resp.context_menu(|ui| {
+            ui.set_min_width(240.0);
+            ui.label(
+                RichText::new("PAGE & PROPERTIES")
+                    .font(FontId::proportional(10.5))
+                    .strong()
+                    .color(palette.muted),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&page.icon).size(16.0));
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut page.title)
+                        .hint_text(UNTITLED)
+                        .desired_width(190.0),
+                );
+                changed |= resp.changed();
+            });
+            ui.separator();
+            ui.menu_button("+  Add property", |ui| {
+                for (kind, label) in crate::domain::model::PROPERTY_TYPES {
+                    let icon = crate::ui::page_properties::property_icon(kind);
+                    if ui.button(format!("{icon}   {label}")).clicked() {
+                        let base = match kind {
+                            "text" => "Notes",
+                            "number" => "Number",
+                            "date" => "Date",
+                            "status" => "Status",
+                            "select" => "Category",
+                            "multi-select" => "Tags",
+                            "checkbox" => "Done",
+                            _ => "Property",
+                        };
+                        let mut name = base.to_owned();
+                        let mut idx = 2usize;
+                        while properties
+                            .iter()
+                            .any(|p| p.name.eq_ignore_ascii_case(&name))
+                        {
+                            name = format!("{base} {idx}");
+                            idx += 1;
+                        }
+                        intents.push(Intent::Action(Action::AddPageProperty {
+                            page: page.id,
+                            name,
+                            kind: kind.into(),
+                            options: Vec::new(),
+                        }));
+                        ui.close_menu();
+                    }
+                }
+            });
+            if !properties.is_empty() {
+                ui.menu_button("⚙  Edit properties", |ui| {
+                    let total = properties.len();
+                    for (idx, prop) in properties.iter().enumerate() {
+                        let icon = crate::ui::page_properties::property_icon(&prop.kind);
+                        ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                            crate::ui::page_properties::show_property_edit_panel(
+                                ui, page.id, prop, idx, total, false, palette, intents,
+                            );
+                        });
+                    }
+                });
+            }
+            ui.menu_button("🖼  Cover", |ui| {
+                if ui.button("Choose image…").clicked() {
+                    intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
+                    ui.close_menu();
+                }
+                ui.separator();
+                for (style, label) in [
+                    (0, "No cover"),
+                    (1, "Sage"),
+                    (2, "Sand"),
+                    (3, "Sky"),
+                    (4, "Rose"),
+                ] {
+                    if ui
+                        .selectable_label(page.cover == style && page.cover_image.is_none(), label)
+                        .clicked()
+                    {
+                        page.cover = style;
+                        page.cover_image = None;
+                        changed = true;
+                        ui.close_menu();
+                    }
+                }
+            });
+            ui.separator();
+            if ui
+                .button(if page.favorite {
+                    "★  Remove from Favorites"
+                } else {
+                    "☆  Add to Favorites"
+                })
+                .clicked()
+            {
+                intents.push(Intent::Action(Action::Favorite(page.id)));
+                ui.close_menu();
+            }
+            if ui.button(text::DUPLICATE).clicked() {
+                intents.push(Intent::Action(Action::Duplicate(page.id)));
+                ui.close_menu();
+            }
+        });
     });
     changed
 }
@@ -380,17 +456,6 @@ fn title_widget_id(page_id: i64, widget_scope: Option<u64>) -> egui::Id {
         || egui::Id::new(("title", page_id)),
         |scope| egui::Id::new(("title", scope, page_id)),
     )
-}
-
-fn toolbar(ui: &mut Ui, block_count: usize, inset: f32, palette: Palette) {
-    ui.horizontal(|ui| {
-        ui.add_space(inset + block::HANDLE_WIDTH);
-        small_label(
-            ui,
-            &format!("{} blocks   ·   Autosave on", block_count),
-            palette.muted,
-        );
-    });
 }
 
 fn cover(ui: &Ui, rect: Rect, color: Color32) {

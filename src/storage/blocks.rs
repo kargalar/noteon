@@ -2,7 +2,10 @@ use rusqlite::{OptionalExtension, Row, params};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::domain::model::{Block, BlockId, BlockKind, BlockStub, Document, DropPlacement, PageId};
+use crate::domain::model::{
+    Block, BlockId, BlockKind, BlockStub, BulkBlockStyleOp, Document, DropPlacement,
+    InlineTextStyle, PageId, TextStyleRange,
+};
 use crate::error::{Error, Result};
 
 use super::{Repository, read_usize, sql_index};
@@ -505,4 +508,476 @@ impl Repository {
         transaction.commit()?;
         Ok(())
     }
+
+    pub fn delete_blocks(&mut self, page: PageId, ids: &[BlockId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.transaction()?;
+        {
+            let mut delete_stmt =
+                transaction.prepare_cached("DELETE FROM blocks WHERE id=?1 AND page_id=?2")?;
+            for id in ids {
+                delete_stmt.execute(params![id, page])?;
+            }
+        }
+        normalize_page_blocks(&transaction, page)?;
+        transaction.execute(
+            "INSERT INTO blocks(page_id,position) SELECT ?1,0 WHERE NOT EXISTS(SELECT 1 FROM blocks WHERE page_id=?1)",
+            [page],
+        )?;
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn set_blocks_kind(
+        &mut self,
+        page: PageId,
+        ids: &[BlockId],
+        kind: BlockKind,
+    ) -> Result<()> {
+        if ids.is_empty() || !BlockKind::ALL.contains(&kind) {
+            return Ok(());
+        }
+        let transaction = self.connection.transaction()?;
+        {
+            let mut stmt = transaction.prepare_cached(
+                "UPDATE blocks SET kind=?1 WHERE id=?2 AND page_id=?3 AND kind NOT IN ('database','image','video')",
+            )?;
+            for id in ids {
+                stmt.execute(params![kind.as_str(), id, page])?;
+            }
+        }
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn set_blocks_checked(
+        &mut self,
+        page: PageId,
+        ids: &[BlockId],
+        checked: bool,
+    ) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.transaction()?;
+        {
+            let mut stmt = transaction
+                .prepare_cached("UPDATE blocks SET checked=?1 WHERE id=?2 AND page_id=?3")?;
+            for id in ids {
+                stmt.execute(params![checked, id, page])?;
+            }
+        }
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn format_blocks(
+        &mut self,
+        page: PageId,
+        ids: &[BlockId],
+        op: BulkBlockStyleOp,
+    ) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.transaction()?;
+        let mut target_blocks = Vec::new();
+        {
+            let mut select = transaction.prepare_cached(
+                "SELECT id,content,text_styles,kind FROM blocks WHERE id=?1 AND page_id=?2",
+            )?;
+            for id in ids {
+                if let Some((block_id, content, raw_styles, kind_str)) = select
+                    .query_row(params![id, page], |row| {
+                        Ok((
+                            row.get::<_, BlockId>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    })
+                    .optional()?
+                {
+                    let kind = BlockKind::from_db(&kind_str);
+                    if !matches!(
+                        kind,
+                        BlockKind::Divider
+                            | BlockKind::Database
+                            | BlockKind::Image
+                            | BlockKind::Video
+                    ) {
+                        let styles: Vec<TextStyleRange> =
+                            serde_json::from_str(&raw_styles).unwrap_or_default();
+                        target_blocks.push((block_id, content, styles));
+                    }
+                }
+            }
+        }
+        if target_blocks.is_empty() {
+            return Ok(());
+        }
+
+        let toggle_target = match op {
+            BulkBlockStyleOp::ToggleBold
+            | BulkBlockStyleOp::ToggleItalic
+            | BulkBlockStyleOp::ToggleUnderline
+            | BulkBlockStyleOp::ToggleStrikethrough => {
+                let non_empty: Vec<_> = target_blocks
+                    .iter()
+                    .filter(|(_, content, _)| !content.is_empty())
+                    .collect();
+                let all_enabled = !non_empty.is_empty()
+                    && non_empty.iter().all(|(_, content, styles)| {
+                        let len = content.chars().count();
+                        let expanded = expand_styles(styles, len);
+                        expanded.iter().all(|s| match op {
+                            BulkBlockStyleOp::ToggleBold => s.bold,
+                            BulkBlockStyleOp::ToggleItalic => s.italic,
+                            BulkBlockStyleOp::ToggleUnderline => s.underline,
+                            BulkBlockStyleOp::ToggleStrikethrough => s.strikethrough,
+                            _ => false,
+                        })
+                    });
+                !all_enabled
+            }
+            _ => false,
+        };
+
+        {
+            let mut update = transaction.prepare_cached(
+                "UPDATE blocks SET text_styles=?1 WHERE id=?2 AND page_id=?3",
+            )?;
+            for (block_id, content, styles) in target_blocks {
+                let len = content.chars().count();
+                let next_styles = if matches!(op, BulkBlockStyleOp::ClearFormatting) || len == 0 {
+                    Vec::new()
+                } else {
+                    let mut expanded = expand_styles(&styles, len);
+                    for style in &mut expanded {
+                        match op {
+                            BulkBlockStyleOp::ToggleBold => style.bold = toggle_target,
+                            BulkBlockStyleOp::ToggleItalic => style.italic = toggle_target,
+                            BulkBlockStyleOp::ToggleUnderline => style.underline = toggle_target,
+                            BulkBlockStyleOp::ToggleStrikethrough => {
+                                style.strikethrough = toggle_target
+                            }
+                            BulkBlockStyleOp::SetFont(family) => style.font_family = family,
+                            BulkBlockStyleOp::SetTextColor(color) => style.foreground = color,
+                            BulkBlockStyleOp::SetHighlight(color) => style.background = color,
+                            BulkBlockStyleOp::ClearFormatting => {}
+                        }
+                    }
+                    compress_styles(&expanded)
+                };
+                let encoded = serde_json::to_string(&next_styles)
+                    .map_err(|error| Error::Invalid(format!("Invalid text formatting: {error}")))?;
+                update.execute(params![encoded, block_id, page])?;
+            }
+        }
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn move_blocks(&mut self, page: PageId, ids: &[BlockId], direction: i32) -> Result<()> {
+        if ids.is_empty() || ![-1, 1].contains(&direction) {
+            return Ok(());
+        }
+        let selected: std::collections::HashSet<BlockId> = ids.iter().copied().collect();
+        let transaction = self.connection.transaction()?;
+        let mut order: Vec<BlockId> = {
+            let mut stmt = transaction
+                .prepare_cached("SELECT id FROM blocks WHERE page_id=?1 ORDER BY position")?;
+            let rows = stmt
+                .query_map([page], |row| row.get::<_, BlockId>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        if direction < 0 {
+            for index in 1..order.len() {
+                if selected.contains(&order[index]) && !selected.contains(&order[index - 1]) {
+                    order.swap(index - 1, index);
+                }
+            }
+        } else {
+            for index in (0..order.len().saturating_sub(1)).rev() {
+                if selected.contains(&order[index]) && !selected.contains(&order[index + 1]) {
+                    order.swap(index, index + 1);
+                }
+            }
+        }
+        {
+            let mut update = transaction
+                .prepare_cached("UPDATE blocks SET position=?1 WHERE id=?2 AND page_id=?3")?;
+            for (position, id) in order.iter().enumerate() {
+                update.execute(params![sql_index(position)?, id, page])?;
+            }
+        }
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn duplicate_blocks(&mut self, page: PageId, ids: &[BlockId]) -> Result<Vec<BlockId>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let selected: std::collections::HashSet<BlockId> = ids.iter().copied().collect();
+        let transaction = self.connection.transaction()?;
+        let rows = {
+            let mut stmt = transaction.prepare_cached(
+                "SELECT id,position,kind,content,checked,media_width,text_styles FROM blocks WHERE page_id=?1 ORDER BY position",
+            )?;
+            let mapped = stmt
+                .query_map([page], |row| {
+                    Ok((
+                        row.get::<_, BlockId>(0)?,
+                        read_usize(row, 1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, bool>(4)?,
+                        row.get::<_, f32>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            mapped
+        };
+        let to_duplicate: Vec<_> = rows
+            .into_iter()
+            .filter(|row| selected.contains(&row.0) && row.2 != "database")
+            .collect();
+        if to_duplicate.is_empty() {
+            return Ok(Vec::new());
+        }
+        let insert_at = to_duplicate
+            .last()
+            .map(|row| row.1 + 1)
+            .unwrap_or(0);
+        let dup_count = to_duplicate.len();
+        transaction.execute(
+            "UPDATE blocks SET position=position+?1 WHERE page_id=?2 AND position>=?3",
+            params![sql_index(dup_count)?, page, sql_index(insert_at)?],
+        )?;
+        let mut created_ids = Vec::with_capacity(dup_count);
+        {
+            let mut insert = transaction.prepare_cached(
+                "INSERT INTO blocks(page_id,position,kind,content,checked,media_width,text_styles) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            )?;
+            for (offset, (_, _, kind, content, checked, media_width, text_styles)) in
+                to_duplicate.into_iter().enumerate()
+            {
+                insert.execute(params![
+                    page,
+                    sql_index(insert_at + offset)?,
+                    kind,
+                    content,
+                    checked,
+                    media_width.clamp(0.25, 1.0),
+                    text_styles
+                ])?;
+                created_ids.push(transaction.last_insert_rowid());
+            }
+        }
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(created_ids)
+    }
+
+    pub fn group_blocks_in_columns(&mut self, page: PageId, ids: &[BlockId]) -> Result<()> {
+        if !(2..=4).contains(&ids.len()) {
+            return Ok(());
+        }
+        let selected: std::collections::HashSet<BlockId> = ids.iter().copied().collect();
+        let transaction = self.connection.transaction()?;
+        let rows = {
+            let mut stmt = transaction.prepare_cached(
+                "SELECT id,kind FROM blocks WHERE page_id=?1 ORDER BY position",
+            )?;
+            let mapped = stmt
+                .query_map([page], |row| {
+                    Ok((row.get::<_, BlockId>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            mapped
+        };
+        let target_ids: Vec<BlockId> = rows
+            .iter()
+            .filter(|(id, kind)| selected.contains(id) && kind != "database")
+            .map(|(id, _)| *id)
+            .collect();
+        if !(2..=4).contains(&target_ids.len()) {
+            return Ok(());
+        }
+        let group_id = target_ids[0];
+        let anchor_index = rows
+            .iter()
+            .position(|(id, _)| *id == group_id)
+            .unwrap_or(0);
+        let mut order: Vec<BlockId> = rows.iter().map(|(id, _)| *id).collect();
+        order.retain(|id| !target_ids.contains(id));
+        let insert_at = anchor_index.min(order.len());
+        for (offset, id) in target_ids.iter().enumerate() {
+            order.insert(insert_at + offset, *id);
+        }
+        let equal_width = (1.0 / target_ids.len() as f32).clamp(0.08, 1.0);
+        {
+            let mut update_pos = transaction
+                .prepare_cached("UPDATE blocks SET position=?1 WHERE id=?2 AND page_id=?3")?;
+            for (position, id) in order.iter().enumerate() {
+                update_pos.execute(params![sql_index(position)?, id, page])?;
+            }
+            let mut update_col = transaction.prepare_cached(
+                "UPDATE blocks SET column_group=?1,layout_column=?2,column_width=?3 WHERE id=?4 AND page_id=?5",
+            )?;
+            for (col, id) in target_ids.iter().enumerate() {
+                update_col.execute(params![
+                    Some(group_id),
+                    sql_index(col)?,
+                    equal_width,
+                    id,
+                    page
+                ])?;
+            }
+        }
+        normalize_page_blocks(&transaction, page)?;
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn ungroup_block_columns(&mut self, page: PageId, ids: &[BlockId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.transaction()?;
+        {
+            let mut stmt = transaction.prepare_cached(
+                "UPDATE blocks SET column_group=NULL,layout_column=0,column_width=1.0 WHERE id=?1 AND page_id=?2",
+            )?;
+            for id in ids {
+                stmt.execute(params![id, page])?;
+            }
+        }
+        normalize_page_blocks(&transaction, page)?;
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
 }
+
+fn normalize_page_blocks(transaction: &rusqlite::Transaction<'_>, page: PageId) -> Result<()> {
+    let rows = {
+        let mut stmt = transaction.prepare_cached(
+            "SELECT id,column_group,column_width FROM blocks WHERE page_id=?1 ORDER BY position",
+        )?;
+        let mapped = stmt
+            .query_map([page], |row| {
+                Ok((
+                    row.get::<_, BlockId>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, f32>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        mapped
+    };
+    let mut group_counts = std::collections::HashMap::<i64, usize>::new();
+    for (_, group, _) in &rows {
+        if let Some(group) = group {
+            *group_counts.entry(*group).or_insert(0) += 1;
+        }
+    }
+    let mut group_next_col = std::collections::HashMap::<i64, usize>::new();
+    let mut update = transaction.prepare_cached(
+        "UPDATE blocks SET position=?1,column_group=?2,layout_column=?3,column_width=?4 WHERE id=?5 AND page_id=?6",
+    )?;
+    for (position, (id, group, width)) in rows.into_iter().enumerate() {
+        let (next_group, next_col, next_width) = match group {
+            Some(g) if group_counts.get(&g).copied().unwrap_or(0) > 1 => {
+                let col = group_next_col.entry(g).or_insert(0);
+                let current_col = *col;
+                *col += 1;
+                (Some(g), current_col, width.clamp(0.08, 1.0))
+            }
+            _ => (None, 0, 1.0),
+        };
+        update.execute(params![
+            sql_index(position)?,
+            next_group,
+            sql_index(next_col)?,
+            next_width,
+            id,
+            page
+        ])?;
+    }
+    Ok(())
+}
+
+fn expand_styles(styles: &[TextStyleRange], length: usize) -> Vec<InlineTextStyle> {
+    let mut expanded = vec![InlineTextStyle::default(); length];
+    for range in styles {
+        let start = range.start.min(length);
+        let end = range.end.min(length);
+        if start >= end {
+            continue;
+        }
+        for style in &mut expanded[start..end] {
+            style.clone_from(&range.style);
+        }
+    }
+    expanded
+}
+
+fn compress_styles(styles: &[InlineTextStyle]) -> Vec<TextStyleRange> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < styles.len() {
+        let style = &styles[start];
+        if style == &InlineTextStyle::default() {
+            start += 1;
+            continue;
+        }
+        let mut end = start + 1;
+        while end < styles.len() && styles[end] == *style {
+            end += 1;
+        }
+        ranges.push(TextStyleRange {
+            start,
+            end,
+            style: style.clone(),
+        });
+        start = end;
+    }
+    ranges
+}
+

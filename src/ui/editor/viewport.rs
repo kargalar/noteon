@@ -195,6 +195,7 @@ impl Editor {
         };
         let bulk_selection_active = !self.selected_blocks.is_empty() || self.marquee_active;
         let mut visible_handles = Vec::new();
+        let mut visible_blocks = Vec::new();
         for row_index in start..end {
             let row = self.visual_rows[row_index].clone();
             let top = self.layout.top(row_index);
@@ -229,6 +230,7 @@ impl Editor {
                     block_id,
                     Rect::from_min_size(block_rect.min, vec2(block::HANDLE_WIDTH - 3.0, 27.0)),
                 ));
+                visible_blocks.push((block_id, block_rect, position));
                 if is_selected {
                     let highlight_rect = block_rect.shrink2(vec2(1.0, 1.0));
                     ui.painter().rect_filled(
@@ -475,6 +477,7 @@ impl Editor {
             widget_scope,
             palette,
             &visible_handles,
+            &visible_blocks,
             intents,
         );
     }
@@ -490,6 +493,7 @@ impl Editor {
         widget_scope: Option<u64>,
         palette: Palette,
         visible_handles: &[(BlockId, Rect)],
+        visible_blocks: &[(BlockId, Rect, usize)],
         intents: &mut Vec<Intent>,
     ) {
         let screen_viewport = ui.clip_rect();
@@ -504,7 +508,8 @@ impl Editor {
             primary_released,
             secondary_clicked,
             pointer_pos,
-            additive_modifier,
+            is_ctrl,
+            is_shift,
         ) = ui.input(|input| {
             (
                 input.pointer.button_pressed(egui::PointerButton::Primary),
@@ -515,7 +520,8 @@ impl Editor {
                     .pointer
                     .interact_pos()
                     .or_else(|| input.pointer.latest_pos()),
-                input.modifiers.shift || input.modifiers.command || input.modifiers.ctrl,
+                input.modifiers.command || input.modifiers.ctrl,
+                input.modifiers.shift,
             )
         });
 
@@ -536,7 +542,73 @@ impl Editor {
             && !pointer_inside_bulk_menu
         {
             self.bulk_menu_pos = None;
-            if margin_bounds.contains(pos) {
+            let clicked_handle = visible_handles
+                .iter()
+                .find(|(_, rect)| rect.contains(pos))
+                .map(|(id, _)| *id);
+            let clicked_block = visible_blocks
+                .iter()
+                .find(|(_, rect, _)| rect.contains(pos))
+                .map(|(id, _, pos_idx)| (*id, *pos_idx));
+
+            if is_ctrl {
+                if let Some(target_id) = clicked_handle.or_else(|| clicked_block.map(|(id, _)| id)) {
+                    if self.selected_blocks.contains(&target_id) {
+                        self.selected_blocks.remove(&target_id);
+                    } else {
+                        self.selected_blocks.insert(target_id);
+                        self.anchor_block = Some(target_id);
+                    }
+                    if let Some(focused) = ui.ctx().memory(|m| m.focused()) {
+                        ui.ctx().memory_mut(|m| m.surrender_focus(focused));
+                    }
+                }
+            } else if is_shift {
+                if let Some(target_id) = clicked_handle.or_else(|| clicked_block.map(|(id, _)| id)) {
+                    if let Some(document) = &self.document {
+                        let anchor_id = self
+                            .anchor_block
+                            .or_else(|| self.selected_blocks.iter().copied().next())
+                            .unwrap_or(target_id);
+                        let anchor_pos = document.outline.iter().position(|stub| stub.id == anchor_id);
+                        let target_pos = document.outline.iter().position(|stub| stub.id == target_id);
+                        if let (Some(p1), Some(p2)) = (anchor_pos, target_pos) {
+                            let start = p1.min(p2);
+                            let end = p1.max(p2);
+                            self.selected_blocks.clear();
+                            for p in start..=end {
+                                let bid = document.outline[p].id;
+                                self.selected_blocks.insert(bid);
+                                if !self.cache.blocks.contains_key(&p) {
+                                    if let Some(load_start) = self.cache.request(p) {
+                                        intents.push(Intent::LoadBlocks {
+                                            page: page_id,
+                                            generation,
+                                            start: load_start,
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            self.selected_blocks.clear();
+                            self.selected_blocks.insert(target_id);
+                            self.anchor_block = Some(target_id);
+                        }
+                    }
+                    if let Some(focused) = ui.ctx().memory(|m| m.focused()) {
+                        ui.ctx().memory_mut(|m| m.surrender_focus(focused));
+                    }
+                }
+            } else if let Some(handle_id) = clicked_handle {
+                if self.selected_blocks.contains(&handle_id) {
+                    self.bulk_menu_pos = Some(pos);
+                } else {
+                    self.selected_blocks.clear();
+                    self.selected_blocks.insert(handle_id);
+                    self.anchor_block = Some(handle_id);
+                    self.bulk_menu_pos = Some(pos);
+                }
+            } else if margin_bounds.contains(pos) {
                 let on_selected_handle = !self.selected_blocks.is_empty()
                     && visible_handles
                         .iter()
@@ -552,19 +624,15 @@ impl Editor {
                     if in_left_margin || in_right_margin || in_vertical_margin {
                         self.marquee_anchor = Some(pos2(pos.x - origin.x, pos.y - origin.y));
                         self.marquee_active = false;
-                        self.marquee_base_selection = if additive_modifier {
-                            self.selected_blocks.clone()
-                        } else {
-                            self.selected_blocks.clear();
-                            std::collections::HashSet::new()
-                        };
-                    } else if !additive_modifier {
+                        self.marquee_base_selection.clear();
+                        self.selected_blocks.clear();
+                    } else if clicked_block.is_none() {
                         self.marquee_anchor = None;
                         self.marquee_active = false;
                         self.selected_blocks.clear();
                     }
                 }
-            } else if !additive_modifier {
+            } else {
                 self.marquee_anchor = None;
                 self.marquee_active = false;
                 self.selected_blocks.clear();

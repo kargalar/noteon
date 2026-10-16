@@ -24,6 +24,7 @@ pub struct Editor {
     pub visual_rows: Vec<Vec<usize>>,
     pub position_to_row: Vec<usize>,
     pub selected_blocks: HashSet<BlockId>,
+    pub anchor_block: Option<BlockId>,
     pub(super) marquee_anchor: Option<Pos2>,
     pub(super) marquee_base_selection: HashSet<BlockId>,
     pub(super) marquee_active: bool,
@@ -54,11 +55,17 @@ impl Editor {
         if same_page {
             let valid_ids: HashSet<_> = document.outline.iter().map(|stub| stub.id).collect();
             self.selected_blocks.retain(|id| valid_ids.contains(id));
+            if let Some(anchor) = self.anchor_block
+                && !valid_ids.contains(&anchor)
+            {
+                self.anchor_block = None;
+            }
             if self.selected_blocks.is_empty() {
                 self.bulk_menu_pos = None;
             }
         } else {
             self.selected_blocks.clear();
+            self.anchor_block = None;
             self.marquee_anchor = None;
             self.marquee_base_selection.clear();
             self.marquee_active = false;
@@ -82,16 +89,16 @@ impl Editor {
         &mut self,
         ui: &mut Ui,
         palette: Palette,
-        parent_title: Option<&str>,
+        breadcrumbs: &[crate::ui::BreadcrumbItem],
     ) -> Vec<Intent> {
-        self.show_with_properties(ui, palette, parent_title, None, &mut Default::default())
+        self.show_with_properties(ui, palette, breadcrumbs, None, &mut Default::default())
     }
 
     pub fn show_with_properties(
         &mut self,
         ui: &mut Ui,
         palette: Palette,
-        parent_title: Option<&str>,
+        breadcrumbs: &[crate::ui::BreadcrumbItem],
         record_properties: Option<(&crate::domain::model::DatabaseData, i64)>,
         value_drafts: &mut std::collections::HashMap<(i64, i64), String>,
     ) -> Vec<Intent> {
@@ -103,7 +110,7 @@ impl Editor {
         self.show_with_widget_scope(
             ui,
             palette,
-            parent_title,
+            breadcrumbs,
             None,
             &mut DatabaseContext {
                 record_database_id: record_properties.map(|(database, _)| database.page_id),
@@ -121,7 +128,7 @@ impl Editor {
         &mut self,
         ui: &mut Ui,
         palette: Palette,
-        parent_title: Option<&str>,
+        breadcrumbs: &[crate::ui::BreadcrumbItem],
         record_properties: Option<(&crate::domain::model::DatabaseData, i64)>,
         value_drafts: &mut std::collections::HashMap<(i64, i64), String>,
         tab_instance: u64,
@@ -134,7 +141,7 @@ impl Editor {
         self.show_with_widget_scope(
             ui,
             palette,
-            parent_title,
+            breadcrumbs,
             Some(tab_instance),
             &mut DatabaseContext {
                 record_database_id: record_properties.map(|(database, _)| database.page_id),
@@ -152,18 +159,18 @@ impl Editor {
         &mut self,
         ui: &mut Ui,
         palette: Palette,
-        parent_title: Option<&str>,
+        breadcrumbs: &[crate::ui::BreadcrumbItem],
         tab_instance: u64,
         context: &mut DatabaseContext<'_>,
     ) -> Vec<Intent> {
-        self.show_with_widget_scope(ui, palette, parent_title, Some(tab_instance), context)
+        self.show_with_widget_scope(ui, palette, breadcrumbs, Some(tab_instance), context)
     }
 
     fn show_with_widget_scope(
         &mut self,
         ui: &mut Ui,
         palette: Palette,
-        parent_title: Option<&str>,
+        breadcrumbs: &[crate::ui::BreadcrumbItem],
         widget_scope: Option<u64>,
         context: &mut DatabaseContext<'_>,
     ) -> Vec<Intent> {
@@ -180,7 +187,7 @@ impl Editor {
             document,
             &mut self.title_focus,
             palette,
-            parent_title,
+            breadcrumbs,
             widget_scope,
             header::RecordPropertiesContext {
                 record: record_properties,

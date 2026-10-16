@@ -25,14 +25,14 @@ pub(super) fn show(
     document: &mut Document,
     title_focus: &mut bool,
     palette: Palette,
-    parent_title: Option<&str>,
+    breadcrumbs: &[crate::ui::BreadcrumbItem],
     widget_scope: Option<u64>,
     record_properties: RecordPropertiesContext<'_>,
 ) -> (Canvas, Vec<Intent>) {
     let mut intents = Vec::new();
     let page = &mut document.page;
     let mut page_changed = false;
-    breadcrumb(ui, page, palette, parent_title, &mut intents, &mut page_changed);
+    breadcrumb(ui, page, palette, breadcrumbs, &mut intents, &mut page_changed);
     ui.add_space(8.0);
     ui.separator();
     let width = ui.available_width();
@@ -233,7 +233,7 @@ fn breadcrumb(
     ui: &mut Ui,
     page: &mut Page,
     palette: Palette,
-    parent_title: Option<&str>,
+    breadcrumbs: &[crate::ui::BreadcrumbItem],
     intents: &mut Vec<Intent>,
     page_changed: &mut bool,
 ) {
@@ -250,9 +250,25 @@ fn breadcrumb(
         {
             intents.push(Intent::Forward);
         }
-        if let Some(parent) = parent_title {
-            ui.label(RichText::new(parent).color(palette.muted));
-            ui.label(RichText::new("/").color(palette.muted));
+        for item in breadcrumbs {
+            let label = if !item.icon.is_empty() {
+                format!("{}  {}", item.icon, item.title)
+            } else {
+                item.title.clone()
+            };
+            let resp = ui.add(
+                egui::Button::new(RichText::new(label).size(12.0).color(palette.muted))
+                    .frame(false),
+            );
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                intents.push(Intent::Open(item.id, None));
+            } else if resp.middle_clicked() {
+                intents.push(Intent::OpenInTab(item.id));
+            }
+            ui.label(RichText::new("/").size(12.0).color(palette.muted));
         }
         ui.label(RichText::new(format!("{}  {}", page.icon, page.display_title())).size(12.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

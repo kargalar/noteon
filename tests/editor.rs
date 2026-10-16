@@ -2,7 +2,7 @@ use eframe::egui::{self, Event, Key, Modifiers};
 use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
 use noteon::domain::editing::split_at_selection;
 use noteon::domain::model::{Block, BlockKind, BlockStub, Document, Page};
-use noteon::ui::{Intent, editor::Editor, palette::Palette};
+use noteon::ui::{BreadcrumbItem, Intent, editor::Editor, palette::Palette};
 
 fn editor(content: &str, count: usize) -> Editor {
     let mut editor = Editor::default();
@@ -82,7 +82,7 @@ fn frame(
     let mut intents = Vec::new();
     let _ = context.run(input, |context| {
         egui::CentralPanel::default().show(context, |ui| {
-            intents.extend(editor.show(ui, Palette::new(false), None));
+            intents.extend(editor.show(ui, Palette::new(false), &[]));
         });
     });
     intents
@@ -334,5 +334,156 @@ fn marquee_drag_from_margin_selects_blocks_and_delete_removes_them() {
         Intent::Action(noteon::worker::Action::DeleteBlocks { blocks, .. }) if blocks.len() >= 2
     )));
     assert!(editor.selected_blocks.is_empty());
+}
+
+#[test]
+fn ctrl_click_and_shift_click_select_blocks() {
+    let context = egui::Context::default();
+    let mut editor = editor("Satır içeriği", 5);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    let block1_pos = egui::pos2(300.0, 260.0);
+    let block3_pos = egui::pos2(300.0, 350.0);
+
+    // 1. Ctrl-click block 1
+    frame(
+        &context,
+        &mut editor,
+        vec![
+            Event::PointerMoved(block1_pos),
+            Event::PointerButton {
+                pos: block1_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::COMMAND,
+            },
+            Event::PointerButton {
+                pos: block1_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::COMMAND,
+            },
+        ],
+        Modifiers::COMMAND,
+    );
+    assert_eq!(editor.selected_blocks.len(), 1);
+    assert!(editor.selected_blocks.contains(&1));
+
+    // 2. Shift-click block 3 -> range select blocks 1, 2, 3
+    frame(
+        &context,
+        &mut editor,
+        vec![
+            Event::PointerMoved(block3_pos),
+            Event::PointerButton {
+                pos: block3_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::SHIFT,
+            },
+            Event::PointerButton {
+                pos: block3_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::SHIFT,
+            },
+        ],
+        Modifiers::SHIFT,
+    );
+    assert_eq!(editor.selected_blocks.len(), 3);
+    assert!(editor.selected_blocks.contains(&1));
+    assert!(editor.selected_blocks.contains(&2));
+    assert!(editor.selected_blocks.contains(&3));
+
+    // 3. Ctrl-click block 2 -> removes block 2, leaves 1 and 3
+    let block2_pos = egui::pos2(300.0, 305.0);
+    frame(
+        &context,
+        &mut editor,
+        vec![
+            Event::PointerMoved(block2_pos),
+            Event::PointerButton {
+                pos: block2_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::COMMAND,
+            },
+            Event::PointerButton {
+                pos: block2_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::COMMAND,
+            },
+        ],
+        Modifiers::COMMAND,
+    );
+    assert_eq!(editor.selected_blocks.len(), 2);
+    assert!(editor.selected_blocks.contains(&1));
+    assert!(!editor.selected_blocks.contains(&2));
+    assert!(editor.selected_blocks.contains(&3));
+}
+
+fn frame_with_breadcrumbs(
+    context: &egui::Context,
+    editor: &mut Editor,
+    breadcrumbs: &[BreadcrumbItem],
+    events: Vec<Event>,
+) -> Vec<Intent> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1000.0, 800.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut intents = Vec::new();
+    let _ = context.run(input, |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            intents.extend(editor.show(ui, Palette::new(false), breadcrumbs));
+        });
+    });
+    intents
+}
+
+#[test]
+fn clicking_breadcrumb_navigates_to_parent_page() {
+    let context = egui::Context::default();
+    let mut editor = editor("İçerik", 1);
+    let breadcrumbs = vec![BreadcrumbItem {
+        id: 42,
+        title: "Parent Page".into(),
+        icon: "📄".into(),
+    }];
+
+    frame_with_breadcrumbs(&context, &mut editor, &breadcrumbs, Vec::new());
+
+    let click_pos = egui::pos2(90.0, 22.0);
+    let intents = frame_with_breadcrumbs(
+        &context,
+        &mut editor,
+        &breadcrumbs,
+        vec![
+            Event::PointerMoved(click_pos),
+            Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Open(42, None)))
+    );
 }
 

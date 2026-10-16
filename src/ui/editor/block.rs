@@ -346,7 +346,10 @@ fn show_menu(
                     .interact_pos()
                     .is_some_and(|position| rect.contains(position))
         });
+    let has_modifiers =
+        ui.input(|input| input.modifiers.shift || input.modifiers.command || input.modifiers.ctrl);
     if !bulk_selection_active
+        && !has_modifiers
         && (handle.clicked() || handle.secondary_clicked() || right_clicked_on_row)
     {
         ui.memory_mut(|memory| memory.toggle_popup(popup_id));

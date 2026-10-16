@@ -26,6 +26,9 @@ pub struct Sidebar {
     children: HashMap<Option<PageId>, Vec<PageId>>,
     expanded: HashSet<PageId>,
     rows: Vec<TreeRow>,
+    pub selected_pages: HashSet<PageId>,
+    pub anchor_page: Option<PageId>,
+    pub anchor_row_index: Option<usize>,
 }
 
 impl Sidebar {
@@ -46,7 +49,24 @@ impl Sidebar {
                     .push(page.id);
             }
         }
+        self.selected_pages.retain(|id| self.by_id.contains_key(id));
+        if let Some(anchor) = self.anchor_page
+            && !self.by_id.contains_key(&anchor)
+        {
+            self.anchor_page = None;
+            self.anchor_row_index = None;
+        }
         self.rebuild();
+    }
+
+    pub fn select_single(&mut self, id: PageId) {
+        self.selected_pages.clear();
+        self.selected_pages.insert(id);
+        self.anchor_page = Some(id);
+        self.anchor_row_index = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, TreeRow::Page { id: pid, .. } if *pid == id));
     }
 
     pub fn page(&self, id: PageId) -> Option<&Page> {
@@ -113,6 +133,32 @@ impl Sidebar {
             parent = self.page(id).and_then(|page| page.parent_id);
         }
         self.rebuild();
+    }
+
+    pub fn ancestors(&self, mut id: PageId) -> Vec<crate::ui::BreadcrumbItem> {
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        while let Some(page) = self.page(id) {
+            if let Some(parent_id) = page.parent_id {
+                if !visited.insert(parent_id) {
+                    break;
+                }
+                if let Some(parent) = self.page(parent_id) {
+                    result.push(crate::ui::BreadcrumbItem {
+                        id: parent.id,
+                        title: parent.display_title().to_owned(),
+                        icon: parent.icon.clone(),
+                    });
+                    id = parent_id;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        result.reverse();
+        result
     }
 
     fn rebuild(&mut self) {
@@ -184,6 +230,26 @@ impl Sidebar {
     ) {
         let footer = 128.0;
         let mut toggle = None;
+        let sidebar_rect = ui.max_rect();
+        if ui.rect_contains_pointer(sidebar_rect)
+            && !trash
+            && !self.selected_pages.is_empty()
+            && !ui.ctx().wants_keyboard_input()
+        {
+            if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+                for id in &self.selected_pages {
+                    intents.push(Intent::Action(Action::Trash(*id)));
+                }
+                self.selected_pages.clear();
+                self.anchor_page = None;
+                self.anchor_row_index = None;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.selected_pages.clear();
+                self.anchor_page = None;
+                self.anchor_row_index = None;
+            }
+        }
         egui::ScrollArea::vertical()
             .id_salt("page-tree")
             .max_height((ui.available_height() - footer).max(80.0))
@@ -229,16 +295,70 @@ impl Sidebar {
                             expandable,
                         } => {
                             if let Some(page) = self.page(*id) {
+                                let is_page_selected = !trash
+                                    && (self.selected_pages.contains(id)
+                                        || (self.selected_pages.is_empty() && selected == Some(*id)));
+                                let is_multi_selected = self.selected_pages.contains(id)
+                                    && self.selected_pages.len() > 1;
                                 let row = PageRow {
                                     page,
                                     depth: *depth,
                                     expandable: *expandable,
                                     expanded: self.expanded.contains(id),
-                                    active: !trash && selected == Some(*id),
+                                    active: is_page_selected,
                                     index,
                                 };
-                                if row.show(ui, palette, intents, &self.pages) {
+                                let res = row.show(
+                                    ui,
+                                    palette,
+                                    intents,
+                                    &self.pages,
+                                    is_multi_selected,
+                                    &self.selected_pages,
+                                );
+                                if res.toggled {
                                     toggle = Some(*id);
+                                } else if res.middle_clicked {
+                                    intents.push(Intent::OpenInTab(*id));
+                                } else if res.clicked {
+                                    if res.is_ctrl {
+                                        if self.selected_pages.contains(id) {
+                                            self.selected_pages.remove(id);
+                                        } else {
+                                            self.selected_pages.insert(*id);
+                                            self.anchor_page = Some(*id);
+                                            self.anchor_row_index = Some(index);
+                                        }
+                                    } else if res.is_shift {
+                                        let anchor_idx = self.anchor_row_index.or_else(|| {
+                                            self.anchor_page.and_then(|aid| {
+                                                self.rows.iter().position(|r| {
+                                                    matches!(r, TreeRow::Page { id: pid, .. } if *pid == aid)
+                                                })
+                                            })
+                                        }).or_else(|| {
+                                            selected.and_then(|sid| {
+                                                self.rows.iter().position(|r| {
+                                                    matches!(r, TreeRow::Page { id: pid, .. } if *pid == sid)
+                                                })
+                                            })
+                                        }).unwrap_or(index);
+
+                                        let start = anchor_idx.min(index);
+                                        let end = anchor_idx.max(index);
+                                        self.selected_pages.clear();
+                                        for i in start..=end {
+                                            if let TreeRow::Page { id: page_id, .. } = self.rows[i] {
+                                                self.selected_pages.insert(page_id);
+                                            }
+                                        }
+                                    } else {
+                                        self.selected_pages.clear();
+                                        self.selected_pages.insert(*id);
+                                        self.anchor_page = Some(*id);
+                                        self.anchor_row_index = Some(index);
+                                        intents.push(Intent::Open(*id, None));
+                                    }
                                 }
                             }
                         }
@@ -322,6 +442,14 @@ struct PageRow<'a> {
     index: usize,
 }
 
+struct PageRowResult {
+    pub toggled: bool,
+    pub clicked: bool,
+    pub middle_clicked: bool,
+    pub is_ctrl: bool,
+    pub is_shift: bool,
+}
+
 impl PageRow<'_> {
     fn show(
         &self,
@@ -329,7 +457,9 @@ impl PageRow<'_> {
         palette: Palette,
         intents: &mut Vec<Intent>,
         pages: &[Page],
-    ) -> bool {
+        is_multi_selected: bool,
+        selected_pages: &HashSet<PageId>,
+    ) -> PageRowResult {
         let (rect, response) = ui.allocate_exact_size(
             vec2(ui.available_width(), ROW_HEIGHT),
             Sense::click_and_drag(),
@@ -383,15 +513,25 @@ impl PageRow<'_> {
         let x = rect.left() + 9.0 + self.depth.min(7) as f32 * 13.0;
         let toggled = self.expansion_arrow(ui, rect, x, palette);
         self.paint_title(ui, rect, x, palette);
-        if response.middle_clicked() && !toggled {
-            intents.push(Intent::OpenInTab(self.page.id));
-        } else if response.clicked() && !toggled {
-            intents.push(Intent::Open(self.page.id, None));
-        }
+        let (is_ctrl, is_shift) = ui.input(|i| (i.modifiers.ctrl || i.modifiers.command, i.modifiers.shift));
+        let middle_clicked = response.middle_clicked() && !toggled;
+        let clicked = response.clicked() && !toggled;
         response
             .on_hover_text(self.page.display_title())
-            .context_menu(|ui| show_page_menu(ui, self.page, palette, intents));
-        toggled
+            .context_menu(|ui| {
+                if is_multi_selected {
+                    show_bulk_page_menu(ui, selected_pages, palette, intents);
+                } else {
+                    show_page_menu(ui, self.page, palette, intents);
+                }
+            });
+        PageRowResult {
+            toggled,
+            clicked,
+            middle_clicked,
+            is_ctrl,
+            is_shift,
+        }
     }
 
     fn expansion_arrow(&self, ui: &mut Ui, rect: egui::Rect, x: f32, palette: Palette) -> bool {
@@ -472,6 +612,39 @@ fn show_page_menu(ui: &mut Ui, page: &Page, palette: Palette, intents: &mut Vec<
         .clicked()
     {
         intents.push(Intent::Action(Action::Trash(page.id)));
+        ui.close_menu();
+    }
+}
+
+fn show_bulk_page_menu(
+    ui: &mut Ui,
+    selected_pages: &HashSet<PageId>,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let count = selected_pages.len();
+    ui.label(RichText::new(format!("{count} pages selected")).small().color(palette.muted));
+    ui.separator();
+    if ui.button(format!("Duplicate {count} pages")).clicked() {
+        for id in selected_pages {
+            intents.push(Intent::Action(Action::Duplicate(*id)));
+        }
+        ui.close_menu();
+    }
+    if ui.button(format!("Add {count} pages to favorites")).clicked() {
+        for id in selected_pages {
+            intents.push(Intent::Action(Action::Favorite(*id)));
+        }
+        ui.close_menu();
+    }
+    ui.separator();
+    if ui
+        .button(RichText::new(format!("Move {count} pages to trash")).color(palette.danger))
+        .clicked()
+    {
+        for id in selected_pages {
+            intents.push(Intent::Action(Action::Trash(*id)));
+        }
         ui.close_menu();
     }
 }

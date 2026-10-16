@@ -559,12 +559,7 @@ impl TabViewer for PageTabViewer<'_> {
         self.visible_pages.insert(page_id);
         self.editor_lru.retain(|candidate| *candidate != page_id);
         self.editor_lru.push_back(page_id);
-        let parent_title = self
-            .sidebar
-            .page(page_id)
-            .and_then(|page| page.parent_id)
-            .and_then(|parent| self.sidebar.page(parent))
-            .map(|parent| parent.display_title().to_owned());
+        let breadcrumbs = self.sidebar.ancestors(page_id);
 
         let record_database_id = self
             .sidebar
@@ -603,7 +598,7 @@ impl TabViewer for PageTabViewer<'_> {
                         ui,
                         database,
                         page_icon.as_deref(),
-                        parent_title.as_deref(),
+                        &breadcrumbs,
                         self.busy,
                         self.palette,
                         self.intents,
@@ -618,7 +613,7 @@ impl TabViewer for PageTabViewer<'_> {
                 ui.vertical_centered(|ui| {
                     ui.add_space(130.0);
                     ui.spinner();
-                    ui.label("Loading databaseâ€¦");
+                    ui.label("Loading database…");
                 });
             } else {
                 self.intents.push(Intent::LoadDatabase(page_id));
@@ -637,7 +632,7 @@ impl TabViewer for PageTabViewer<'_> {
                     .extend(editor.show_with_database_context_in_tab(
                         ui,
                         self.palette,
-                        parent_title.as_deref(),
+                        &breadcrumbs,
                         target_instance,
                         &mut crate::ui::editor::DatabaseContext {
                             record_database_id,

@@ -48,6 +48,13 @@ pub enum DockSide {
     Bottom,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreadcrumbItem {
+    pub id: PageId,
+    pub title: String,
+    pub icon: String,
+}
+
 pub fn quiet_button(ui: &mut Ui, text: &str, color: Color32) -> Response {
     ui.add(
         egui::Button::new(RichText::new(text).color(color))

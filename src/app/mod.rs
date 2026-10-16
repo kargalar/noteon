@@ -198,6 +198,7 @@ impl NoteonApp {
             self.loading = false;
             self.trash = false;
             self.sidebar.reveal(id);
+            self.sidebar.select_single(id);
             self.record_navigation(id, add_history);
             return;
         }
@@ -208,6 +209,7 @@ impl NoteonApp {
                 editor.jump_to = jump;
             }
             self.sidebar.reveal(id);
+            self.sidebar.select_single(id);
             self.record_navigation(id, add_history);
             self.touch_editor(id);
             return;
@@ -235,6 +237,7 @@ impl NoteonApp {
             self.pending_documents.remove(&self.generation);
         }
         self.sidebar.reveal(id);
+        self.sidebar.select_single(id);
         self.record_navigation(id, add_history);
     }
 

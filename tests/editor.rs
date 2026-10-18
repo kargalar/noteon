@@ -5,6 +5,10 @@ use noteon::domain::model::{Block, BlockKind, BlockStub, Document, Page};
 use noteon::ui::{BreadcrumbItem, Intent, editor::Editor, palette::Palette};
 
 fn editor(content: &str, count: usize) -> Editor {
+    editor_with_icon(content, count, "▤")
+}
+
+fn editor_with_icon(content: &str, count: usize, icon: &str) -> Editor {
     let mut editor = Editor::default();
     editor.bind(
         Document {
@@ -12,7 +16,7 @@ fn editor(content: &str, count: usize) -> Editor {
                 id: 1,
                 parent_id: None,
                 title: "Test".into(),
-                icon: "▤".into(),
+                icon: icon.into(),
                 favorite: false,
                 trashed_by: None,
                 cover: 0,
@@ -667,5 +671,123 @@ fn add_property_button_visible_only_on_hover() {
 
     // Section hover is now inactive again
     assert_eq!(context.data(|d| d.get_temp::<bool>(section_hover_id)), Some(false));
+}
+
+#[test]
+fn clicking_file_link_block_opens_file_explorer() {
+    let context = egui::Context::default();
+    let mut editor = editor(r"C:\Users\kargalar\Documents\note.txt", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    // Clicking anywhere in the middle of the block row (e.g. x = 300.0, y = 260.0)
+    let click_pos = egui::pos2(300.0, 260.0);
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![
+            Event::PointerMoved(click_pos),
+            Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+        Modifiers::NONE,
+    );
+
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::OpenFileExplorer(path) if path == r"C:\Users\kargalar\Documents\note.txt"))
+    );
+}
+
+#[test]
+fn editing_file_link_block_allows_editing_and_enter_finishes_edit() {
+    let context = egui::Context::default();
+    let mut editor = editor(r"C:\Users\kargalar\Documents\note.txt", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    let editing_id = egui::Id::new(("page-link-editing", 1_i64));
+    let started_id = egui::Id::new(("page-link-editing-started", 1_i64));
+    context.data_mut(|d| {
+        d.insert_temp(editing_id, true);
+        d.insert_temp(started_id, true);
+    });
+
+    let _ = frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    assert_eq!(context.data(|d| d.get_temp::<bool>(editing_id)), Some(true));
+
+    let _ = frame(
+        &context,
+        &mut editor,
+        vec![enter(Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+
+    assert_eq!(context.data(|d| d.get_temp::<bool>(editing_id)), None);
+}
+
+#[test]
+fn clicking_cover_without_cover_triggers_choose_cover_image() {
+    let context = egui::Context::default();
+    let mut editor = editor("Sample page", 1);
+    frame_with_breadcrumbs(&context, &mut editor, &[], Vec::new());
+
+    let click_pos = egui::pos2(200.0, 80.0);
+    let intents = frame_with_breadcrumbs(
+        &context,
+        &mut editor,
+        &[],
+        vec![
+            Event::PointerMoved(click_pos),
+            Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::ChooseCoverImage(1)))),
+        "Expected Intent::Action(Action::ChooseCoverImage(1)), got {} intents",
+        intents.len()
+    );
+}
+
+#[test]
+fn add_icon_menu_open_state_persists_when_open() {
+    let context = egui::Context::default();
+    let mut editor = editor_with_icon("Sample page", 1, "");
+
+    let icon_menu_open_id = egui::Id::new(("add-icon-menu-open", 1_i64, None::<u64>));
+    context.data_mut(|d| {
+        d.insert_temp(icon_menu_open_id, true);
+    });
+
+    // Pointer is at (0, 0), completely outside the title hover area
+    let _ = frame_with_breadcrumbs(
+        &context,
+        &mut editor,
+        &[],
+        vec![Event::PointerMoved(egui::pos2(0.0, 0.0))],
+    );
 }
 

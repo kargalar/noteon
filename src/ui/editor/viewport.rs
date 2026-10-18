@@ -504,6 +504,14 @@ impl Editor {
                         position: position + offset,
                         source: path,
                     }));
+                } else {
+                    intents.push(Intent::Action(Action::InsertBlock {
+                        page: page_id,
+                        position: position + offset,
+                        kind: crate::domain::model::BlockKind::Text,
+                        content: path.to_string_lossy().into_owned(),
+                        text_styles: Vec::new(),
+                    }));
                 }
             }
         }

@@ -39,14 +39,15 @@ pub(super) fn show(
     ui.add_space(8.0);
     ui.separator();
     let width = ui.available_width();
-    let cover_height = if page.cover != 0 || page.cover_image.is_some() {
-        116.0
+    let has_cover = page.cover != 0 || page.cover_image.is_some();
+    let cover_height = if has_cover {
+        180.0
     } else {
         28.0
     };
     ui.add_space(10.0);
-    let (cover_rect, cover_response) =
-        ui.allocate_exact_size(vec2(width, cover_height), Sense::drag());
+    let (cover_rect, mut cover_response) =
+        ui.allocate_exact_size(vec2(width, cover_height), Sense::click_and_drag());
     if let Some(path) = page.cover_image.as_deref() {
         ui.painter().rect_filled(cover_rect, 6.0, palette.code);
         let image_size = super::media::paint_cover(
@@ -98,67 +99,120 @@ pub(super) fn show(
     } else if page.cover != 0 {
         cover(ui, cover_rect, palette.cover(page.cover));
     }
-    let cover_controls_id = egui::Id::new(("cover-controls", page.id));
-    let controls_were_hovered = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(cover_controls_id).unwrap_or_default());
-    let cover_menu_open_id = egui::Id::new(("cover-menu-open", page.id));
-    let was_cover_menu_open = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(cover_menu_open_id).unwrap_or_default());
-    if cover_response.hovered() || controls_were_hovered || was_cover_menu_open {
-        let mut is_cover_menu_open = false;
-        let controls = egui::Area::new(cover_controls_id)
-            .order(egui::Order::Foreground)
-            .fixed_pos(cover_rect.right_top() + vec2(-96.0, 6.0))
-            .show(ui.ctx(), |ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    let menu_resp = ui.menu_button("Cover", |ui| {
-                        if ui.button("Choose image…").clicked() {
-                            intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
-                            ui.close_menu();
-                        }
-                        if page.cover_image.is_some() {
-                            ui.label("Drag the cover image to reposition it.");
-                        }
-                        ui.separator();
-                        for (style, label) in [
-                            (0, "No cover"),
-                            (1, "Sage"),
-                            (2, "Sand"),
-                            (3, "Sky"),
-                            (4, "Rose"),
-                        ] {
-                            if ui
-                                .selectable_label(
-                                    page.cover == style && page.cover_image.is_none(),
-                                    label,
-                                )
-                                .clicked()
-                            {
-                                page.cover = style;
-                                page.cover_image = None;
-                                page_changed = true;
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                    if menu_resp.inner.is_some() {
-                        is_cover_menu_open = true;
+
+    if !has_cover {
+        if cover_response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.painter().rect_stroke(
+                cover_rect.shrink(2.0),
+                4.0,
+                egui::Stroke::new(1.0, palette.border.linear_multiply(0.5)),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().text(
+                cover_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "🖼  Kapak ekle",
+                egui::FontId::proportional(12.0),
+                palette.muted,
+            );
+        }
+        cover_response = cover_response.on_hover_text("Kapak görseli seçmek için tıklayın");
+        if cover_response.clicked() {
+            intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
+        }
+    } else {
+        if cover_response.hovered() && !cover_response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            cover_response = cover_response.on_hover_text(
+                "Kapağı değiştirmek, hizalamak veya silmek için tıklayın.\nGörseli sürükleyerek de hizalayabilirsiniz.",
+            );
+        }
+        if cover_response.clicked() {
+            ui.memory_mut(|mem| mem.toggle_popup(cover_response.id.with("__context_menu")));
+        }
+        cover_response.context_menu(|ui| {
+            ui.set_min_width(200.0);
+
+            ui.label(
+                RichText::new("DEĞİŞTİR")
+                    .font(FontId::proportional(10.5))
+                    .strong()
+                    .color(palette.muted),
+            );
+            ui.add_space(2.0);
+            if ui.button("🖼  Görsel seç…").clicked() {
+                intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
+                ui.close_menu();
+            }
+            ui.menu_button("🎨  Renk Seç", |ui| {
+                for (style, label) in [
+                    (1, "Sage"),
+                    (2, "Sand"),
+                    (3, "Sky"),
+                    (4, "Rose"),
+                ] {
+                    if ui
+                        .selectable_label(page.cover == style && page.cover_image.is_none(), label)
+                        .clicked()
+                    {
+                        page.cover = style;
+                        page.cover_image = None;
+                        page_changed = true;
+                        ui.close_menu();
+                    }
+                }
+            });
+
+            if page.cover_image.is_some() {
+                ui.separator();
+                ui.label(
+                    RichText::new("HİZALA")
+                        .font(FontId::proportional(10.5))
+                        .strong()
+                        .color(palette.muted),
+                );
+                ui.label(
+                    RichText::new("Görseli sürükleyerek de hizalayabilirsiniz.")
+                        .small()
+                        .color(palette.muted),
+                );
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Üst").clicked() {
+                        page.cover_y = 0.0;
+                        page_changed = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Orta").clicked() {
+                        page.cover_y = 0.5;
+                        page_changed = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Alt").clicked() {
+                        page.cover_y = 1.0;
+                        page_changed = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("⟲ Sıfırla").clicked() {
+                        page.cover_x = 0.5;
+                        page.cover_y = 0.5;
+                        page_changed = true;
+                        ui.close_menu();
                     }
                 });
-            });
-        ui.ctx().data_mut(|data| {
-            data.insert_temp(
-                cover_controls_id,
-                controls.response.hovered() || cover_response.hovered(),
-            );
-            data.insert_temp(cover_menu_open_id, is_cover_menu_open);
-        });
-    } else {
-        ui.ctx().data_mut(|data| {
-            data.insert_temp(cover_controls_id, false);
-            data.insert_temp(cover_menu_open_id, false);
+            }
+
+            ui.separator();
+            if ui
+                .button(RichText::new("🗑  Kapağı Kaldır").color(palette.danger))
+                .clicked()
+            {
+                page.cover = 0;
+                page.cover_image = None;
+                page_changed = true;
+                ui.close_menu();
+            }
         });
     }
     if cover_height > 28.0 {
@@ -191,6 +245,16 @@ pub(super) fn show(
     if page_changed {
         intents.push(Intent::PageChanged(PageEdit::from(&*page)));
     }
+    let mut record_context = record_properties.record.map(|(data, record_page)| {
+        crate::ui::page_properties::RecordPropertyContext {
+            data,
+            record_page,
+            property_drafts: record_properties.property_drafts,
+            title_drafts: record_properties.title_drafts,
+            value_drafts: record_properties.value_drafts,
+        }
+    });
+
     crate::ui::page_properties::show(
         ui,
         crate::ui::page_properties::PagePropertyTarget {
@@ -201,29 +265,11 @@ pub(super) fn show(
         },
         page.created_at,
         &document.properties,
+        record_context.as_mut(),
         false,
         palette,
         &mut intents,
     );
-    if let Some((database, record_page)) = record_properties.record {
-        crate::ui::database::show_record_properties(
-            ui,
-            database,
-            crate::ui::database::RecordPropertiesTarget {
-                page_id: record_page,
-                indent: inset + block::HANDLE_WIDTH,
-                max_width: props_max_width,
-            },
-            false,
-            palette,
-            &mut intents,
-            &mut crate::ui::database::Drafts {
-                properties: record_properties.property_drafts,
-                titles: record_properties.title_drafts,
-                values: record_properties.value_drafts,
-            },
-        );
-    }
     ui.add_space(4.0);
     let line_y = ui.cursor().min.y;
     let line_left = inset + block::HANDLE_WIDTH;
@@ -443,32 +489,36 @@ fn title(
         .ctx()
         .data(|data| data.get_temp::<bool>(title_hover_id))
         .unwrap_or_default();
+    let icon_menu_open_id = egui::Id::new(("add-icon-menu-open", page.id, widget_scope));
+    let was_icon_menu_open = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(icon_menu_open_id))
+        .unwrap_or_default();
     let pointer_pos = ui.input(|i| i.pointer.hover_pos());
     let title_zone = egui::Rect::from_min_size(
         egui::pos2(inset, ui.cursor().min.y),
         egui::vec2(document_width, 76.0),
     );
     let is_pointer_over = pointer_pos.map_or(false, |pos| title_zone.contains(pos));
-    let show_add_button = page.icon.is_empty() && (is_pointer_over || was_hovered);
+    let show_add_button = page.icon.is_empty() && (is_pointer_over || was_hovered || was_icon_menu_open);
 
     let mut add_button_hovered = false;
+    let mut is_icon_menu_open = false;
     if page.icon.is_empty() {
         if show_add_button {
             ui.horizontal(|ui| {
                 ui.add_space(inset);
-                let btn_resp = ui.scope(|ui| {
-                    if let Some(new_icon) = crate::ui::add_icon_picker_button(
-                        ui,
-                        ("add-icon-btn", page.id, widget_scope),
-                        palette,
-                    ) {
-                        page.icon = new_icon;
-                        changed = true;
-                    }
-                });
-                if btn_resp.response.hovered() {
-                    add_button_hovered = true;
+                let (new_icon, is_open, btn_hovered) = crate::ui::add_icon_picker_button(
+                    ui,
+                    ("add-icon-btn", page.id, widget_scope),
+                    palette,
+                );
+                if let Some(icon) = new_icon {
+                    page.icon = icon;
+                    changed = true;
                 }
+                is_icon_menu_open = is_open;
+                add_button_hovered = btn_hovered;
             });
         } else {
             ui.add_space(26.0);
@@ -679,6 +729,7 @@ fn title(
     });
     ui.ctx().data_mut(|data| {
         data.insert_temp(title_hover_id, title_resp_hovered || add_button_hovered);
+        data.insert_temp(icon_menu_open_id, is_icon_menu_open);
     });
     changed
 }

@@ -278,7 +278,7 @@ impl Repository {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut page_statement = self.connection.prepare_cached(&format!(
-            "SELECT {PAGE_COLUMNS},(SELECT content FROM blocks WHERE page_id=pages.id AND kind!='divider' ORDER BY position LIMIT 1) FROM pages WHERE parent_id=?1 AND trashed_by IS NULL ORDER BY sort_order,id"
+            "SELECT {PAGE_COLUMNS},(SELECT content FROM blocks WHERE page_id=pages.id AND kind='text' ORDER BY position LIMIT 1) FROM pages WHERE parent_id=?1 AND trashed_by IS NULL ORDER BY sort_order,id"
         ))?;
         let pages = page_statement
             .query_map([page_id], |row| {

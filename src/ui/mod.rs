@@ -268,15 +268,17 @@ pub fn add_icon_picker_button(
     ui: &mut Ui,
     id_salt: impl std::hash::Hash,
     palette: Palette,
-) -> Option<String> {
+) -> (Option<String>, bool, bool) {
     let mut selected_icon = None;
     let text = RichText::new("☺  İkon ekle")
         .size(12.5)
         .color(palette.muted);
 
-    ui.menu_button(text, |ui| {
+    let menu_resp = ui.menu_button(text, |ui| {
         show_icon_picker_content(ui, &id_salt, "", &mut selected_icon);
     });
-    selected_icon
+    let is_open = menu_resp.inner.is_some();
+    let hovered = menu_resp.response.hovered();
+    (selected_icon, is_open, hovered)
 }
 

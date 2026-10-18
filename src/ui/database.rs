@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use eframe::egui::{self, Color32, FontId, RichText, Ui};
+use eframe::egui::{self, text::{CCursor, CCursorRange}, Color32, FontId, RichText, Ui};
 
 use crate::domain::model::{
     DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView, PROPERTY_TYPES, PropertyOption,
@@ -759,6 +759,352 @@ pub struct RecordPropertiesTarget {
     pub max_width: f32,
 }
 
+fn render_record_multi_select_chips(
+    ui: &mut Ui,
+    row: &DatabaseRow,
+    property: &DatabaseProperty,
+    available_width: f32,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let value = row.values.get(&property.id).cloned().unwrap_or_default();
+    let selected: Vec<String> = value
+        .split('|')
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    let record_id = row.page.id;
+    let prop_id = property.id;
+
+    ui.horizontal_wrapped(|ui| {
+        ui.set_max_width(available_width);
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+        ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+        ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+
+        for item in &selected {
+            let item_color = resolve_option_color(property.option_color(item));
+            let (pill_bg, _pill_border, pill_text) =
+                option_pill_colors(palette, "multi-select", item, item_color);
+            let pill_btn = egui::Button::new(
+                RichText::new(format!("{item}  ✕"))
+                    .font(FontId::proportional(12.0))
+                    .color(pill_text),
+            )
+            .fill(pill_bg)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(4);
+
+            let resp = ui
+                .add_enabled(!busy, pill_btn)
+                .on_hover_text(format!("Click to remove '{item}' · Right-click to change color"));
+            if resp.clicked() {
+                let mut updated = selected.clone();
+                updated.retain(|candidate| candidate != item);
+                intents.push(Intent::Action(Action::SetDatabaseProperty {
+                    page: record_id,
+                    property: prop_id,
+                    value: updated.join("|"),
+                }));
+            }
+            resp.context_menu(|ui| {
+                show_color_palette_grid(ui, palette, item_color, |new_color| {
+                    let mut opts = property.options.clone();
+                    if let Some(target) = opts.iter_mut().find(|o| o.name == *item) {
+                        target.color = new_color;
+                        intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
+                            property: prop_id,
+                            options: opts,
+                        }));
+                    }
+                });
+            });
+        }
+
+        let trigger_label = if selected.is_empty() { "Empty" } else { "+" };
+        ui.scope(|ui| {
+            ui.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+            ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+            ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.menu_button(
+                    RichText::new(trigger_label)
+                        .font(FontId::proportional(12.5))
+                        .color(palette.muted),
+                    |ui| {
+                        ui.set_min_width(205.0);
+                        if !selected.is_empty()
+                            && ui
+                                .button(RichText::new("Clear all").small().color(palette.muted))
+                                .clicked()
+                        {
+                            intents.push(Intent::Action(Action::SetDatabaseProperty {
+                                page: record_id,
+                                property: prop_id,
+                                value: String::new(),
+                            }));
+                            ui.close_menu();
+                        }
+                        if property.options.is_empty() {
+                            ui.label(
+                                RichText::new("No options yet. Create one below.")
+                                    .small()
+                                    .italics()
+                                    .color(palette.muted),
+                            );
+                        }
+                        for option in &property.options {
+                            let mut checked = selected.contains(&option.name);
+                            let opt_color = resolve_option_color(option.color.as_deref());
+                            let dot_color =
+                                option_base_color(palette, "multi-select", &option.name, opt_color);
+                            ui.horizontal(|ui| {
+                                ui.menu_button(
+                                    RichText::new("●")
+                                        .font(FontId::proportional(13.0))
+                                        .color(dot_color),
+                                    |ui| {
+                                        show_color_palette_grid(ui, palette, opt_color, |new_color| {
+                                            let mut opts = property.options.clone();
+                                            if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
+                                                target.color = new_color;
+                                                intents.push(Intent::Action(
+                                                    Action::SetDatabasePropertyOptions {
+                                                        property: prop_id,
+                                                        options: opts,
+                                                    },
+                                                ));
+                                            }
+                                        });
+                                    },
+                                )
+                                .response
+                                .on_hover_text("Change color");
+
+                                if ui.checkbox(&mut checked, &option.name).changed() {
+                                    let mut updated = selected.clone();
+                                    if checked {
+                                        if !updated.contains(&option.name) {
+                                            updated.push(option.name.clone());
+                                        }
+                                    } else {
+                                        updated.retain(|value| value != &option.name);
+                                    }
+                                    intents.push(Intent::Action(Action::SetDatabaseProperty {
+                                        page: record_id,
+                                        property: prop_id,
+                                        value: updated.join("|"),
+                                    }));
+                                }
+                            });
+                        }
+                        ui.separator();
+                        let quick_id =
+                            egui::Id::new(("db-prop-multi-quick-opt", record_id, prop_id));
+                        let mut new_opt = ui
+                            .ctx()
+                            .data(|d| d.get_temp::<String>(quick_id))
+                            .unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut new_opt)
+                                    .hint_text("Create option…")
+                                    .desired_width(145.0),
+                            );
+                            if resp.changed() {
+                                ui.ctx().data_mut(|d| d.insert_temp(quick_id, new_opt.clone()));
+                            }
+                            let enter = resp.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if (ui.button("+").clicked() || enter) && !new_opt.trim().is_empty() {
+                                let trimmed = new_opt.trim().to_owned();
+                                let mut opts = property.options.clone();
+                                if !opts.iter().any(|o| o.name == trimmed) {
+                                    opts.push(PropertyOption::new(&trimmed));
+                                    intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
+                                        property: prop_id,
+                                        options: opts,
+                                    }));
+                                    let mut updated = selected.clone();
+                                    if !updated.contains(&trimmed) {
+                                        updated.push(trimmed);
+                                        intents.push(Intent::Action(Action::SetDatabaseProperty {
+                                            page: record_id,
+                                            property: prop_id,
+                                            value: updated.join("|"),
+                                        }));
+                                    }
+                                }
+                                new_opt.clear();
+                                ui.ctx().data_mut(|d| d.insert_temp(quick_id, String::new()));
+                            }
+                        });
+                    },
+                );
+            });
+        });
+    });
+}
+
+pub fn show_record_property_rows(
+    ui: &mut Ui,
+    data: &DatabaseData,
+    page_id: i64,
+    section_width: f32,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    drafts: &mut Drafts<'_>,
+) {
+    let Some(row) = data.rows.iter().find(|row| row.page.id == page_id) else {
+        return;
+    };
+    let label_w = crate::ui::page_properties::LABEL_COLUMN_WIDTH;
+    let value_w = (section_width - label_w - 32.0).max(120.0);
+
+    for property in &data.properties {
+        let row_id = ui.id().with(("rec-prop-row", page_id, property.id));
+        let is_hovered = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(row_id))
+            .unwrap_or(false);
+        let row_bg = if is_hovered {
+            palette.hover.linear_multiply(0.55)
+        } else {
+            Color32::TRANSPARENT
+        };
+
+        let frame_resp = egui::Frame::new()
+            .fill(row_bg)
+            .corner_radius(5)
+            .inner_margin(egui::Margin::symmetric(6, 3))
+            .show(ui, |ui| {
+                ui.set_min_width(section_width - 12.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let icon = property_icon(&property.kind);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(label_w, 24.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.scope(|ui| {
+                                ui.style_mut().visuals.widgets.inactive.weak_bg_fill =
+                                    Color32::TRANSPARENT;
+                                ui.style_mut().visuals.widgets.inactive.bg_fill =
+                                    Color32::TRANSPARENT;
+                                ui.style_mut().visuals.widgets.inactive.bg_stroke =
+                                    egui::Stroke::NONE;
+                                ui.spacing_mut().button_padding = egui::vec2(4.0, 3.0);
+
+                                let menu_resp = ui.menu_button(
+                                    RichText::new(format!("{icon}   {}", property.name))
+                                        .font(FontId::proportional(13.0))
+                                        .color(if is_hovered {
+                                            palette.text
+                                        } else {
+                                            palette.muted
+                                        }),
+                                    |ui| {
+                                        show_property_edit_menu(
+                                            ui, property, busy, palette, intents,
+                                            drafts,
+                                        );
+                                    },
+                                );
+                                menu_resp
+                                    .response
+                                    .on_hover_text(format!(
+                                        "{} ({}) · Click or right-click to edit property",
+                                        property.name,
+                                        property_types_label(&property.kind)
+                                    ))
+                                    .context_menu(|ui| {
+                                        show_property_edit_menu(
+                                            ui, property, busy, palette, intents,
+                                            drafts,
+                                        );
+                                    });
+                            });
+                            let dots_id = ui.id().with(("rec-prop-dots-open", page_id, property.id));
+                            let was_dots_open = ui
+                                .ctx()
+                                .data(|d| d.get_temp::<bool>(dots_id))
+                                .unwrap_or(false);
+                            if is_hovered || was_dots_open {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let dots = ui.menu_button(
+                                            RichText::new("⋯")
+                                                .font(FontId::proportional(13.0))
+                                                .color(palette.muted),
+                                            |ui| {
+                                                show_property_edit_menu(
+                                                    ui, property, busy, palette,
+                                                    intents, drafts,
+                                                );
+                                            },
+                                        );
+                                        let mut is_dots_open = dots.inner.is_some();
+                                        let ctx_resp = dots.response.context_menu(|ui| {
+                                            show_property_edit_menu(
+                                                ui, property, busy, palette, intents,
+                                                drafts,
+                                            );
+                                        });
+                                        if ctx_resp.is_some() {
+                                            is_dots_open = true;
+                                        }
+                                        ui.ctx().data_mut(|d| d.insert_temp(dots_id, is_dots_open));
+                                    },
+                                );
+                            }
+                        },
+                    );
+
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(value_w, 24.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            if property.kind == "multi-select" {
+                                render_record_multi_select_chips(
+                                    ui,
+                                    row,
+                                    property,
+                                    value_w,
+                                    busy,
+                                    palette,
+                                    intents,
+                                );
+                            } else {
+                                property_editor(
+                                    ui,
+                                    row,
+                                    property,
+                                    value_w,
+                                    busy,
+                                    palette,
+                                    intents,
+                                    drafts.values,
+                                );
+                            }
+                        },
+                    );
+                });
+            });
+
+        let hovered_now = ui.rect_contains_pointer(frame_resp.response.rect);
+        ui.ctx().data_mut(|d| d.insert_temp(row_id, hovered_now));
+        frame_resp.response.context_menu(|ui| {
+            show_property_edit_menu(ui, property, busy, palette, intents, drafts);
+        });
+    }
+}
+
+#[allow(dead_code)]
 pub fn show_record_properties(
     ui: &mut Ui,
     data: &DatabaseData,
@@ -773,261 +1119,24 @@ pub fn show_record_properties(
         indent,
         max_width,
     } = target;
-    let Some(row) = data.rows.iter().find(|row| row.page.id == page_id) else {
-        return;
-    };
     let section_width = max_width.clamp(300.0, 680.0);
-    let collapse_id = egui::Id::new(("record-properties-collapsed", data.page_id, page_id));
-    let mut collapsed = ui
-        .ctx()
-        .data_mut(|d| d.get_persisted::<bool>(collapse_id).or_else(|| d.get_temp::<bool>(collapse_id)))
-        .unwrap_or(false);
-
     ui.horizontal(|ui| {
         ui.add_space(indent);
         ui.vertical(|ui| {
             ui.set_max_width(section_width);
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 2.0);
-            ui.push_id(("record-properties", data.page_id, page_id), |ui| {
-                ui.horizontal(|ui| {
-                    let arrow = if collapsed { "▸" } else { "▾" };
-                    let header_label = if data.properties.is_empty() {
-                        format!("{arrow}  DATABASE PROPERTIES")
-                    } else {
-                        format!("{arrow}  DATABASE PROPERTIES  ·  {}", data.properties.len())
-                    };
-                    let header_btn = ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(header_label)
-                                    .font(FontId::proportional(11.0))
-                                    .strong()
-                                    .color(palette.muted),
-                            )
-                            .frame(false),
-                        )
-                        .on_hover_text(if collapsed {
-                            "Özellikleri göster / genişlet · Sağ tık: Menü"
-                        } else {
-                            "Özellikleri gizle / daralt · Sağ tık: Menü"
-                        });
-
-                    if header_btn.clicked() {
-                        collapsed = !collapsed;
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(collapse_id, collapsed);
-                            d.insert_persisted(collapse_id, collapsed);
-                        });
-                    }
-
-                    header_btn.context_menu(|ui| {
-                        ui.set_min_width(220.0);
-                        let toggle_label = if collapsed {
-                            "👁  Özellikleri göster"
-                        } else {
-                            "👁  Özellikleri gizle"
-                        };
-                        if ui.button(toggle_label).clicked() {
-                            collapsed = !collapsed;
-                            ui.ctx().data_mut(|d| {
-                                d.insert_temp(collapse_id, collapsed);
-                                d.insert_persisted(collapse_id, collapsed);
-                            });
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        ui.menu_button("+  Add database property", |ui| {
-                            add_property_menu(ui, data, intents);
-                        });
-                        if !data.properties.is_empty() {
-                            ui.separator();
-                            for prop in &data.properties {
-                                let icon = property_icon(&prop.kind);
-                                ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
-                                    show_property_edit_menu(
-                                        ui, prop, busy, palette, intents, drafts,
-                                    );
-                                });
-                            }
-                        }
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let toggle_label = if collapsed { "👁 Göster" } else { "✕ Gizle" };
-                        let toggle_btn = ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new(toggle_label)
-                                        .font(FontId::proportional(11.0))
-                                        .color(palette.muted),
-                                )
-                                .frame(false),
-                            )
-                            .on_hover_text(if collapsed {
-                                "Özellikleri göster"
-                            } else {
-                                "Özellikleri gizle"
-                            });
-
-                        if toggle_btn.clicked() {
-                            collapsed = !collapsed;
-                            ui.ctx().data_mut(|d| {
-                                d.insert_temp(collapse_id, collapsed);
-                                d.insert_persisted(collapse_id, collapsed);
-                            });
-                        }
-
-                        ui.menu_button(
-                            RichText::new("+ Property")
-                                .font(FontId::proportional(12.0))
-                                .color(palette.muted),
-                            |ui| {
-                                add_property_menu(ui, data, intents);
-                            },
-                        )
-                        .response
-                        .on_hover_text("Add property to database");
-                    });
-                });
-
-                if collapsed {
-                    return;
-                }
-
-                ui.add_space(2.0);
-
-                let label_w = crate::ui::page_properties::LABEL_COLUMN_WIDTH;
-                let value_w = (section_width - label_w - 32.0).max(120.0);
-
-                for property in &data.properties {
-                    let row_id = ui.id().with(("rec-prop-row", page_id, property.id));
-                    let is_hovered = ui
-                        .ctx()
-                        .data(|d| d.get_temp::<bool>(row_id))
-                        .unwrap_or(false);
-                    let row_bg = if is_hovered {
-                        palette.hover.linear_multiply(0.55)
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-
-                    let frame_resp = egui::Frame::new()
-                        .fill(row_bg)
-                        .corner_radius(5)
-                        .inner_margin(egui::Margin::symmetric(6, 3))
-                        .show(ui, |ui| {
-                            ui.set_min_width(section_width - 12.0);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 8.0;
-                                let icon = property_icon(&property.kind);
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(label_w, 24.0),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        ui.scope(|ui| {
-                                            ui.style_mut().visuals.widgets.inactive.weak_bg_fill =
-                                                Color32::TRANSPARENT;
-                                            ui.style_mut().visuals.widgets.inactive.bg_fill =
-                                                Color32::TRANSPARENT;
-                                            ui.style_mut().visuals.widgets.inactive.bg_stroke =
-                                                egui::Stroke::NONE;
-                                            ui.spacing_mut().button_padding = egui::vec2(4.0, 3.0);
-
-                                            let menu_resp = ui.menu_button(
-                                                RichText::new(format!("{icon}   {}", property.name))
-                                                    .font(FontId::proportional(13.0))
-                                                    .color(if is_hovered {
-                                                        palette.text
-                                                    } else {
-                                                        palette.muted
-                                                    }),
-                                                |ui| {
-                                                    show_property_edit_menu(
-                                                        ui, property, busy, palette, intents,
-                                                        drafts,
-                                                    );
-                                                },
-                                            );
-                                            menu_resp
-                                                .response
-                                                .on_hover_text(format!(
-                                                    "{} ({}) · Click or right-click to edit property",
-                                                    property.name,
-                                                    property_types_label(&property.kind)
-                                                ))
-                                                .context_menu(|ui| {
-                                                    show_property_edit_menu(
-                                                        ui, property, busy, palette, intents,
-                                                        drafts,
-                                                    );
-                                                });
-                                        });
-                                        let dots_id = ui.id().with(("rec-prop-dots-open", page_id, property.id));
-                                        let was_dots_open = ui
-                                            .ctx()
-                                            .data(|d| d.get_temp::<bool>(dots_id))
-                                            .unwrap_or(false);
-                                        if is_hovered || was_dots_open {
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    let dots = ui.menu_button(
-                                                        RichText::new("⋯")
-                                                            .font(FontId::proportional(13.0))
-                                                            .color(palette.muted),
-                                                        |ui| {
-                                                            show_property_edit_menu(
-                                                                ui, property, busy, palette,
-                                                                intents, drafts,
-                                                            );
-                                                        },
-                                                    );
-                                                    let mut is_dots_open = dots.inner.is_some();
-                                                    let ctx_resp = dots.response.context_menu(|ui| {
-                                                        show_property_edit_menu(
-                                                            ui, property, busy, palette, intents,
-                                                            drafts,
-                                                        );
-                                                    });
-                                                    if ctx_resp.is_some() {
-                                                        is_dots_open = true;
-                                                    }
-                                                    ui.ctx().data_mut(|d| d.insert_temp(dots_id, is_dots_open));
-                                                },
-                                            );
-                                        }
-                                    },
-                                );
-
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(value_w, 24.0),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        property_editor(
-                                            ui,
-                                            row,
-                                            property,
-                                            value_w,
-                                            busy,
-                                            palette,
-                                            intents,
-                                            drafts.values,
-                                        );
-                                    },
-                                );
-                            });
-                        });
-
-                    let hovered_now = ui.rect_contains_pointer(frame_resp.response.rect);
-                    ui.ctx().data_mut(|d| d.insert_temp(row_id, hovered_now));
-                    frame_resp.response.context_menu(|ui| {
-                        show_property_edit_menu(ui, property, busy, palette, intents, drafts);
-                    });
-                }
-            });
+            show_record_property_rows(
+                ui,
+                data,
+                page_id,
+                section_width,
+                busy,
+                palette,
+                intents,
+                drafts,
+            );
         });
     });
-    ui.add_space(6.0);
 }
 
 fn sorted_rows(data: &DatabaseData) -> Vec<&DatabaseRow> {
@@ -1603,12 +1712,18 @@ fn show_table(
                                 is_row_selected,
                                 |ui, cell_hovered| {
                                     let hovered = row_hovered || cell_hovered;
+                                    let name_cell_rect = egui::Rect::from_min_size(
+                                        row_cursor,
+                                        egui::vec2(name_w, TABLE_ROW_HEIGHT),
+                                    );
 
+                                    let mut sel_box_hit: Option<egui::Rect> = None;
                                     if hovered || is_row_selected {
                                         let sel_box_rect = egui::Rect::from_center_size(
                                             ui.cursor().min + egui::vec2(8.0, 10.0),
                                             egui::vec2(14.0, 14.0),
                                         );
+                                        sel_box_hit = Some(sel_box_rect.expand(2.0));
                                         let sel_resp = ui.interact(
                                             sel_box_rect,
                                             ui.id().with(("row-sel", row.page.id)),
@@ -1652,6 +1767,7 @@ fn show_table(
                                         ui.add_space(18.0);
                                     }
 
+                                    let icon_start_x = ui.cursor().min.x;
                                     let icon = if row.page.icon.is_empty() {
                                         "📄"
                                     } else {
@@ -1669,6 +1785,10 @@ fn show_table(
                                             icon: new_icon,
                                         }));
                                     }
+                                    let icon_hit_rect = egui::Rect::from_min_max(
+                                        egui::pos2(icon_start_x, name_cell_rect.top()),
+                                        egui::pos2(ui.cursor().min.x + 2.0, name_cell_rect.bottom()),
+                                    );
 
                                     let title = drafts
                                         .titles
@@ -1680,24 +1800,48 @@ fn show_table(
                                         name_w - 42.0
                                     })
                                     .max(24.0);
+
+                                    let display_text = if title.is_empty() { "Untitled" } else { title.as_str() };
+                                    let text_width = ui.fonts(|f| {
+                                        f.layout_no_wrap(
+                                            display_text.to_string(),
+                                            FontId::proportional(13.0),
+                                            Color32::WHITE,
+                                        )
+                                        .rect
+                                        .width()
+                                    });
+                                    let title_edit_w = (text_width + 8.0).clamp(24.0, width_avail);
+
                                     let response = ui.add_enabled(
                                         !busy,
                                         egui::TextEdit::singleline(title)
                                             .hint_text("Untitled")
-                                            .desired_width(width_avail)
+                                            .desired_width(title_edit_w)
                                             .font(FontId::proportional(13.0))
                                             .frame(false)
                                             .margin(egui::Margin::ZERO),
                                     );
+
+                                    if response.gained_focus() {
+                                        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), response.id).unwrap_or_default();
+                                        let char_count = title.chars().count();
+                                        let range = CCursorRange::two(
+                                            CCursor::new(0),
+                                            CCursor::new(char_count),
+                                        );
+                                        state.cursor.set_char_range(Some(range));
+                                        state.store(ui.ctx(), response.id);
+                                        ui.ctx().request_repaint();
+                                    }
+
                                     if response.lost_focus() && title != &row.page.title {
                                         intents.push(Intent::Action(Action::RenameDatabaseRecord {
                                             page: row.page.id,
                                             title: title.clone(),
                                         }));
                                     }
-                                    if response.double_clicked() && !marquee_active {
-                                        intents.push(Intent::Open(row.page.id, None));
-                                    }
+
                                     response.context_menu(|ui| {
                                         if selected_rows.contains(&row.page.id) && selected_rows.len() > 1 {
                                             let count = selected_rows.len();
@@ -1741,14 +1885,44 @@ fn show_table(
                                             ui.close_menu();
                                         }
                                     });
+
+                                    let mut open_btn_hit: Option<egui::Rect> = None;
                                     if hovered {
-                                        let open_btn = egui::Button::new(
-                                            RichText::new("↗")
-                                                .color(palette.text)
-                                                .font(FontId::proportional(12.5)),
-                                        )
-                                        .frame(false);
-                                        if ui.add(open_btn).on_hover_text("Open page").clicked() {
+                                        let btn_rect = egui::Rect::from_center_size(
+                                            egui::pos2(name_cell_rect.right() - 14.0, name_cell_rect.center().y),
+                                            egui::vec2(20.0, 20.0),
+                                        );
+                                        open_btn_hit = Some(btn_rect.expand(2.0));
+                                        let open_resp = ui.put(
+                                            btn_rect,
+                                            egui::Button::new(
+                                                RichText::new("↗")
+                                                    .color(palette.text)
+                                                    .font(FontId::proportional(12.5)),
+                                            )
+                                            .frame(false),
+                                        );
+                                        if open_resp.on_hover_text("Open page").clicked() {
+                                            intents.push(Intent::Open(row.page.id, None));
+                                        }
+                                    }
+
+                                    let is_interactive = pointer_pos.map_or(false, |pos| {
+                                        sel_box_hit.map_or(false, |r| r.contains(pos))
+                                            || icon_hit_rect.contains(pos)
+                                            || response.rect.contains(pos)
+                                            || open_btn_hit.map_or(false, |r| r.contains(pos))
+                                    });
+
+                                    let in_empty_space = pointer_pos.map_or(false, |pos| name_cell_rect.contains(pos)) && !is_interactive;
+
+                                    if in_empty_space && !marquee_active {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                        if primary_clicked
+                                            && !is_ctrl
+                                            && !is_shift
+                                            && ui.ctx().dragged_id().is_none()
+                                        {
                                             intents.push(Intent::Open(row.page.id, None));
                                         }
                                     }
@@ -2102,7 +2276,7 @@ fn table_footer_cell(
     add_contents(&mut child_ui);
 }
 
-fn show_property_edit_menu(
+pub fn show_property_edit_menu(
     ui: &mut Ui,
     property: &DatabaseProperty,
     busy: bool,
@@ -2445,7 +2619,7 @@ fn property_editor(
                 (Color32::TRANSPARENT, palette.muted, egui::Stroke::NONE)
             } else {
                 let opt_col = resolve_option_color(property.option_color(&value));
-                let (bg, text, border) =
+                let (bg, border, text) =
                     option_pill_colors(palette, &property.kind, &value, opt_col);
                 (bg, text, egui::Stroke::new(1.0, border))
             };
@@ -2581,14 +2755,14 @@ fn property_editor(
                 (Color32::TRANSPARENT, palette.muted, egui::Stroke::NONE)
             } else if selected.len() == 1 {
                 let opt_col = resolve_option_color(property.option_color(&selected[0]));
-                let (bg, text, border) =
+                let (bg, _border, text) =
                     option_pill_colors(palette, "multi-select", &selected[0], opt_col);
-                (bg, text, egui::Stroke::new(1.0, border))
+                (bg, text, egui::Stroke::NONE)
             } else {
                 (
                     palette.accent_soft,
-                    palette.text,
-                    egui::Stroke::new(1.0, palette.accent.linear_multiply(0.3)),
+                    if palette.is_dark() { Color32::WHITE } else { palette.text },
+                    egui::Stroke::NONE,
                 )
             };
             ui.scope(|ui| {
@@ -2770,7 +2944,7 @@ fn property_editor(
     }
 }
 
-fn add_property_menu(ui: &mut Ui, data: &DatabaseData, intents: &mut Vec<Intent>) {
+pub fn add_property_menu(ui: &mut Ui, data: &DatabaseData, intents: &mut Vec<Intent>) {
     let name_id = egui::Id::new(("new-database-property-name", data.page_id));
     let mut name = ui
         .ctx()
@@ -3527,7 +3701,7 @@ fn show_board(
                                     (palette.hover, palette.muted)
                                 } else {
                                     let opt_col = resolve_option_color(status.option_color(group));
-                                    let (bg, text, _) =
+                                    let (bg, _border, text) =
                                         option_pill_colors(palette, "status", group, opt_col);
                                     (bg, text)
                                 };

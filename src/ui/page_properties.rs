@@ -115,11 +115,31 @@ pub fn option_pill_colors(
     custom_color: Option<Color32>,
 ) -> (Color32, Color32, Color32) {
     let base_tint = option_base_color(palette, kind, option, custom_color);
-    let bg = blend_color(palette.background, base_tint, 0.18);
-    let border = blend_color(palette.background, base_tint, 0.42);
-    let text = blend_color(palette.text, base_tint, 0.35);
-    (bg, border, text)
+    if kind == "multi-select" {
+        let bg = base_tint;
+        let border = Color32::TRANSPARENT;
+        let text = if palette.is_dark() {
+            Color32::WHITE
+        } else {
+            let brightness = (0.2126 * f32::from(base_tint.r())
+                + 0.7152 * f32::from(base_tint.g())
+                + 0.0722 * f32::from(base_tint.b()))
+                / 255.0;
+            if brightness > 0.60 {
+                Color32::from_rgb(20, 20, 20)
+            } else {
+                Color32::WHITE
+            }
+        };
+        (bg, border, text)
+    } else {
+        let bg = blend_color(palette.background, base_tint, 0.18);
+        let border = blend_color(palette.background, base_tint, 0.42);
+        let text = blend_color(palette.text, base_tint, 0.35);
+        (bg, border, text)
+    }
 }
+
 
 pub fn show_color_palette_grid<F>(
     ui: &mut Ui,
@@ -205,11 +225,20 @@ fn blend_color(from: Color32, to: Color32, t: f32) -> Color32 {
     )
 }
 
+pub struct RecordPropertyContext<'a> {
+    pub data: &'a crate::domain::model::DatabaseData,
+    pub record_page: i64,
+    pub property_drafts: &'a mut std::collections::HashMap<i64, (String, String)>,
+    pub title_drafts: &'a mut std::collections::HashMap<i64, String>,
+    pub value_drafts: &'a mut std::collections::HashMap<(i64, i64), String>,
+}
+
 pub fn show(
     ui: &mut Ui,
     target: PagePropertyTarget,
     created_at: i64,
     properties: &[PageProperty],
+    mut record_context: Option<&mut RecordPropertyContext<'_>>,
     busy: bool,
     palette: Palette,
     intents: &mut Vec<Intent>,
@@ -234,6 +263,12 @@ pub fn show(
         .data(|d| d.get_temp::<bool>(section_hover_id))
         .unwrap_or(false);
 
+    let db_props_len = record_context
+        .as_ref()
+        .map(|ctx| ctx.data.properties.len())
+        .unwrap_or(0);
+    let total_count = properties.len() + db_props_len;
+
     ui.horizontal(|ui| {
         ui.add_space(indent);
         let section_resp = ui.vertical(|ui| {
@@ -243,10 +278,10 @@ pub fn show(
                 // Section header bar
                 ui.horizontal(|ui| {
                     let arrow = if collapsed { "▸" } else { "▾" };
-                    let count_text = if properties.is_empty() {
+                    let count_text = if total_count == 0 {
                         format!("{arrow}  PROPERTIES")
                     } else {
-                        format!("{arrow}  PROPERTIES  ·  {}", properties.len())
+                        format!("{arrow}  PROPERTIES  ·  {total_count}")
                     };
                     let header_btn = ui
                         .add(
@@ -278,6 +313,7 @@ pub fn show(
                             page,
                             scope_id,
                             properties,
+                            record_context.as_deref_mut(),
                             &mut collapsed,
                             collapse_id,
                             busy,
@@ -310,6 +346,30 @@ pub fn show(
                                 d.insert_persisted(collapse_id, collapsed);
                             });
                         }
+
+                        if let Some(ref record_ctx) = record_context {
+                            ui.menu_button(
+                                RichText::new("+ Property")
+                                    .font(FontId::proportional(12.0))
+                                    .color(palette.muted),
+                                |ui| {
+                                    crate::ui::database::add_property_menu(ui, record_ctx.data, intents);
+                                },
+                            )
+                            .response
+                            .on_hover_text("Add property to database");
+                        } else {
+                            ui.menu_button(
+                                RichText::new("+ Property")
+                                    .font(FontId::proportional(12.0))
+                                    .color(palette.muted),
+                                |ui| {
+                                    show_add_property_panel(ui, page, scope_id, properties, busy, palette, intents);
+                                },
+                            )
+                            .response
+                            .on_hover_text("Add property to page");
+                        }
                     });
                 });
 
@@ -321,6 +381,27 @@ pub fn show(
 
                 // Created date row
                 show_created_row(ui, created_at, section_width, palette);
+
+                // Database property rows (if page is a database record)
+                if let Some(ref mut record_ctx) = record_context {
+                    let data = record_ctx.data;
+                    let record_page = record_ctx.record_page;
+                    let mut drafts = crate::ui::database::Drafts {
+                        properties: record_ctx.property_drafts,
+                        titles: record_ctx.title_drafts,
+                        values: record_ctx.value_drafts,
+                    };
+                    crate::ui::database::show_record_property_rows(
+                        ui,
+                        data,
+                        record_page,
+                        section_width,
+                        busy,
+                        palette,
+                        intents,
+                        &mut drafts,
+                    );
+                }
 
                 // Custom property rows
                 let total = properties.len();
@@ -378,18 +459,30 @@ pub fn show(
                                         .font(FontId::proportional(12.5))
                                         .color(text_color),
                                     |ui| {
-                                        show_add_property_panel(
-                                            ui, page, scope_id, properties, busy, palette, intents,
-                                        );
+                                        if let Some(ref record_ctx) = record_context {
+                                            crate::ui::database::add_property_menu(
+                                                ui, record_ctx.data, intents,
+                                            );
+                                        } else {
+                                            show_add_property_panel(
+                                                ui, page, scope_id, properties, busy, palette, intents,
+                                            );
+                                        }
                                     },
                                 );
                                 if menu_resp.inner.is_some() {
                                     is_now_open = true;
                                 }
                                 let ctx_resp = menu_resp.response.context_menu(|ui| {
-                                    show_add_property_panel(
-                                        ui, page, scope_id, properties, busy, palette, intents,
-                                    );
+                                    if let Some(ref record_ctx) = record_context {
+                                        crate::ui::database::add_property_menu(
+                                            ui, record_ctx.data, intents,
+                                        );
+                                    } else {
+                                        show_add_property_panel(
+                                            ui, page, scope_id, properties, busy, palette, intents,
+                                        );
+                                    }
                                 });
                                 if ctx_resp.is_some() {
                                     is_now_open = true;
@@ -431,6 +524,7 @@ fn show_section_context_menu(
     page: PageId,
     scope_id: u64,
     properties: &[PageProperty],
+    record_context: Option<&mut RecordPropertyContext<'_>>,
     collapsed: &mut bool,
     collapse_id: egui::Id,
     busy: bool,
@@ -459,22 +553,58 @@ fn show_section_context_menu(
         ui.close_menu();
     }
     ui.separator();
-    ui.menu_button("+  Add new property", |ui| {
-        show_add_property_panel(ui, page, scope_id, properties, busy, palette, intents);
-    });
-    if !properties.is_empty() {
-        ui.separator();
-        ui.label(
-            RichText::new("Existing properties (click to edit)")
-                .small()
-                .color(palette.muted),
-        );
-        let total = properties.len();
-        for (idx, prop) in properties.iter().enumerate() {
-            let icon = property_icon(&prop.kind);
-            ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
-                show_property_edit_panel(ui, page, prop, idx, total, busy, palette, intents);
-            });
+    if let Some(record_ctx) = record_context {
+        ui.menu_button("+  Add new property", |ui| {
+            crate::ui::database::add_property_menu(ui, record_ctx.data, intents);
+        });
+        if !record_ctx.data.properties.is_empty() {
+            ui.separator();
+            ui.label(
+                RichText::new("Existing properties (click to edit)")
+                    .small()
+                    .color(palette.muted),
+            );
+            let mut drafts = crate::ui::database::Drafts {
+                properties: record_ctx.property_drafts,
+                titles: record_ctx.title_drafts,
+                values: record_ctx.value_drafts,
+            };
+            for prop in &record_ctx.data.properties {
+                let icon = property_icon(&prop.kind);
+                ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                    crate::ui::database::show_property_edit_menu(
+                        ui, prop, busy, palette, intents, &mut drafts,
+                    );
+                });
+            }
+        }
+        if !properties.is_empty() {
+            let total = properties.len();
+            for (idx, prop) in properties.iter().enumerate() {
+                let icon = property_icon(&prop.kind);
+                ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                    show_property_edit_panel(ui, page, prop, idx, total, busy, palette, intents);
+                });
+            }
+        }
+    } else {
+        ui.menu_button("+  Add new property", |ui| {
+            show_add_property_panel(ui, page, scope_id, properties, busy, palette, intents);
+        });
+        if !properties.is_empty() {
+            ui.separator();
+            ui.label(
+                RichText::new("Existing properties (click to edit)")
+                    .small()
+                    .color(palette.muted),
+            );
+            let total = properties.len();
+            for (idx, prop) in properties.iter().enumerate() {
+                let icon = property_icon(&prop.kind);
+                ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                    show_property_edit_panel(ui, page, prop, idx, total, busy, palette, intents);
+                });
+            }
         }
     }
 }
@@ -1168,10 +1298,13 @@ fn show_multi_option_editor(
     ui.horizontal_wrapped(|ui| {
         ui.set_max_width(available_width);
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        ui.style_mut().visuals.widgets.hovered.bg_stroke = Stroke::NONE;
+        ui.style_mut().visuals.widgets.active.bg_stroke = Stroke::NONE;
+        ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
 
         for item in &selected {
             let item_color = resolve_option_color(property.option_color(item));
-            let (pill_bg, pill_border, pill_text) =
+            let (pill_bg, _pill_border, pill_text) =
                 option_pill_colors(palette, "multi-select", item, item_color);
             let pill_btn = egui::Button::new(
                 RichText::new(format!("{item}  ✕"))
@@ -1179,7 +1312,7 @@ fn show_multi_option_editor(
                     .color(pill_text),
             )
             .fill(pill_bg)
-            .stroke(Stroke::new(1.0, pill_border))
+            .stroke(Stroke::NONE)
             .corner_radius(4);
 
             let resp = ui

@@ -23,24 +23,51 @@ pub fn is_windows_drive_path(s: &str) -> bool {
 }
 
 pub fn is_file_path(s: &str) -> bool {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
+    let clean = s.trim().trim_matches('"').trim_matches('\'');
+    if clean.is_empty() {
         return false;
     }
 
-    if is_windows_drive_path(trimmed) {
+    if is_windows_drive_path(clean) {
         return true;
     }
 
-    if trimmed.starts_with(r"\\") && trimmed.len() > 3 && trimmed[2..].contains('\\') {
+    if clean.starts_with(r"\\") && clean.len() > 3 && clean[2..].contains('\\') {
         return true;
     }
 
-    if trimmed.starts_with("file:///") || trimmed.starts_with("file://") {
+    if clean.starts_with("file:///") || clean.starts_with("file://") {
+        return true;
+    }
+
+    if clean.starts_with('/')
+        && clean.len() > 2
+        && clean[1..].contains('/')
+        && !clean.starts_with("//")
+    {
         return true;
     }
 
     false
+}
+
+pub fn extract_file_or_folder_name(raw_path: &str) -> String {
+    let clean = normalize_file_path(raw_path);
+    let trimmed = clean.trim_end_matches(['/', '\\']);
+
+    if trimmed.len() == 2 && trimmed.ends_with(':') {
+        let drive = trimmed.chars().next().unwrap().to_ascii_uppercase();
+        return format!("{drive}:\\");
+    }
+
+    let p = std::path::Path::new(trimmed);
+    if let Some(file_name) = p.file_name().and_then(|s| s.to_str()) {
+        if !file_name.is_empty() {
+            return file_name.to_string();
+        }
+    }
+
+    clean
 }
 
 pub fn normalize_file_path(raw: &str) -> String {
@@ -421,6 +448,32 @@ mod tests {
             LinkType::FilePath {
                 path: "C:\\Notlar".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn test_extract_file_or_folder_name() {
+        assert_eq!(
+            extract_file_or_folder_name(r"C:\Users\kargalar\Documents\note.txt"),
+            "note.txt"
+        );
+        assert_eq!(
+            extract_file_or_folder_name(r#""C:\Program Files\Noteon\app.exe""#),
+            "app.exe"
+        );
+        assert_eq!(
+            extract_file_or_folder_name(r"C:\Users\kargalar\Documents\"),
+            "Documents"
+        );
+        assert_eq!(
+            extract_file_or_folder_name(r"C:\Users\kargalar\Documents"),
+            "Documents"
+        );
+        assert_eq!(extract_file_or_folder_name(r"C:\"), r"C:\");
+        assert_eq!(extract_file_or_folder_name(r"D:/"), r"D:\");
+        assert_eq!(
+            extract_file_or_folder_name(r"\\server\share\projects"),
+            "projects"
         );
     }
 }

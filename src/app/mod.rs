@@ -683,7 +683,8 @@ impl NoteonApp {
                     self.action(action);
                 }
                 Intent::BlockChanged(block) => {
-                    if block.position == 0 && block.kind != crate::domain::model::BlockKind::Divider
+                    if block.position == 0
+                        && block.kind == crate::domain::model::BlockKind::Text
                     {
                         for database in self.databases.values_mut() {
                             if let Some(row) = database

@@ -23,9 +23,10 @@ pub const MEDIA_BLOCK_HEIGHT: f32 = 320.0;
 enum SlashCommandTarget {
     Block(BlockKind),
     Page,
+    File,
 }
 
-const SLASH_COMMANDS: [(&str, SlashCommandTarget); 13] = [
+const SLASH_COMMANDS: [(&str, SlashCommandTarget); 14] = [
     ("/h1", SlashCommandTarget::Block(BlockKind::Heading1)),
     ("/h2", SlashCommandTarget::Block(BlockKind::Heading2)),
     ("/h3", SlashCommandTarget::Block(BlockKind::Heading3)),
@@ -39,7 +40,46 @@ const SLASH_COMMANDS: [(&str, SlashCommandTarget); 13] = [
     ("/text", SlashCommandTarget::Block(BlockKind::Text)),
     ("/table", SlashCommandTarget::Block(BlockKind::Database)),
     ("/page", SlashCommandTarget::Page),
+    ("/file", SlashCommandTarget::File),
 ];
+
+pub fn parse_file_link(content: &str) -> Option<(String, String)> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.starts_with('[') && trimmed.contains("](") && trimmed.ends_with(')') {
+        if let (Some(b_end), Some(p_start)) = (trimmed.find(']'), trimmed.find("](")) {
+            let label = &trimmed[1..b_end];
+            let target = trimmed[p_start + 2..trimmed.len() - 1].trim();
+            let unquoted_target = target.trim_matches('"').trim_matches('\'');
+            if super::links::is_file_path(unquoted_target) {
+                let path = super::links::normalize_file_path(unquoted_target);
+                let name = if label.trim().is_empty() {
+                    super::links::extract_file_or_folder_name(&path)
+                } else {
+                    label.trim().to_string()
+                };
+                return Some((path, name));
+            }
+        }
+    }
+
+    let clean = if let Some(stripped) = trimmed.strip_prefix('📁') {
+        stripped.trim()
+    } else {
+        trimmed
+    };
+    let unquoted = clean.trim_matches('"').trim_matches('\'');
+    if super::links::is_file_path(unquoted) {
+        let path = super::links::normalize_file_path(unquoted);
+        let name = super::links::extract_file_or_folder_name(&path);
+        Some((path, name))
+    } else {
+        None
+    }
+}
 
 pub fn font(kind: BlockKind) -> FontId {
     FontId::new(
@@ -71,7 +111,11 @@ pub fn measured_height(ui: &Ui, block: &Block, width: f32) -> f32 {
         return 32.0;
     }
     let text_width = (width - HANDLE_WIDTH - text_indent(block.kind) - 14.0).max(80.0);
-    let text = if block.content.is_empty() {
+    let measure_str;
+    let text = if let Some((_, name)) = parse_file_link(&block.content) {
+        measure_str = format!("📁  {name}");
+        &measure_str
+    } else if block.content.is_empty() {
         " "
     } else {
         &block.content
@@ -136,6 +180,12 @@ pub fn show(
     } else {
         let is_page_link =
             block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗');
+        let file_link_data = if block.kind == BlockKind::Text && !is_page_link {
+            parse_file_link(&block.content)
+        } else {
+            None
+        };
+        let is_file_link = file_link_data.is_some();
         let editing_id = block_widget_id("page-link-editing", block.id, widget_scope);
         let started_id = block_widget_id("page-link-editing-started", block.id, widget_scope);
         let is_editing = ui.ctx().data(|d| d.get_temp::<bool>(editing_id)).unwrap_or(false);
@@ -265,6 +315,108 @@ pub fn show(
                     ui.close_menu();
                 }
             });
+        } else if let Some((file_path, file_name)) = file_link_data.filter(|_| !is_editing) {
+            let link_rect = Rect::from_min_max(
+                body.min + vec2(text_indent(block.kind), 2.0),
+                body.max - vec2(4.0, 2.0),
+            );
+            let link_id = block_widget_id("file-link-surface", block.id, widget_scope);
+            let hover_tip = format!("📁 '{file_name}'\n{file_path}\n(Dosya Gezgini'nde açmak için tıkla)");
+            let link_resp = ui
+                .interact(link_rect, link_id, Sense::click())
+                .on_hover_text(hover_tip);
+
+            if link_resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                ui.painter().rect_filled(link_rect, 4.0, palette.hover);
+            }
+
+            let mut job = egui::text::LayoutJob::default();
+            job.wrap.max_width = (link_rect.width() - 16.0).max(40.0);
+            job.append(
+                "📁  ",
+                0.0,
+                egui::TextFormat {
+                    font_id: FontId::proportional(15.0),
+                    color: palette.text,
+                    ..Default::default()
+                },
+            );
+            job.append(
+                &file_name,
+                0.0,
+                egui::TextFormat {
+                    font_id: FontId::proportional(15.0),
+                    color: palette.text,
+                    underline: if link_resp.hovered() {
+                        Stroke::new(1.0, palette.muted)
+                    } else {
+                        Stroke::NONE
+                    },
+                    ..Default::default()
+                },
+            );
+            let galley = ui.fonts(|f| f.layout_job(job));
+            let y_offset = if galley.size().y < link_rect.height() - 4.0 {
+                (link_rect.height() - galley.size().y) * 0.5
+            } else {
+                4.0
+            };
+            let text_pos = pos2(link_rect.min.x + 8.0, link_rect.min.y + y_offset);
+            ui.painter().galley(text_pos, galley, palette.text);
+
+            if link_resp.double_clicked() {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(editing_id, true);
+                    d.insert_temp(started_id, true);
+                });
+            } else if link_resp.clicked() || link_resp.middle_clicked() {
+                intents.push(Intent::OpenFileExplorer(file_path.clone()));
+            }
+
+            link_resp.context_menu(|ui| {
+                ui.set_min_width(170.0);
+                if ui.button("✏  Düzenle").clicked() {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(editing_id, true);
+                        d.insert_temp(started_id, true);
+                    });
+                    ui.close_menu();
+                }
+                if ui.button(format!("📁  '{file_name}' Aç")).clicked() {
+                    intents.push(Intent::OpenFileExplorer(file_path.clone()));
+                    ui.close_menu();
+                }
+                if ui.button("📋  Dosya yolunu kopyala").clicked() {
+                    ui.ctx().copy_text(file_path.clone());
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("▲  Yukarı taşı").clicked() {
+                    intents.push(Intent::Action(Action::MoveBlock {
+                        page: block.page_id,
+                        block: block.id,
+                        direction: -1,
+                    }));
+                    ui.close_menu();
+                }
+                if ui.button("▼  Aşağı taşı").clicked() {
+                    intents.push(Intent::Action(Action::MoveBlock {
+                        page: block.page_id,
+                        block: block.id,
+                        direction: 1,
+                    }));
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button(RichText::new("🗑  Bloğu sil").color(palette.danger)).clicked() {
+                    intents.push(Intent::Action(Action::DeleteBlock {
+                        page: block.page_id,
+                        block: block.id,
+                    }));
+                    ui.close_menu();
+                }
+            });
         } else {
             changed |= show_decoration(ui, body, block, palette);
             let text_rect = Rect::from_min_max(
@@ -294,7 +446,7 @@ pub fn show(
                 find_active_match,
             );
 
-            if is_page_link {
+            if is_page_link || is_file_link {
                 let editor_id = block_widget_id("block", block.id, widget_scope);
                 if just_started {
                     if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), editor_id) {
@@ -494,12 +646,19 @@ fn show_menu(
     }
     let is_page_link =
         block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗');
+    let file_link_data = if block.kind == BlockKind::Text && !is_page_link {
+        parse_file_link(&block.content)
+    } else {
+        None
+    };
+    let is_file_link = file_link_data.is_some();
     let editing_id = block_widget_id("page-link-editing", block.id, widget_scope);
     let started_id = block_widget_id("page-link-editing-started", block.id, widget_scope);
     let is_editing = ui.ctx().data(|d| d.get_temp::<bool>(editing_id)).unwrap_or(false);
 
     let right_clicked_on_row = !bulk_selection_active
         && !(is_page_link && !is_editing)
+        && !(is_file_link && !is_editing)
         && ui.input(|input| {
             input.pointer.button_clicked(egui::PointerButton::Secondary)
                 && input
@@ -543,6 +702,24 @@ fn show_menu(
                 };
                 if ui.button(format!("↗  '{display_title}' Aç")).clicked() {
                     intents.push(Intent::OpenTitle(display_title.to_string()));
+                    ui.close_menu();
+                }
+                ui.separator();
+            }
+            if let Some((file_path, file_name)) = file_link_data.as_ref() {
+                if ui.button("✏  Düzenle").clicked() {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(editing_id, true);
+                        d.insert_temp(started_id, true);
+                    });
+                    ui.close_menu();
+                }
+                if ui.button(format!("📁  '{file_name}' Aç")).clicked() {
+                    intents.push(Intent::OpenFileExplorer(file_path.clone()));
+                    ui.close_menu();
+                }
+                if ui.button("📋  Dosya yolunu kopyala").clicked() {
+                    ui.ctx().copy_text(file_path.clone());
                     ui.close_menu();
                 }
                 ui.separator();
@@ -803,11 +980,6 @@ fn show_text(
                                         } else {
                                             egui::Color32::from_rgb(9, 105, 218)
                                         };
-                                        let file_color = if is_dark {
-                                            egui::Color32::from_rgb(245, 158, 11)
-                                        } else {
-                                            egui::Color32::from_rgb(180, 83, 9)
-                                        };
 
                                         egui::show_tooltip(
                                             ui.ctx(),
@@ -842,19 +1014,19 @@ fn show_text(
                                                         });
                                                     }
                                                     super::links::LinkType::FilePath { path } => {
+                                                        let name = super::links::extract_file_or_folder_name(path);
                                                         ui.horizontal(|ui| {
-                                                            ui.label(RichText::new("📁").size(15.0));
+                                                            ui.label(RichText::new("📁").size(16.0));
                                                             ui.vertical(|ui| {
                                                                 ui.label(
-                                                                    RichText::new("Dosya Gezgini Yolu")
+                                                                    RichText::new(&name)
                                                                         .strong()
                                                                         .size(12.0),
                                                                 );
                                                                 ui.label(
                                                                     RichText::new(path)
-                                                                        .color(file_color)
-                                                                        .monospace()
-                                                                        .size(11.0),
+                                                                        .color(palette.muted)
+                                                                        .size(10.0),
                                                                 );
                                                                 ui.label(
                                                                     RichText::new(
@@ -912,11 +1084,8 @@ fn show_text(
                                     }
                                 }
                                 super::links::LinkType::FilePath { path } => {
-                                    let label = if path.len() > 30 {
-                                        format!("📁  {}...", &path[..27])
-                                    } else {
-                                        format!("📁  {path}")
-                                    };
+                                    let name = super::links::extract_file_or_folder_name(path);
+                                    let label = format!("📁  {name}");
                                     if ui.button(label).clicked() {
                                         intents.push(Intent::OpenFileExplorer(path.clone()));
                                         ui.close_menu();
@@ -1096,6 +1265,15 @@ fn show_text(
                                 block.kind = BlockKind::Text;
                                 block.content = "↗ Untitled".to_string();
                             }
+                            SlashCommandTarget::File => {
+                                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                                    block.kind = BlockKind::Text;
+                                    block.content = path.to_string_lossy().into_owned();
+                                } else {
+                                    block.kind = BlockKind::Text;
+                                    block.content.clear();
+                                }
+                            }
                         }
                         block.text_styles.clear();
                         output.response.request_focus();
@@ -1148,9 +1326,9 @@ fn layout_styled_text(
         egui::Color32::from_rgb(9, 105, 218)
     };
     let file_color = if is_dark {
-        egui::Color32::from_rgb(245, 158, 11)
+        egui::Color32::from_rgb(130, 180, 240)
     } else {
-        egui::Color32::from_rgb(180, 83, 9)
+        egui::Color32::from_rgb(30, 100, 190)
     };
 
     let query_clean = find_query.map(|q| q.trim()).unwrap_or("");
@@ -1201,7 +1379,7 @@ fn layout_styled_text(
         let byte_start = characters[start].0;
         let byte_end = characters.get(end).map_or(text.len(), |(index, _)| *index);
 
-        let mut font = styled_font(base_font.clone(), &style);
+        let font = styled_font(base_font.clone(), &style);
         let mut color = style.foreground.map(color_from_rgba).unwrap_or(base_color);
         let mut background = style.background.map(color_from_rgba);
         let mut underline = style.underline;
@@ -1219,15 +1397,6 @@ fn layout_styled_text(
                         color = file_color;
                     }
                     underline = true;
-                    font.family = FontFamily::Monospace;
-                    if background.is_none() {
-                        background = Some(egui::Color32::from_rgba_unmultiplied(
-                            file_color.r(),
-                            file_color.g(),
-                            file_color.b(),
-                            30,
-                        ));
-                    }
                 }
             }
         }
@@ -1929,6 +2098,7 @@ fn show_command_suggestions(
                         SlashCommandTarget::Block(BlockKind::Database) => "Table",
                         SlashCommandTarget::Block(kind) => kind.label(),
                         SlashCommandTarget::Page => "Page",
+                        SlashCommandTarget::File => "File or Folder",
                     };
                     if ui
                         .selectable_label(index == selected, format!("{command}   {label}"))
@@ -1973,7 +2143,9 @@ fn handle_enter(
     if !focused || block.kind == BlockKind::Code || !consume_plain_enter(ui) {
         return false;
     }
-    if block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗') {
+    if block.kind == BlockKind::Text
+        && (block.content.trim_start().starts_with('↗') || parse_file_link(&block.content).is_some())
+    {
         return false;
     }
     if let Some(kind) = BlockKind::shortcut(&block.content) {
@@ -2037,7 +2209,44 @@ mod tests {
             matching_commands("/page"),
             [("/page", SlashCommandTarget::Page)]
         );
+        assert_eq!(
+            matching_commands("/file"),
+            [("/file", SlashCommandTarget::File)]
+        );
         assert!(matching_commands("/unknown").is_empty());
+    }
+
+    #[test]
+    fn parse_file_link_recognizes_paths_and_markdown() {
+        assert_eq!(
+            super::parse_file_link(r"C:\Users\kargalar\Documents\note.txt"),
+            Some((
+                r"C:\Users\kargalar\Documents\note.txt".to_string(),
+                "note.txt".to_string()
+            ))
+        );
+        assert_eq!(
+            super::parse_file_link(r#""C:\Program Files\App\app.exe""#),
+            Some((
+                r"C:\Program Files\App\app.exe".to_string(),
+                "app.exe".to_string()
+            ))
+        );
+        assert_eq!(
+            super::parse_file_link(r"📁 C:\Users\kargalar\Downloads\file.zip"),
+            Some((
+                r"C:\Users\kargalar\Downloads\file.zip".to_string(),
+                "file.zip".to_string()
+            ))
+        );
+        assert_eq!(
+            super::parse_file_link(r"[My PDF](C:\Users\kargalar\report.pdf)"),
+            Some((
+                r"C:\Users\kargalar\report.pdf".to_string(),
+                "My PDF".to_string()
+            ))
+        );
+        assert_eq!(super::parse_file_link("regular text without paths"), None);
     }
 
     #[test]

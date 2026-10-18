@@ -74,6 +74,14 @@ impl Palette {
         }
     }
 
+    pub fn is_dark(&self) -> bool {
+        let brightness = (0.2126 * f32::from(self.background.r())
+            + 0.7152 * f32::from(self.background.g())
+            + 0.0722 * f32::from(self.background.b()))
+            / 255.0;
+        brightness <= 0.52
+    }
+
     pub fn customized(
         mut self,
         background: Color32,

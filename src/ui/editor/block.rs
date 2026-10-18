@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::domain::editing::split_at_selection;
 use crate::domain::model::{
-    Block, BlockKind, DropPlacement, InlineFontFamily, InlineTextStyle, TextStyleRange,
+    Block, BlockId, BlockKind, DropPlacement, InlineFontFamily, InlineTextStyle, TextStyleRange,
 };
 use crate::worker::Action;
 
@@ -141,6 +141,7 @@ pub fn show(
     focus: bool,
     selected: bool,
     bulk_selection_active: bool,
+    selected_blocks: &[BlockId],
     palette: Palette,
     widget_scope: Option<u64>,
     intents: &mut Vec<Intent>,
@@ -154,6 +155,7 @@ pub fn show(
         block,
         selected,
         bulk_selection_active,
+        selected_blocks,
         palette,
         widget_scope,
         intents,
@@ -568,6 +570,7 @@ fn show_menu(
     block: &mut Block,
     selected: bool,
     bulk_selection_active: bool,
+    selected_blocks: &[BlockId],
     palette: Palette,
     widget_scope: Option<u64>,
     intents: &mut Vec<Intent>,
@@ -602,11 +605,25 @@ fn show_menu(
     );
     let handle = handle.on_hover_text("Block menu");
     if handle.drag_started() {
-        handle.dnd_set_drag_payload((block.page_id, block.id));
+        let payload_blocks = if selected && !selected_blocks.is_empty() {
+            selected_blocks.to_vec()
+        } else {
+            vec![block.id]
+        };
+        handle.dnd_set_drag_payload((block.page_id, payload_blocks));
     }
-    if let Some(payload) = row_response.dnd_hover_payload::<(i64, i64)>()
-        && payload.0 == block.page_id
-        && payload.1 != block.id
+    let hover_payload = row_response
+        .dnd_hover_payload::<(i64, Vec<i64>)>()
+        .map(|p| (p.0, p.1.clone()))
+        .or_else(|| {
+            row_response
+                .dnd_hover_payload::<(i64, i64)>()
+                .map(|p| (p.0, vec![p.1]))
+        });
+
+    if let Some((page_id, source_blocks)) = hover_payload
+        && page_id == block.page_id
+        && !source_blocks.contains(&block.id)
         && let Some(pointer) = ui.ctx().pointer_interact_pos()
     {
         let side_zone = rect.width() * 0.22;
@@ -634,11 +651,20 @@ fn show_menu(
             }
         };
         ui.painter().rect_filled(preview, 4.0, palette.accent_soft);
-        if let Some(payload) = row_response.dnd_release_payload::<(i64, i64)>() {
-            let (page, source) = *payload;
-            intents.push(Intent::Action(Action::ArrangeBlock {
+
+        let release_payload = row_response
+            .dnd_release_payload::<(i64, Vec<i64>)>()
+            .map(|p| (p.0, p.1.clone()))
+            .or_else(|| {
+                row_response
+                    .dnd_release_payload::<(i64, i64)>()
+                    .map(|p| (p.0, vec![p.1]))
+            });
+
+        if let Some((page, sources)) = release_payload {
+            intents.push(Intent::Action(Action::ArrangeBlocks {
                 page,
-                source,
+                sources,
                 target: block.id,
                 placement,
             }));

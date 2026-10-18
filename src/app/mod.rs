@@ -73,6 +73,7 @@ pub struct NoteonApp {
 
 impl NoteonApp {
     pub fn new(creation: &eframe::CreationContext<'_>) -> Self {
+        egui_extras::install_image_loaders(&creation.egui_ctx);
         theme::configure(&creation.egui_ctx);
         let directory = config::data_directory();
         let data_directory = directory.as_ref().cloned().unwrap_or_default();

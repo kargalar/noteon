@@ -313,15 +313,26 @@ fn breadcrumb(
             intents.push(Intent::Forward);
         }
         for item in breadcrumbs {
-            let label = if !item.icon.is_empty() {
-                format!("{}  {}", item.icon, item.title)
-            } else {
-                item.title.clone()
-            };
-            let resp = ui.add(
-                egui::Button::new(RichText::new(label).size(12.0).color(palette.muted))
+            let resp = if let Some(source) = crate::ui::emoji_image_source(&item.icon) {
+                let img = egui::Image::new(source).fit_to_exact_size(egui::vec2(12.0, 12.0));
+                ui.add(
+                    egui::Button::image_and_text(
+                        img,
+                        RichText::new(&item.title).size(12.0).color(palette.muted),
+                    )
                     .frame(false),
-            );
+                )
+            } else {
+                let label = if !item.icon.is_empty() {
+                    format!("{}  {}", item.icon, item.title)
+                } else {
+                    item.title.clone()
+                };
+                ui.add(
+                    egui::Button::new(RichText::new(label).size(12.0).color(palette.muted))
+                        .frame(false),
+                )
+            };
             if resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
@@ -332,12 +343,17 @@ fn breadcrumb(
             }
             ui.label(RichText::new("/").size(12.0).color(palette.muted));
         }
-        let current_label = if page.icon.is_empty() {
-            page.display_title().to_string()
+        if let Some(source) = crate::ui::emoji_image_source(&page.icon) {
+            ui.add(egui::Image::new(source).fit_to_exact_size(egui::vec2(12.0, 12.0)));
+            ui.label(RichText::new(page.display_title()).size(12.0));
         } else {
-            format!("{}  {}", page.icon, page.display_title())
-        };
-        ui.label(RichText::new(current_label).size(12.0));
+            let current_label = if page.icon.is_empty() {
+                page.display_title().to_string()
+            } else {
+                format!("{}  {}", page.icon, page.display_title())
+            };
+            ui.label(RichText::new(current_label).size(12.0));
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button("···", |ui| {
                 ui.menu_button("🕒  Değişiklik Geçmişi", |ui| {

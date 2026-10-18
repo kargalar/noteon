@@ -107,7 +107,17 @@ impl Repository {
         target: BlockId,
         placement: DropPlacement,
     ) -> Result<()> {
-        if source == target {
+        self.arrange_blocks(page, &[source], target, placement)
+    }
+
+    pub fn arrange_blocks(
+        &mut self,
+        page: PageId,
+        sources: &[BlockId],
+        target: BlockId,
+        placement: DropPlacement,
+    ) -> Result<()> {
+        if sources.is_empty() || sources.contains(&target) {
             return Ok(());
         }
         let transaction = self.connection.transaction()?;
@@ -125,10 +135,18 @@ impl Repository {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(statement);
         let ids: Vec<_> = rows.iter().map(|row| row.0).collect();
-        let source_index = ids
-            .iter()
-            .position(|id| *id == source)
-            .ok_or_else(|| Error::Invalid("Block to move was not found.".into()))?;
+
+        let mut valid_sources: Vec<BlockId> = Vec::new();
+        for &s in sources {
+            if ids.contains(&s) && s != target && !valid_sources.contains(&s) {
+                valid_sources.push(s);
+            }
+        }
+        if valid_sources.is_empty() {
+            return Ok(());
+        }
+        valid_sources.sort_by_key(|s| ids.iter().position(|id| id == s).unwrap_or(usize::MAX));
+
         let target_index = ids
             .iter()
             .position(|id| *id == target)
@@ -143,16 +161,7 @@ impl Repository {
 
         match placement {
             DropPlacement::Before | DropPlacement::After => {
-                let source_group = rows[source_index].1;
                 let target_group = rows[target_index].1;
-                let source_members: Vec<_> = if let Some(group) = source_group {
-                    rows.iter()
-                        .filter(|row| row.1 == Some(group))
-                        .map(|row| row.0)
-                        .collect()
-                } else {
-                    vec![source]
-                };
                 let target_members: Vec<_> = if let Some(group) = target_group {
                     rows.iter()
                         .filter(|row| row.1 == Some(group))
@@ -161,11 +170,29 @@ impl Repository {
                 } else {
                     vec![target]
                 };
-                if source_members.iter().any(|id| target_members.contains(id)) {
+
+                let (source_blocks, preserve_source_columns) = if sources.len() == 1 {
+                    let source = sources[0];
+                    let source_index = ids.iter().position(|id| *id == source).unwrap();
+                    if let Some(group) = rows[source_index].1 {
+                        let members: Vec<_> = rows
+                            .iter()
+                            .filter(|row| row.1 == Some(group))
+                            .map(|row| row.0)
+                            .collect();
+                        (members, true)
+                    } else {
+                        (vec![source], false)
+                    }
+                } else {
+                    (valid_sources.clone(), false)
+                };
+
+                if source_blocks.iter().any(|id| target_members.contains(id)) {
                     transaction.commit()?;
                     return Ok(());
                 }
-                order.retain(|id| !source_members.contains(id));
+                order.retain(|id| !source_blocks.contains(id));
                 let target_position = order
                     .iter()
                     .position(|id| target_members.contains(id))
@@ -175,15 +202,41 @@ impl Repository {
                 } else {
                     target_position
                 };
-                for (offset, id) in source_members.iter().enumerate() {
+                for (offset, id) in source_blocks.iter().enumerate() {
                     order.insert((insert_at + offset).min(order.len()), *id);
+                    if !preserve_source_columns {
+                        columns.insert(*id, (None, 0));
+                    }
                 }
-                for id in &source_members {
-                    columns.insert(*id, (None, 0));
+
+                if !preserve_source_columns {
+                    let mut affected_groups = std::collections::HashSet::new();
+                    for id in &source_blocks {
+                        if let Some((Some(grp), _)) = rows.iter().find(|r| r.0 == *id).map(|r| (r.1, r.2)) {
+                            affected_groups.insert(grp);
+                        }
+                    }
+                    for grp in affected_groups {
+                        let remaining: Vec<BlockId> = rows
+                            .iter()
+                            .filter(|row| row.1 == Some(grp) && !source_blocks.contains(&row.0))
+                            .map(|row| row.0)
+                            .collect();
+                        if remaining.len() <= 1 {
+                            for rem_id in remaining {
+                                columns.insert(rem_id, (None, 0));
+                            }
+                        } else {
+                            let equal_w = 1.0 / remaining.len() as f32;
+                            for (col_idx, rem_id) in remaining.iter().enumerate() {
+                                columns.insert(*rem_id, (Some(grp), col_idx));
+                                widths_to_set.push((*rem_id, equal_w));
+                            }
+                        }
+                    }
                 }
             }
             DropPlacement::Left | DropPlacement::Right => {
-                let source_group = rows[source_index].1;
                 let target_group = rows[target_index].1.unwrap_or(target);
                 let mut target_columns: Vec<_> = rows
                     .iter()
@@ -195,17 +248,36 @@ impl Repository {
                 }
                 target_columns.sort_by_key(|item| item.0);
 
-                // Pull the dragged block out of its previous column while keeping
-                // other blocks from that row as regular vertical content.
-                if let Some(group) = source_group {
-                    for (id, member_group, _) in &rows {
-                        if *member_group == Some(group) && *id != source {
-                            columns.insert(*id, (None, 0));
+                let mut affected_groups = std::collections::HashSet::new();
+                for id in &valid_sources {
+                    if let Some((Some(grp), _)) = rows.iter().find(|r| r.0 == *id).map(|r| (r.1, r.2)) {
+                        if grp != target_group {
+                            affected_groups.insert(grp);
                         }
                     }
                 }
-                target_columns.retain(|(_, id)| *id != source);
-                order.remove(source_index);
+                for grp in affected_groups {
+                    let remaining: Vec<BlockId> = rows
+                        .iter()
+                        .filter(|row| row.1 == Some(grp) && !valid_sources.contains(&row.0))
+                        .map(|row| row.0)
+                        .collect();
+                    if remaining.len() <= 1 {
+                        for rem_id in remaining {
+                            columns.insert(rem_id, (None, 0));
+                        }
+                    } else {
+                        let equal_w = 1.0 / remaining.len() as f32;
+                        for (col_idx, rem_id) in remaining.iter().enumerate() {
+                            columns.insert(*rem_id, (Some(grp), col_idx));
+                            widths_to_set.push((*rem_id, equal_w));
+                        }
+                    }
+                }
+
+                target_columns.retain(|(_, id)| !valid_sources.contains(id));
+                order.retain(|id| !valid_sources.contains(id));
+
                 let target_column = target_columns
                     .iter()
                     .position(|(_, id)| *id == target)
@@ -215,10 +287,12 @@ impl Repository {
                 } else {
                     target_column + 1
                 };
-                target_columns.insert(insert_at.min(target_columns.len()), (0, source));
+                for (offset, id) in valid_sources.iter().enumerate() {
+                    target_columns.insert((insert_at + offset).min(target_columns.len()), (0, *id));
+                }
                 let target_member_ids: Vec<_> = target_columns
                     .iter()
-                    .filter_map(|(_, id)| (*id != source).then_some(*id))
+                    .filter_map(|(_, id)| (!valid_sources.contains(id)).then_some(*id))
                     .collect();
                 let insertion_anchor = order
                     .iter()
@@ -228,9 +302,8 @@ impl Repository {
                 for (column, (_, id)) in target_columns.iter().enumerate() {
                     columns.insert(*id, (Some(target_group), column));
                     widths_to_set.push((*id, equal_width));
-                    let block_position = order.iter().position(|candidate| candidate == id);
-                    if let Some(block_position) = block_position {
-                        order.remove(block_position);
+                    if let Some(pos) = order.iter().position(|candidate| candidate == id) {
+                        order.remove(pos);
                     }
                 }
                 for (offset, (_, id)) in target_columns.iter().enumerate() {

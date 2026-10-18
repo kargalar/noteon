@@ -3439,13 +3439,21 @@ fn show_cards(
                                     } else {
                                         &row.page.icon
                                     };
-                                    card_ui.painter().text(
-                                        image_rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        icon,
-                                        FontId::proportional(26.0),
-                                        palette.muted,
-                                    );
+                                    if let Some(source) = crate::ui::emoji_image_source(icon) {
+                                        let icon_rect = egui::Rect::from_center_size(
+                                            image_rect.center(),
+                                            egui::vec2(26.0, 26.0),
+                                        );
+                                        egui::Image::new(source).paint_at(&card_ui, icon_rect);
+                                    } else {
+                                        card_ui.painter().text(
+                                            image_rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            icon,
+                                            FontId::proportional(26.0),
+                                            palette.muted,
+                                        );
+                                    }
                                 }
                             }
 
@@ -3457,15 +3465,22 @@ fn show_cards(
                                     &row.page.icon
                                 };
                                 let title = row.page.display_title();
-                                card_ui.add(
-                                    egui::Label::new(
-                                        RichText::new(format!("{icon}  {title}"))
-                                            .font(FontId::proportional(14.0))
-                                            .color(palette.text)
-                                            .strong(),
-                                    )
-                                    .truncate(),
-                                );
+                                card_ui.horizontal(|ui| {
+                                    if let Some(source) = crate::ui::emoji_image_source(icon) {
+                                        ui.add(egui::Image::new(source).fit_to_exact_size(egui::vec2(14.0, 14.0)));
+                                    } else {
+                                        ui.label(RichText::new(icon).font(FontId::proportional(14.0)).color(palette.text));
+                                    }
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(title)
+                                                .font(FontId::proportional(14.0))
+                                                .color(palette.text)
+                                                .strong(),
+                                        )
+                                        .truncate(),
+                                    );
+                                });
                             }
 
                             if show_created_at {
@@ -4072,18 +4087,22 @@ fn show_board(
                                         } else {
                                             &row.page.icon
                                         };
-                                        card_ui.add(
-                                            egui::Label::new(
-                                                RichText::new(format!(
-                                                    "{icon}  {}",
-                                                    row.page.display_title()
-                                                ))
-                                                .font(FontId::proportional(13.0))
-                                                .color(palette.text)
-                                                .strong(),
-                                            )
-                                            .truncate(),
-                                        );
+                                        card_ui.horizontal(|ui| {
+                                            if let Some(source) = crate::ui::emoji_image_source(icon) {
+                                                ui.add(egui::Image::new(source).fit_to_exact_size(egui::vec2(13.0, 13.0)));
+                                            } else {
+                                                ui.label(RichText::new(icon).font(FontId::proportional(13.0)).color(palette.text));
+                                            }
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(row.page.display_title())
+                                                        .font(FontId::proportional(13.0))
+                                                        .color(palette.text)
+                                                        .strong(),
+                                                )
+                                                .truncate(),
+                                            );
+                                        });
                                         if !properties.is_empty() {
                                             card_ui.add(
                                                 egui::Label::new(

@@ -573,17 +573,26 @@ impl PageRow<'_> {
     fn paint_title(&self, ui: &Ui, rect: egui::Rect, x: f32, palette: Palette) {
         let icon_x = x + 20.0;
         if !self.page.icon.is_empty() {
-            ui.painter().text(
-                egui::pos2(icon_x, rect.center().y),
-                Align2::CENTER_CENTER,
-                &self.page.icon,
-                FontId::proportional(15.0),
-                if self.active {
-                    palette.accent
-                } else {
-                    palette.muted
-                },
-            );
+            if let Some(source) = crate::ui::emoji_image_source(&self.page.icon) {
+                let size = 15.0;
+                let icon_rect = egui::Rect::from_center_size(
+                    egui::pos2(icon_x, rect.center().y),
+                    egui::vec2(size, size),
+                );
+                egui::Image::new(source).paint_at(ui, icon_rect);
+            } else {
+                ui.painter().text(
+                    egui::pos2(icon_x, rect.center().y),
+                    Align2::CENTER_CENTER,
+                    &self.page.icon,
+                    FontId::proportional(15.0),
+                    if self.active {
+                        palette.accent
+                    } else {
+                        palette.muted
+                    },
+                );
+            }
         }
         let text_x = icon_x + 16.0;
         let galley = ui.painter().layout(

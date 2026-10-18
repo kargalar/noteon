@@ -1039,4 +1039,44 @@ fn permanent_delete_and_empty_trash_remove_pages_completely() {
     assert!(repository.page(child1).is_err());
 }
 
+#[test]
+fn bulk_blocks_drag_and_drop_moves_all_selected_blocks_together() {
+    let (_directory, mut repository) = database();
+    let page = repository.create_page(None, "Toplu Taşıma").unwrap();
+    for pos in 1..5 {
+        repository.insert_block(page, pos, BlockKind::Text).unwrap();
+    }
+    let blocks = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(blocks.len(), 5);
+    let ids: Vec<_> = blocks.iter().map(|b| b.id).collect();
+    let (b0, b1, b2, b3, b4) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+
+    repository
+        .arrange_blocks(page, &[b0, b1], b4, DropPlacement::After)
+        .unwrap();
+    let moved = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(
+        moved.iter().map(|b| b.id).collect::<Vec<_>>(),
+        vec![b2, b3, b4, b0, b1]
+    );
+
+    repository
+        .arrange_blocks(page, &[b0, b1], b2, DropPlacement::Before)
+        .unwrap();
+    let moved_back = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(
+        moved_back.iter().map(|b| b.id).collect::<Vec<_>>(),
+        vec![b0, b1, b2, b3, b4]
+    );
+
+    repository
+        .arrange_blocks(page, &[b1, b3], b0, DropPlacement::Before)
+        .unwrap();
+    let non_contiguous = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(
+        non_contiguous.iter().map(|b| b.id).collect::<Vec<_>>(),
+        vec![b1, b3, b0, b2, b4]
+    );
+}
+
 

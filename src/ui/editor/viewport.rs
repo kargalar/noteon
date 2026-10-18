@@ -214,6 +214,16 @@ impl Editor {
             (self.layout.row_at(viewport.max.y + 90.0) + 1).min(self.layout.len())
         };
         let bulk_selection_active = !self.selected_blocks.is_empty() || self.marquee_active;
+        let ordered_selected_blocks: Vec<BlockId> = if self.selected_blocks.is_empty() {
+            Vec::new()
+        } else {
+            document
+                .outline
+                .iter()
+                .map(|stub| stub.id)
+                .filter(|id| self.selected_blocks.contains(id))
+                .collect()
+        };
         let mut visible_handles = Vec::new();
         let mut visible_blocks = Vec::new();
         for row_index in start..end {
@@ -307,6 +317,7 @@ impl Editor {
                         focus,
                         is_selected,
                         bulk_selection_active,
+                        &ordered_selected_blocks,
                         palette,
                         widget_scope,
                         intents,

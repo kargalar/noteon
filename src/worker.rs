@@ -106,6 +106,12 @@ pub enum Action {
         target: BlockId,
         placement: DropPlacement,
     },
+    ArrangeBlocks {
+        page: PageId,
+        sources: Vec<BlockId>,
+        target: BlockId,
+        placement: DropPlacement,
+    },
     ResizeColumns {
         page: PageId,
         group: BlockId,
@@ -630,7 +636,7 @@ fn perform_action(
         Action::SetBlocksKind { page, .. } => Some((*page, "Blok türü değiştirildi")),
         Action::SetBlocksChecked { page, .. } => Some((*page, "Görev durumu değiştirildi")),
         Action::FormatBlocks { page, .. } => Some((*page, "Biçimlendirme uygulandı")),
-        Action::MoveBlocks { page, .. } | Action::MoveBlock { page, .. } | Action::ArrangeBlock { page, .. } => Some((*page, "Blok taşındı")),
+        Action::MoveBlocks { page, .. } | Action::MoveBlock { page, .. } | Action::ArrangeBlock { page, .. } | Action::ArrangeBlocks { page, .. } => Some((*page, "Blok taşındı")),
         Action::DuplicateBlocks { page, .. } => Some((*page, "Bloklar çoğaltıldı")),
         Action::GroupBlocksInColumns { page, .. } | Action::UngroupBlockColumns { page, .. } | Action::ResizeColumns { page, .. } => Some((*page, "Sütunlar düzenlendi")),
         Action::CreateDatabaseBlock { page, .. } => Some((*page, "Veritabanı eklendi")),
@@ -1142,6 +1148,15 @@ fn perform_action(
             placement,
         } => {
             repository.arrange_block(page, source, target, placement)?;
+            Some(page)
+        }
+        Action::ArrangeBlocks {
+            page,
+            sources,
+            target,
+            placement,
+        } => {
+            repository.arrange_blocks(page, &sources, target, placement)?;
             Some(page)
         }
         Action::ResizeColumns {

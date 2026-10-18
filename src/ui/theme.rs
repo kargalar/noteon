@@ -33,6 +33,20 @@ pub fn configure(context: &egui::Context) {
             .or_default()
             .push("segoe-symbols".into());
     }
+    if let Some(bytes) = std::env::var_os("WINDIR")
+        .map(std::path::PathBuf::from)
+        .and_then(|path| std::fs::read(path.join("Fonts/seguiemj.ttf")).ok())
+    {
+        fonts.font_data.insert(
+            "segoe-emoji".into(),
+            Arc::new(FontData::from_owned(bytes)),
+        );
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .push("segoe-emoji".into());
+    }
     let font_directory = std::env::var_os("WINDIR")
         .map(std::path::PathBuf::from)
         .map(|path| path.join("Fonts"))

@@ -193,18 +193,20 @@ pub fn show_icon_picker_content(
                     .spacing([3.0, 3.0])
                     .show(ui, |ui| {
                         for (index, (name, icon)) in matching_icons.iter().enumerate() {
-                            let icon_font_size = match active_tab {
-                                IconTab::Color => 19.0,
-                                IconTab::Monochrome => 17.0,
-                            };
-                            if ui
-                                .add_sized(
+                            let button_resp = if let Some(source) = emoji_image_source(icon) {
+                                let img = egui::Image::new(source).fit_to_exact_size(egui::vec2(22.0, 22.0));
+                                ui.add_sized([30.0, 30.0], egui::Button::image(img))
+                            } else {
+                                let icon_font_size = match active_tab {
+                                    IconTab::Color => 19.0,
+                                    IconTab::Monochrome => 17.0,
+                                };
+                                ui.add_sized(
                                     [30.0, 30.0],
                                     egui::Button::new(RichText::new(*icon).size(icon_font_size)),
                                 )
-                                .on_hover_text(*name)
-                                .clicked()
-                            {
+                            };
+                            if button_resp.on_hover_text(*name).clicked() {
                                 *selected_icon = Some((*icon).to_string());
                                 ui.ctx().data_mut(|data| {
                                     data.insert_temp(search_id, String::new());
@@ -239,6 +241,34 @@ pub fn show_icon_picker_content(
     }
 }
 
+pub fn emoji_image_source(emoji: &str) -> Option<egui::ImageSource<'static>> {
+    let clean = emoji.trim();
+    if clean.is_empty() {
+        return None;
+    }
+    if let Some(svg) = twemoji_assets::svg::SvgTwemojiAsset::from_emoji(clean) {
+        return Some(egui::ImageSource::Bytes {
+            uri: format!("bytes://twemoji/{clean}.svg").into(),
+            bytes: egui::load::Bytes::Static(svg.as_bytes()),
+        });
+    }
+    let without_vs = clean.replace('\u{fe0f}', "");
+    if let Some(svg) = twemoji_assets::svg::SvgTwemojiAsset::from_emoji(&without_vs) {
+        return Some(egui::ImageSource::Bytes {
+            uri: format!("bytes://twemoji/{without_vs}.svg").into(),
+            bytes: egui::load::Bytes::Static(svg.as_bytes()),
+        });
+    }
+    let with_vs = format!("{clean}\u{fe0f}");
+    if let Some(svg) = twemoji_assets::svg::SvgTwemojiAsset::from_emoji(&with_vs) {
+        return Some(egui::ImageSource::Bytes {
+            uri: format!("bytes://twemoji/{clean}_vs.svg").into(),
+            bytes: egui::load::Bytes::Static(svg.as_bytes()),
+        });
+    }
+    None
+}
+
 pub fn icon_picker_button(
     ui: &mut Ui,
     id_salt: impl std::hash::Hash,
@@ -252,15 +282,22 @@ pub fn icon_picker_button(
     } else {
         current_icon
     };
-    let mut text = RichText::new(button_text).size(font_size);
-    if !crate::config::is_color_icon(button_text) {
-        if let Some(color) = color {
-            text = text.color(color);
+    if let Some(source) = emoji_image_source(button_text) {
+        let img = egui::Image::new(source).fit_to_exact_size(egui::vec2(font_size, font_size));
+        ui.menu_image_button(img, |ui| {
+            show_icon_picker_content(ui, &id_salt, current_icon, &mut selected_icon);
+        });
+    } else {
+        let mut text = RichText::new(button_text).size(font_size);
+        if !crate::config::is_color_icon(button_text) {
+            if let Some(color) = color {
+                text = text.color(color);
+            }
         }
+        ui.menu_button(text, |ui| {
+            show_icon_picker_content(ui, &id_salt, current_icon, &mut selected_icon);
+        });
     }
-    ui.menu_button(text, |ui| {
-        show_icon_picker_content(ui, &id_salt, current_icon, &mut selected_icon);
-    });
     selected_icon
 }
 

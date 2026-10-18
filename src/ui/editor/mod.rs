@@ -1,5 +1,6 @@
 mod block;
 mod cache;
+pub mod find;
 mod header;
 pub mod links;
 pub(super) mod media;
@@ -26,12 +27,14 @@ pub struct Editor {
     pub position_to_row: Vec<usize>,
     pub selected_blocks: HashSet<BlockId>,
     pub anchor_block: Option<BlockId>,
+    pub find: find::PageFind,
     pub(super) marquee_anchor: Option<Pos2>,
     pub(super) marquee_base_selection: HashSet<BlockId>,
     pub(super) marquee_active: bool,
     pub(super) bulk_menu_pos: Option<Pos2>,
     column_resize_preview: HashMap<(i64, usize), (f32, f32)>,
-    title_focus: bool,
+    pub title_focus: bool,
+    pub history: Vec<crate::domain::model::PageHistorySummary>,
     last_width: f32,
     scroll_offset: f32,
     reset_scroll: bool,
@@ -45,6 +48,18 @@ pub struct DatabaseContext<'a> {
     pub title_drafts: &'a mut HashMap<PageId, String>,
     pub value_drafts: &'a mut HashMap<(PageId, i64), String>,
     pub visible: &'a mut HashSet<PageId>,
+    pub sidebar: Option<&'a crate::ui::sidebar::Sidebar>,
+}
+
+impl<'a> DatabaseContext<'a> {
+    pub fn find_page_icon(&self, title: &str, current_page: Option<PageId>) -> Option<&str> {
+        self.sidebar.and_then(|s| {
+            s.find_by_title(title, current_page)
+                .and_then(|id| s.page(id))
+                .map(|p| p.icon.as_str())
+                .filter(|icon| !icon.trim().is_empty())
+        })
+    }
 }
 
 impl Editor {
@@ -72,6 +87,11 @@ impl Editor {
             self.marquee_active = false;
             self.bulk_menu_pos = None;
         }
+        if !same_page {
+            self.find = find::PageFind::default();
+        } else if self.find.open {
+            self.find.update_matches(Some(&document), &self.cache.blocks);
+        }
         self.title_focus = !same_page && document.page.title.is_empty();
         self.document = Some(document);
         self.cache = BlockCache::default();
@@ -80,6 +100,23 @@ impl Editor {
         self.jump_to = focus.or(if same_page { None } else { Some(0) });
         self.last_width = 0.0;
         self.reset_scroll = same_page && focus.is_none();
+    }
+
+    pub fn open_find(&mut self) {
+        self.find.open();
+        self.find.update_matches(self.document.as_ref(), &self.cache.blocks);
+        if let Some(m) = self.find.current_match() {
+            match m {
+                find::PageFindMatch::Title { .. } => {
+                    self.jump_to = Some(0);
+                    self.scroll_offset = 0.0;
+                    self.reset_scroll = true;
+                }
+                find::PageFindMatch::Block { position, .. } => {
+                    self.jump_to = Some(*position);
+                }
+            }
+        }
     }
 
     pub fn clear(&mut self) {
@@ -121,6 +158,7 @@ impl Editor {
                 title_drafts: &mut title_drafts,
                 value_drafts,
                 visible: &mut visible_databases,
+                sidebar: None,
             },
         )
     }
@@ -152,6 +190,7 @@ impl Editor {
                 title_drafts: &mut title_drafts,
                 value_drafts,
                 visible: &mut visible_databases,
+                sidebar: None,
             },
         )
     }
@@ -183,6 +222,12 @@ impl Editor {
             .record_database_id
             .and_then(|database_id| context.databases.get(&database_id))
             .map(|database| (database, page_id));
+        let find_q = if self.find.open {
+            Some(self.find.query.as_str())
+        } else {
+            None
+        };
+        let is_find_title_active = self.find.open && self.find.is_title_active_match();
         let (canvas, mut intents) = header::show(
             ui,
             document,
@@ -196,8 +241,33 @@ impl Editor {
                 title_drafts: context.title_drafts,
                 value_drafts: context.value_drafts,
             },
+            find_q,
+            is_find_title_active,
+            &self.history,
         );
         intents.extend(self.show_blocks(ui, canvas, palette, context));
+        self.find.show_bar(
+            ui,
+            page_id,
+            widget_scope,
+            palette,
+            self.document.as_ref(),
+            &self.cache.blocks,
+            &mut self.jump_to,
+            &mut self.reset_scroll,
+            &mut self.scroll_offset,
+        );
+        if self.find.open && let Some(doc) = &self.document {
+            for stub_pos in (0..doc.outline.len()).step_by(crate::config::BLOCK_BATCH_SIZE) {
+                if let Some(load_start) = self.cache.request(stub_pos) {
+                    intents.push(Intent::LoadBlocks {
+                        page: page_id,
+                        generation: self.generation,
+                        start: load_start,
+                    });
+                }
+            }
+        }
         intents
     }
 }

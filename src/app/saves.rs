@@ -52,6 +52,10 @@ impl Saves {
     pub fn clear_page(&mut self, page_id: PageId) {
         self.pages.remove(&page_id);
         self.blocks.retain(|_, dirty| dirty.value.page_id != page_id);
+        for batch in self.in_flight.values_mut() {
+            batch.pages.retain(|p| p.id != page_id);
+            batch.blocks.retain(|b| b.page_id != page_id);
+        }
     }
 
     pub fn next_batch(&mut self, force: bool) -> Option<(u64, SaveBatch)> {

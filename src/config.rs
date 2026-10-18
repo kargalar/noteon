@@ -17,13 +17,7 @@ pub const SIDEBAR_WIDTH: f32 = 258.0;
 pub const MIN_FONT_SCALE: f32 = 0.8;
 pub const MAX_FONT_SCALE: f32 = 1.5;
 pub const DEFAULT_FONT_SCALE: f32 = 1.0;
-pub const PAGE_ICONS: &[(&str, &str)] = &[
-    ("sparkles", "✦"),
-    ("page", "▤"),
-    ("check", "☑"),
-    ("diamond", "◇"),
-    ("menu", "☰"),
-    ("circle", "○"),
+pub const COLOR_ICONS: &[(&str, &str)] = &[
     ("smile", "😀"),
     ("grin", "😃"),
     ("joy", "😂"),
@@ -220,6 +214,73 @@ pub const PAGE_ICONS: &[(&str, &str)] = &[
     ("rain", "🌧️"),
 ];
 
+pub const MONOCHROME_ICONS: &[(&str, &str)] = &[
+    ("sparkles", "✦"),
+    ("four star", "✧"),
+    ("page", "▤"),
+    ("check", "☑"),
+    ("diamond", "◇"),
+    ("menu", "☰"),
+    ("circle", "○"),
+    ("star", "★"),
+    ("star hollow", "☆"),
+    ("star circled", "✪"),
+    ("burst", "✶"),
+    ("sunburst", "✹"),
+    ("grid", "▦"),
+    ("square striped", "▨"),
+    ("black square", "■"),
+    ("white square", "□"),
+    ("ballot x", "☒"),
+    ("empty box", "☐"),
+    ("black diamond", "◆"),
+    ("white diamond", "◇"),
+    ("lozenge", "◈"),
+    ("hexagon", "⬡"),
+    ("hexagon filled", "⬢"),
+    ("circle black", "●"),
+    ("fisheye", "◉"),
+    ("bullseye", "⦿"),
+    ("dotted circle", "◌"),
+    ("play", "▶"),
+    ("triangle", "▲"),
+    ("down triangle", "▼"),
+    ("pointer right", "▷"),
+    ("pointer left", "◁"),
+    ("cross", "❖"),
+    ("flower", "✿"),
+    ("floret", "❀"),
+    ("gear", "⚙"),
+    ("flag black", "⚑"),
+    ("flag white", "⚐"),
+    ("anchor", "⚓"),
+    ("swords", "⚔"),
+    ("scales", "⚖"),
+    ("hourglass", "⌛"),
+    ("scissors", "✂"),
+    ("pencil", "✎"),
+    ("envelope", "✉"),
+    ("airplane", "✈"),
+    ("search", "⌕"),
+    ("command", "⌘"),
+    ("option", "⌥"),
+    ("shift", "⇧"),
+    ("sun", "☼"),
+    ("crescent", "☽"),
+    ("lightning", "⚡"),
+    ("heart", "♥"),
+    ("music", "♫"),
+    ("paragraph", "¶"),
+    ("section", "§"),
+    ("asterisk", "※"),
+];
+
+pub const PAGE_ICONS: &[(&str, &str)] = COLOR_ICONS;
+
+pub fn is_color_icon(icon: &str) -> bool {
+    COLOR_ICONS.iter().any(|(_, ic)| *ic == icon)
+}
+
 #[derive(Clone, Copy)]
 pub enum SettingKey {
     LastPage,
@@ -229,6 +290,8 @@ pub enum SettingKey {
     AccentColor,
     FontScale,
     DockLayout,
+    SidebarPinned,
+    CustomTheme,
 }
 
 impl SettingKey {
@@ -241,6 +304,8 @@ impl SettingKey {
             Self::AccentColor => "accent_color",
             Self::FontScale => "font_scale",
             Self::DockLayout => "dock_layout",
+            Self::SidebarPinned => "sidebar_pinned",
+            Self::CustomTheme => "custom_theme",
         }
     }
 }
@@ -252,4 +317,19 @@ pub fn data_directory() -> Result<PathBuf> {
     directories::ProjectDirs::from("", "Kargalar", APP_NAME)
         .map(|dirs| dirs.data_local_dir().to_path_buf())
         .ok_or(Error::DataDirectory)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_icon_separation() {
+        assert!(!COLOR_ICONS.is_empty());
+        assert!(!MONOCHROME_ICONS.is_empty());
+        assert!(is_color_icon("😀"));
+        assert!(is_color_icon("🚀"));
+        assert!(!is_color_icon("✦"));
+        assert!(!is_color_icon("▤"));
+    }
 }

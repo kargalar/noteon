@@ -54,12 +54,17 @@ pub struct NoteonApp {
     dark_background: Color32,
     accent_color: Option<Color32>,
     font_scale: f32,
+    sidebar_pinned: bool,
     trash: bool,
     trashed_pages_history: Vec<Vec<PageId>>,
     trashed_pages_redo: Vec<Vec<PageId>>,
     settings_open: bool,
     settings_theme_tab: bool,
+    settings_theme_highlight: Option<(crate::ui::ThemeSection, Instant)>,
+    custom_theme: crate::ui::palette::ThemeConfig,
     help_open: bool,
+    page_dialog: Option<PageId>,
+    pending_dialog: Option<PageId>,
     error: Option<String>,
     notice: Option<(String, Instant)>,
     closing: bool,
@@ -105,12 +110,17 @@ impl NoteonApp {
             dark_background: Palette::new(true).background,
             accent_color: None,
             font_scale: config::DEFAULT_FONT_SCALE,
+            sidebar_pinned: true,
             trash: false,
             trashed_pages_history: Vec::new(),
             trashed_pages_redo: Vec::new(),
             settings_open: false,
             settings_theme_tab: false,
+            settings_theme_highlight: None,
+            custom_theme: crate::ui::palette::ThemeConfig::default(),
             help_open: false,
+            page_dialog: None,
+            pending_dialog: None,
             error,
             notice: None,
             closing: false,
@@ -145,8 +155,28 @@ impl NoteonApp {
             .unwrap_or_else(|| Palette::new(self.dark).accent)
     }
 
+    fn active_custom_theme(&self) -> &crate::ui::palette::CustomTheme {
+        if self.dark {
+            &self.custom_theme.dark
+        } else {
+            &self.custom_theme.light
+        }
+    }
+
+    fn active_custom_theme_mut(&mut self) -> &mut crate::ui::palette::CustomTheme {
+        if self.dark {
+            &mut self.custom_theme.dark
+        } else {
+            &mut self.custom_theme.light
+        }
+    }
+
     fn current_palette(&self) -> Palette {
-        Palette::new(self.dark).customized(self.background_color(), self.accent_color())
+        Palette::new(self.dark).customized(
+            self.background_color(),
+            self.accent_color(),
+            self.active_custom_theme(),
+        )
     }
 
     fn apply_theme(&self, context: &egui::Context) {
@@ -156,6 +186,7 @@ impl NoteonApp {
             Some(self.background_color()),
             Some(self.accent_color()),
             self.font_scale,
+            self.active_custom_theme(),
         );
     }
 
@@ -173,6 +204,33 @@ impl NoteonApp {
 
     fn open_page_in_tab(&mut self, id: PageId) {
         self.open_page_with_mode(id, None, true, true);
+    }
+
+    fn open_page_in_dialog(&mut self, id: PageId) {
+        if self.busy || self.closing || !self.ready {
+            return;
+        }
+        if self
+            .sidebar
+            .page(id)
+            .is_none_or(|page| page.trashed_by.is_some())
+        {
+            return;
+        }
+        if let Some(editor) = self.editors.get_mut(&id) {
+            editor.title_focus = false;
+            self.page_dialog = Some(id);
+            self.touch_editor(id);
+            return;
+        }
+        self.pending_dialog = Some(id);
+        self.generation += 1;
+        let generation = self.generation;
+        self.pending_documents.insert(generation, (id, None));
+        self.send(Request::Document {
+            page: id,
+            generation,
+        });
     }
 
     fn open_page_with_mode(
@@ -399,14 +457,73 @@ impl NoteonApp {
         }
         match &action {
             Action::Trash(id) => {
+                if self.page_dialog == Some(*id) {
+                    self.page_dialog = None;
+                }
                 self.trashed_pages_history.push(vec![*id]);
                 self.trashed_pages_redo.clear();
             }
             Action::TrashPages(ids) => {
+                if let Some(dialog_id) = self.page_dialog && ids.contains(&dialog_id) {
+                    self.page_dialog = None;
+                }
                 if !ids.is_empty() {
                     self.trashed_pages_history.push(ids.clone());
                     self.trashed_pages_redo.clear();
                 }
+            }
+            Action::DeletePermanently(id) => {
+                if self.selected == Some(*id) {
+                    self.selected = None;
+                }
+                if self.page_dialog == Some(*id) {
+                    self.page_dialog = None;
+                }
+                self.editors.remove(id);
+                self.editor_lru.retain(|p| p != id);
+                for group in &mut self.trashed_pages_history {
+                    group.retain(|gid| gid != id);
+                }
+                self.trashed_pages_history.retain(|group| !group.is_empty());
+                for group in &mut self.trashed_pages_redo {
+                    group.retain(|gid| gid != id);
+                }
+                self.trashed_pages_redo.retain(|group| !group.is_empty());
+            }
+            Action::DeletePagesPermanently(ids) => {
+                for id in ids {
+                    if self.selected == Some(*id) {
+                        self.selected = None;
+                    }
+                    if self.page_dialog == Some(*id) {
+                        self.page_dialog = None;
+                    }
+                    self.editors.remove(id);
+                    self.editor_lru.retain(|p| p != id);
+                    for group in &mut self.trashed_pages_history {
+                        group.retain(|gid| gid != id);
+                    }
+                    for group in &mut self.trashed_pages_redo {
+                        group.retain(|gid| gid != id);
+                    }
+                }
+                self.trashed_pages_history.retain(|group| !group.is_empty());
+                self.trashed_pages_redo.retain(|group| !group.is_empty());
+            }
+            Action::EmptyTrash => {
+                let trashed: Vec<PageId> = self.sidebar.pages.iter().filter(|p| p.trashed_by.is_some()).map(|p| p.id).collect();
+                for id in &trashed {
+                    if self.selected == Some(*id) {
+                        self.selected = None;
+                    }
+                    if self.page_dialog == Some(*id) {
+                        self.page_dialog = None;
+                    }
+                    self.editors.remove(id);
+                    self.editor_lru.retain(|p| p != id);
+                }
+                self.trashed_pages_history.clear();
+                self.trashed_pages_redo.clear();
             }
             Action::Restore(id) => {
                 for group in &mut self.trashed_pages_history {
@@ -422,7 +539,9 @@ impl NoteonApp {
                 }
                 self.trashed_pages_history.retain(|group| !group.is_empty());
             }
-            Action::UndoPage(page_id) | Action::RedoPage(page_id) => {
+            Action::UndoPage(page_id)
+            | Action::RedoPage(page_id)
+            | Action::RestorePageHistory { page: page_id, .. } => {
                 self.saves.clear_page(*page_id);
                 if let Some(editor) = self.editors.get_mut(page_id) {
                     editor.cache = crate::ui::editor::BlockCache::default();
@@ -498,13 +617,22 @@ impl NoteonApp {
             .partition(|intent| matches!(intent, Intent::BlockChanged(_) | Intent::PageChanged(_)));
         for intent in edits.into_iter().chain(actions) {
             match intent {
-                Intent::Open(id, jump) => self.open_page(id, jump, true),
+                Intent::Open(id, jump) => {
+                    self.page_dialog = None;
+                    self.open_page(id, jump, true);
+                }
                 Intent::OpenTitle(title) => {
                     if let Some(id) = self.sidebar.find_by_title(&title, self.selected) {
+                        self.page_dialog = None;
                         self.open_page(id, None, true);
                     }
                 }
-                Intent::OpenInTab(id) => self.open_page_in_tab(id),
+                Intent::OpenInTab(id) => {
+                    self.page_dialog = None;
+                    self.open_page_in_tab(id);
+                }
+                Intent::OpenInDialog(id) => self.open_page_in_dialog(id),
+                Intent::ClosePageDialog => self.page_dialog = None,
                 Intent::OpenUrl(url) => {
                     context.open_url(egui::OpenUrl::new_tab(&url));
                     crate::ui::editor::links::open_url_in_browser(&url);
@@ -513,6 +641,7 @@ impl NoteonApp {
                     crate::ui::editor::links::open_in_file_explorer(&path);
                 }
                 Intent::DockPage(id, target_instance, side) => {
+                    self.page_dialog = None;
                     self.dock_page_at_edge(id, target_instance, side);
                 }
                 Intent::LoadDatabase(page) if self.database_loading.insert(page) => {
@@ -574,7 +703,7 @@ impl NoteonApp {
                     generation,
                     start,
                 } => {
-                    if !self.send(Request::Blocks {
+                    if self.send(Request::Blocks {
                         page,
                         generation,
                         start,
@@ -584,6 +713,30 @@ impl NoteonApp {
                     }
                 }
                 Intent::Search => self.search.open(),
+                Intent::FindInPage => {
+                    let target_id = self.page_dialog.or(self.selected);
+                    if let Some(page_id) = target_id
+                        && let Some(editor) = self.editors.get_mut(&page_id)
+                    {
+                        editor.open_find();
+                    }
+                }
+                Intent::ToggleSidebarPin => {
+                    self.sidebar_pinned = !self.sidebar_pinned;
+                    if self.sidebar_pinned {
+                        context.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("sidebar_autohide_open"), false);
+                        });
+                    } else {
+                        context.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("sidebar_autohide_open"), true);
+                        });
+                    }
+                    self.send(Request::Setting {
+                        key: config::SettingKey::SidebarPinned,
+                        value: self.sidebar_pinned.to_string(),
+                    });
+                }
                 Intent::ToggleTheme => {
                     self.dark = !self.dark;
                     self.apply_theme(context);
@@ -641,6 +794,88 @@ impl NoteonApp {
                     self.trash = true;
                 }
                 Intent::Settings => self.settings_open = true,
+                Intent::OpenSettingsTheme(section) => {
+                    self.settings_open = true;
+                    self.settings_theme_tab = true;
+                    self.settings_theme_highlight = Some((section, Instant::now()));
+                }
+                Intent::SetCustomThemeColor { key, value } => {
+                    let hex = value.map(Palette::to_setting);
+                    {
+                        let theme = self.active_custom_theme_mut();
+                        match key {
+                            crate::ui::CustomColorKey::Sidebar => theme.sidebar = hex,
+                            crate::ui::CustomColorKey::Text => theme.text = hex,
+                            crate::ui::CustomColorKey::Muted => theme.muted = hex,
+                            crate::ui::CustomColorKey::Border => theme.border = hex,
+                            crate::ui::CustomColorKey::AccentSoft => theme.accent_soft = hex,
+                            crate::ui::CustomColorKey::Hover => theme.hover = hex,
+                            crate::ui::CustomColorKey::Code => theme.code = hex,
+                            crate::ui::CustomColorKey::GalleryCard => theme.gallery_card = hex,
+                            crate::ui::CustomColorKey::GalleryBorder => theme.gallery_border = hex,
+                            crate::ui::CustomColorKey::BoardCard => theme.board_card = hex,
+                        }
+                    }
+                    self.apply_theme(context);
+                    if let Ok(value) = serde_json::to_string(&self.custom_theme) {
+                        self.send(Request::Setting {
+                            key: config::SettingKey::CustomTheme,
+                            value,
+                        });
+                    }
+                }
+                Intent::ResetCustomThemeSection(section) => {
+                    {
+                        let theme = self.active_custom_theme_mut();
+                        match section {
+                            crate::ui::ThemeSection::General => {
+                                theme.border = None;
+                                theme.accent_soft = None;
+                                theme.hover = None;
+                            }
+                            crate::ui::ThemeSection::Sidebar => {
+                                theme.sidebar = None;
+                            }
+                            crate::ui::ThemeSection::Editor => {
+                                theme.text = None;
+                                theme.muted = None;
+                                theme.code = None;
+                            }
+                            crate::ui::ThemeSection::Header => {
+                                theme.text = None;
+                                theme.muted = None;
+                            }
+                            crate::ui::ThemeSection::Gallery => {
+                                theme.gallery_card = None;
+                                theme.gallery_border = None;
+                            }
+                            crate::ui::ThemeSection::Board => {
+                                theme.board_card = None;
+                            }
+                            crate::ui::ThemeSection::Table => {
+                                theme.border = None;
+                                theme.hover = None;
+                            }
+                        }
+                    }
+                    self.apply_theme(context);
+                    if let Ok(value) = serde_json::to_string(&self.custom_theme) {
+                        self.send(Request::Setting {
+                            key: config::SettingKey::CustomTheme,
+                            value,
+                        });
+                    }
+                }
+                Intent::ResetAllCustomTheme => {
+                    *self.active_custom_theme_mut() = crate::ui::palette::CustomTheme::default();
+                    self.apply_theme(context);
+                    if let Ok(value) = serde_json::to_string(&self.custom_theme) {
+                        self.send(Request::Setting {
+                            key: config::SettingKey::CustomTheme,
+                            value,
+                        });
+                    }
+                }
                 Intent::Help => self.help_open = true,
                 Intent::RetrySave => {
                     self.saves.retry();
@@ -650,23 +885,27 @@ impl NoteonApp {
                 Intent::Back => self.navigate(-1),
                 Intent::Forward => self.navigate(1),
                 Intent::Undo => {
-                    if self.trash || !self.sidebar.selected_pages.is_empty() || self.selected.is_none() {
+                    let active_target = self.page_dialog.or(self.selected);
+                    if self.trash || active_target.is_none() {
                         if let Some(trashed_ids) = self.trashed_pages_history.pop() {
                             self.trashed_pages_redo.push(trashed_ids.clone());
                             self.action(Action::RestorePages(trashed_ids));
                         }
-                    } else if let Some(selected) = self.selected {
-                        self.action(Action::UndoPage(selected));
+                    } else if let Some(target) = active_target {
+                        self.flush(true);
+                        self.action(Action::UndoPage(target));
                     }
                 }
                 Intent::Redo => {
-                    if self.trash || !self.sidebar.selected_pages.is_empty() || self.selected.is_none() {
+                    let active_target = self.page_dialog.or(self.selected);
+                    if self.trash || active_target.is_none() {
                         if let Some(trashed_ids) = self.trashed_pages_redo.pop() {
                             self.trashed_pages_history.push(trashed_ids.clone());
                             self.action(Action::TrashPages(trashed_ids));
                         }
-                    } else if let Some(selected) = self.selected {
-                        self.action(Action::RedoPage(selected));
+                    } else if let Some(target) = active_target {
+                        self.flush(true);
+                        self.action(Action::RedoPage(target));
                     }
                 }
             }
@@ -723,34 +962,33 @@ impl NoteonApp {
             && !self.trash
             && !has_selected_blocks
             && !wants_keyboard
+            && self.page_dialog.is_none()
+            && !self.sidebar.selected_pages.is_empty()
         {
-            if !self.sidebar.selected_pages.is_empty() {
-                self.sidebar
-                    .selected_pages
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        self.sidebar
-                            .page(*id)
-                            .is_some_and(|page| page.trashed_by.is_none())
-                    })
-                    .collect()
-            } else {
-                self.selected
-                    .filter(|id| {
-                        self.sidebar
-                            .page(*id)
-                            .is_some_and(|page| page.trashed_by.is_none())
-                    })
-                    .into_iter()
-                    .collect()
-            }
+            self.sidebar
+                .selected_pages
+                .iter()
+                .copied()
+                .filter(|id| {
+                    self.sidebar
+                        .page(*id)
+                        .is_some_and(|page| page.trashed_by.is_none())
+                })
+                .collect()
         } else {
             Vec::new()
         };
         context.input_mut(|input| {
             if input.consume_key(egui::Modifiers::CTRL, egui::Key::K) {
                 intents.push(Intent::Search);
+            }
+            if input.consume_key(egui::Modifiers::CTRL, egui::Key::F)
+                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::F)
+            {
+                intents.push(Intent::FindInPage);
+            }
+            if input.consume_key(egui::Modifiers::CTRL, egui::Key::B) {
+                intents.push(Intent::ToggleSidebarPin);
             }
             if input.consume_key(egui::Modifiers::CTRL, egui::Key::N) {
                 intents.push(Intent::Action(Action::CreatePage(None)));
@@ -765,11 +1003,15 @@ impl NoteonApp {
                 intents.push(Intent::Forward);
             }
             if !wants_keyboard {
-                if input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+                let redo = input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+                    || input.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z)
                     || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
-                {
+                    || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y);
+                let undo = input.consume_key(egui::Modifiers::CTRL, egui::Key::Z)
+                    || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z);
+                if redo {
                     intents.push(Intent::Redo);
-                } else if input.consume_key(egui::Modifiers::CTRL, egui::Key::Z) {
+                } else if undo {
                     intents.push(Intent::Undo);
                 }
             }

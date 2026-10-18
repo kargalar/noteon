@@ -24,10 +24,17 @@ pub enum Action {
     Favorite(PageId),
     Trash(PageId),
     TrashPages(Vec<PageId>),
+    DeletePermanently(PageId),
+    DeletePagesPermanently(Vec<PageId>),
+    EmptyTrash,
     Restore(PageId),
     RestorePages(Vec<PageId>),
     UndoPage(PageId),
     RedoPage(PageId),
+    RestorePageHistory {
+        page: PageId,
+        entry_id: u64,
+    },
     Duplicate(PageId),
     MovePage(PageId, Option<PageId>),
     ReorderPage {
@@ -290,10 +297,13 @@ pub enum Event {
         accent_color: Option<String>,
         font_scale: Option<String>,
         dock_layout: Option<String>,
+        sidebar_pinned: Option<String>,
+        custom_theme: Option<String>,
     },
     Document {
         generation: u64,
         document: Document,
+        history: Vec<crate::domain::model::PageHistorySummary>,
     },
     Blocks {
         generation: u64,
@@ -305,7 +315,10 @@ pub enum Event {
         generation: u64,
         hits: Vec<SearchHit>,
     },
-    Saved(u64),
+    Saved {
+        id: u64,
+        histories: HashMap<PageId, Vec<crate::domain::model::PageHistorySummary>>,
+    },
     ActionDone {
         pages: Vec<Page>,
         document: Option<Document>,
@@ -313,6 +326,8 @@ pub enum Event {
         focus: Option<usize>,
         notice: Option<String>,
         refresh_database: Option<PageId>,
+        created_record_document: Option<Document>,
+        history: Option<Vec<crate::domain::model::PageHistorySummary>>,
     },
     PageUndoEmpty {
         page_id: PageId,
@@ -365,6 +380,8 @@ impl Worker {
                     repository.setting(SettingKey::AccentColor),
                     repository.setting(SettingKey::FontScale),
                     repository.setting(SettingKey::DockLayout),
+                    repository.setting(SettingKey::SidebarPinned),
+                    repository.setting(SettingKey::CustomTheme),
                 ) {
                     (
                         Ok(pages),
@@ -375,6 +392,8 @@ impl Worker {
                         Ok(accent_color),
                         Ok(font_scale),
                         Ok(dock_layout),
+                        Ok(sidebar_pinned),
+                        Ok(custom_theme),
                     ) => publish(Event::Ready {
                         pages,
                         last_page,
@@ -384,6 +403,8 @@ impl Worker {
                         accent_color,
                         font_scale,
                         dock_layout,
+                        sidebar_pinned,
+                        custom_theme,
                     }),
                     _ => {
                         publish(Event::Failed {
@@ -400,11 +421,16 @@ impl Worker {
                         Request::Shutdown => break,
                         Request::Document { page, generation } => {
                             let _ = repository.ensure_subpage_blocks(page);
+                            let history = page_histories
+                                .get(&page)
+                                .map(|h| h.summaries())
+                                .unwrap_or_default();
                             (
                                 FailedOperation::Document(generation),
                                 repository.document(page).map(|document| Event::Document {
                                     generation,
                                     document,
+                                    history,
                                 }),
                             )
                         }
@@ -442,23 +468,44 @@ impl Worker {
                             for &page_id in &touched_pages {
                                 let history = page_histories.entry(page_id).or_default();
                                 let should_push = match history.last_save_time {
-                                    Some(time) => time.elapsed() > std::time::Duration::from_millis(1000),
+                                    Some(time) => time.elapsed() > std::time::Duration::from_millis(1500),
                                     None => true,
                                 };
-                                if should_push {
-                                    if let Ok(snapshot) = repository.page_snapshot(page_id) {
-                                        history.undo_stack.push(snapshot);
-                                        if history.undo_stack.len() > 50 {
-                                            history.undo_stack.remove(0);
-                                        }
-                                        history.redo_stack.clear();
+                                if let Ok(current_snap) = repository.page_snapshot(page_id) {
+                                    let is_discrete_change = batch.pages.iter().any(|p| p.id == page_id)
+                                        || batch.blocks.iter().any(|b| {
+                                            current_snap
+                                                .blocks
+                                                .iter()
+                                                .any(|cb| cb.id == b.id && (cb.checked != b.checked || cb.kind != b.kind))
+                                        });
+                                    if should_push || is_discrete_change {
+                                        let desc = if is_discrete_change
+                                            && batch.blocks.iter().any(|b| {
+                                                current_snap
+                                                    .blocks
+                                                    .iter()
+                                                    .any(|cb| cb.id == b.id && cb.checked != b.checked)
+                                            })
+                                        {
+                                            "Görev durumu değiştirildi"
+                                        } else if batch.pages.iter().any(|p| p.id == page_id) {
+                                            "Başlık düzenlendi"
+                                        } else {
+                                            "Metin düzenlendi"
+                                        };
+                                        history.push_undo(current_snap, desc);
                                     }
                                 }
                                 history.last_save_time = Some(std::time::Instant::now());
                             }
                             let result = repository.save(&batch);
                             write_failed = result.is_err();
-                            (FailedOperation::Save(id), result.map(|()| Event::Saved(id)))
+                            let updated_histories: HashMap<PageId, Vec<crate::domain::model::PageHistorySummary>> = touched_pages
+                                .into_iter()
+                                .map(|p| (p, page_histories.get(&p).map(|h| h.summaries()).unwrap_or_default()))
+                                .collect();
+                            (FailedOperation::Save(id), result.map(|()| Event::Saved { id, histories: updated_histories }))
                         }
                         Request::Action(action) => {
                             let result = if write_failed {
@@ -512,11 +559,56 @@ impl Drop for Worker {
     }
 }
 
+const MAX_PAGE_HISTORY: usize = 10;
+
+#[derive(Clone, Debug)]
+struct PageHistoryEntry {
+    id: u64,
+    description: String,
+    timestamp: i64,
+    snapshot: PageSnapshot,
+}
+
 #[derive(Default)]
 struct PageHistory {
-    undo_stack: Vec<PageSnapshot>,
-    redo_stack: Vec<PageSnapshot>,
+    undo_stack: Vec<PageHistoryEntry>,
+    redo_stack: Vec<PageHistoryEntry>,
+    next_id: u64,
     last_save_time: Option<std::time::Instant>,
+}
+
+impl PageHistory {
+    fn push_undo(&mut self, snapshot: PageSnapshot, description: impl Into<String>) {
+        if let Some(top) = self.undo_stack.last() {
+            if top.snapshot == snapshot {
+                return;
+            }
+        }
+        self.next_id += 1;
+        let now = chrono::Local::now().timestamp();
+        self.undo_stack.push(PageHistoryEntry {
+            id: self.next_id,
+            description: description.into(),
+            timestamp: now,
+            snapshot,
+        });
+        while self.undo_stack.len() > MAX_PAGE_HISTORY {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    fn summaries(&self) -> Vec<crate::domain::model::PageHistorySummary> {
+        self.undo_stack
+            .iter()
+            .rev()
+            .map(|e| crate::domain::model::PageHistorySummary {
+                id: e.id,
+                description: e.description.clone(),
+                timestamp: e.timestamp,
+            })
+            .collect()
+    }
 }
 
 fn perform_action(
@@ -528,35 +620,33 @@ fn perform_action(
     let mut notice = None;
     let mut refresh_database = None;
     let mut refresh_page_properties = None;
+    let mut created_record = None;
 
-    let modified_page_id = match &action {
-        Action::InsertBlock { page, .. }
-        | Action::CreateSubpageBlock { page, .. }
-        | Action::ImportMedia { page, .. }
-        | Action::DeleteBlock { page, .. }
-        | Action::DeleteBlocks { page, .. }
-        | Action::SetBlocksKind { page, .. }
-        | Action::SetBlocksChecked { page, .. }
-        | Action::FormatBlocks { page, .. }
-        | Action::MoveBlocks { page, .. }
-        | Action::DuplicateBlocks { page, .. }
-        | Action::GroupBlocksInColumns { page, .. }
-        | Action::UngroupBlockColumns { page, .. }
-        | Action::MoveBlock { page, .. }
-        | Action::ArrangeBlock { page, .. }
-        | Action::ResizeColumns { page, .. }
-        | Action::CreateDatabaseBlock { page, .. } => Some(*page),
+    let action_info: Option<(PageId, &'static str)> = match &action {
+        Action::InsertBlock { page, .. } => Some((*page, "Blok eklendi")),
+        Action::CreateSubpageBlock { page, .. } => Some((*page, "Alt sayfa eklendi")),
+        Action::ImportMedia { page, .. } => Some((*page, "Medya eklendi")),
+        Action::DeleteBlock { page, .. } | Action::DeleteBlocks { page, .. } => Some((*page, "Blok silindi")),
+        Action::SetBlocksKind { page, .. } => Some((*page, "Blok türü değiştirildi")),
+        Action::SetBlocksChecked { page, .. } => Some((*page, "Görev durumu değiştirildi")),
+        Action::FormatBlocks { page, .. } => Some((*page, "Biçimlendirme uygulandı")),
+        Action::MoveBlocks { page, .. } | Action::MoveBlock { page, .. } | Action::ArrangeBlock { page, .. } => Some((*page, "Blok taşındı")),
+        Action::DuplicateBlocks { page, .. } => Some((*page, "Bloklar çoğaltıldı")),
+        Action::GroupBlocksInColumns { page, .. } | Action::UngroupBlockColumns { page, .. } | Action::ResizeColumns { page, .. } => Some((*page, "Sütunlar düzenlendi")),
+        Action::CreateDatabaseBlock { page, .. } => Some((*page, "Veritabanı eklendi")),
+        Action::AddPageProperty { page, .. }
+        | Action::RenamePageProperty { page, .. }
+        | Action::SetPagePropertyType { page, .. }
+        | Action::SetPagePropertyOptions { page, .. }
+        | Action::DeletePageProperty { page, .. }
+        | Action::SetPagePropertyValue { page, .. } => Some((*page, "Özellik düzenlendi")),
         _ => None,
     };
-    if let Some(page_id) = modified_page_id {
+    if let Some((page_id, desc)) = action_info {
         let history = page_histories.entry(page_id).or_default();
         history.last_save_time = None;
         if let Ok(snapshot) = repository.page_snapshot(page_id) {
-            history.undo_stack.push(snapshot);
-            if history.undo_stack.len() > 50 {
-                history.undo_stack.remove(0);
-            }
-            history.redo_stack.clear();
+            history.push_undo(snapshot, desc);
         }
     }
 
@@ -590,8 +680,9 @@ fn perform_action(
             Some(parent)
         }
         Action::CreateDatabaseRecord(database) => {
-            repository.create_database_record(database)?;
+            let record = repository.create_database_record(database)?;
             refresh_database = Some(database);
+            created_record = Some(record);
             None
         }
         Action::CreateDatabaseRecordWithProperty {
@@ -599,8 +690,9 @@ fn perform_action(
             property,
             value,
         } => {
-            repository.create_database_record_with_property(database, Some((property, &value)))?;
+            let record = repository.create_database_record_with_property(database, Some((property, &value)))?;
             refresh_database = Some(database);
+            created_record = Some(record);
             None
         }
         Action::MoveDatabaseRecord {
@@ -809,11 +901,39 @@ fn perform_action(
             None
         }
         Action::Trash(id) => {
+            let parent = repository.page(id).ok().and_then(|p| p.parent_id);
             repository.trash_pages(&[id])?;
+            if let Some(parent_id) = parent
+                && repository.page(parent_id).is_ok_and(|p| p.is_database)
+            {
+                refresh_database = Some(parent_id);
+            }
             None
         }
         Action::TrashPages(ids) => {
+            let parent = ids
+                .first()
+                .copied()
+                .and_then(|id| repository.page(id).ok())
+                .and_then(|p| p.parent_id);
             repository.trash_pages(&ids)?;
+            if let Some(parent_id) = parent
+                && repository.page(parent_id).is_ok_and(|p| p.is_database)
+            {
+                refresh_database = Some(parent_id);
+            }
+            None
+        }
+        Action::DeletePermanently(id) => {
+            repository.delete_pages_permanently(&[id])?;
+            None
+        }
+        Action::DeletePagesPermanently(ids) => {
+            repository.delete_pages_permanently(&ids)?;
+            None
+        }
+        Action::EmptyTrash => {
+            repository.empty_trash()?;
             None
         }
         Action::Restore(id) => {
@@ -828,13 +948,20 @@ fn perform_action(
             let history = page_histories.entry(page_id).or_default();
             if let Some(prev) = history.undo_stack.pop() {
                 if let Ok(current) = repository.page_snapshot(page_id) {
-                    history.redo_stack.push(current);
-                    if history.redo_stack.len() > 50 {
+                    history.next_id += 1;
+                    let now = chrono::Local::now().timestamp();
+                    history.redo_stack.push(PageHistoryEntry {
+                        id: history.next_id,
+                        description: prev.description.clone(),
+                        timestamp: now,
+                        snapshot: current,
+                    });
+                    while history.redo_stack.len() > MAX_PAGE_HISTORY {
                         history.redo_stack.remove(0);
                     }
                 }
                 history.last_save_time = None;
-                let _ = repository.restore_page_snapshot(&prev)?;
+                let _ = repository.restore_page_snapshot(&prev.snapshot)?;
                 focus = Some(0);
                 Some(page_id)
             } else {
@@ -845,17 +972,50 @@ fn perform_action(
             let history = page_histories.entry(page_id).or_default();
             if let Some(next) = history.redo_stack.pop() {
                 if let Ok(current) = repository.page_snapshot(page_id) {
-                    history.undo_stack.push(current);
-                    if history.undo_stack.len() > 50 {
+                    history.next_id += 1;
+                    let now = chrono::Local::now().timestamp();
+                    history.undo_stack.push(PageHistoryEntry {
+                        id: history.next_id,
+                        description: next.description.clone(),
+                        timestamp: now,
+                        snapshot: current,
+                    });
+                    while history.undo_stack.len() > MAX_PAGE_HISTORY {
                         history.undo_stack.remove(0);
                     }
                 }
                 history.last_save_time = None;
-                let _ = repository.restore_page_snapshot(&next)?;
+                let _ = repository.restore_page_snapshot(&next.snapshot)?;
                 focus = Some(0);
                 Some(page_id)
             } else {
                 return Ok(Event::PageRedoEmpty { page_id });
+            }
+        }
+        Action::RestorePageHistory { page: page_id, entry_id } => {
+            let history = page_histories.entry(page_id).or_default();
+            if let Some(pos) = history.undo_stack.iter().position(|e| e.id == entry_id) {
+                let entry = history.undo_stack[pos].clone();
+                if let Ok(current) = repository.page_snapshot(page_id) {
+                    history.next_id += 1;
+                    let now = chrono::Local::now().timestamp();
+                    history.redo_stack.push(PageHistoryEntry {
+                        id: history.next_id,
+                        description: "Geri yükleme öncesi".into(),
+                        timestamp: now,
+                        snapshot: current,
+                    });
+                    while history.redo_stack.len() > MAX_PAGE_HISTORY {
+                        history.redo_stack.remove(0);
+                    }
+                }
+                history.last_save_time = None;
+                let _ = repository.restore_page_snapshot(&entry.snapshot)?;
+                notice = Some("Geçmiş sürüm geri yüklendi.".into());
+                focus = Some(0);
+                Some(page_id)
+            } else {
+                None
             }
         }
         Action::Duplicate(id) => Some(repository.duplicate_page(id)?),
@@ -1040,6 +1200,12 @@ fn perform_action(
             None
         }
     };
+    let created_record_document = created_record
+        .map(|id| {
+            let _ = repository.ensure_subpage_blocks(id);
+            repository.document(id)
+        })
+        .transpose()?;
     Ok(Event::ActionDone {
         pages: repository.list_pages()?,
         document: page
@@ -1058,5 +1224,51 @@ fn perform_action(
         focus,
         notice,
         refresh_database,
+        created_record_document,
+        history: page.and_then(|id| page_histories.get(&id)).map(|h| h.summaries()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_history_caps_at_maximum_entries_and_clears_redo_on_push() {
+        let mut history = PageHistory::default();
+        for i in 0..15 {
+            let snapshot = PageSnapshot {
+                page_id: 1,
+                title: format!("Title {i}"),
+                icon: "📄".into(),
+                blocks: Vec::new(),
+            };
+            history.push_undo(snapshot, format!("Change {i}"));
+        }
+
+        assert_eq!(history.undo_stack.len(), MAX_PAGE_HISTORY);
+        assert_eq!(history.undo_stack.len(), 10);
+        assert_eq!(history.undo_stack.last().unwrap().description, "Change 14");
+        assert_eq!(history.undo_stack.first().unwrap().description, "Change 5");
+
+        let summaries = history.summaries();
+        assert_eq!(summaries.len(), 10);
+        assert_eq!(summaries[0].description, "Change 14");
+        assert_eq!(summaries[9].description, "Change 5");
+    }
+
+    #[test]
+    fn page_history_ignores_duplicate_snapshots() {
+        let mut history = PageHistory::default();
+        let snapshot = PageSnapshot {
+            page_id: 1,
+            title: "Same Title".into(),
+            icon: "📄".into(),
+            blocks: Vec::new(),
+        };
+        history.push_undo(snapshot.clone(), "Change 1");
+        history.push_undo(snapshot, "Change 2");
+        assert_eq!(history.undo_stack.len(), 1);
+        assert_eq!(history.undo_stack[0].description, "Change 1");
+    }
 }

@@ -44,7 +44,7 @@ fn frame_sidebar(
     let mut intents = Vec::new();
     let _ = context.run(input, |context| {
         egui::SidePanel::left("sidebar").show(context, |ui| {
-            intents.extend(sidebar.show(ui, None, false, Palette::new(false)));
+            intents.extend(sidebar.show(ui, None, false, Palette::new(false), true));
         });
     });
     intents

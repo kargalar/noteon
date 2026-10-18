@@ -68,7 +68,7 @@ impl Repository {
             }
         }
         transaction.execute(
-            "INSERT INTO pages(parent_id,title,sort_order) SELECT ?1,?2,COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS ?1",
+            "INSERT INTO pages(parent_id,title,icon,sort_order,created_at,updated_at) SELECT ?1,?2,'',COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS ?1",
             params![parent, title],
         )?;
         let id = transaction.last_insert_rowid();
@@ -122,7 +122,7 @@ impl Repository {
             ));
         }
         transaction.execute(
-            "INSERT INTO pages(parent_id,title,sort_order) SELECT ?1,'Untitled',COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS ?1",
+            "INSERT INTO pages(parent_id,title,icon,sort_order,created_at,updated_at) SELECT ?1,'Untitled','',COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS ?1",
             [parent],
         )?;
         let subpage_id = transaction.last_insert_rowid();
@@ -167,7 +167,7 @@ impl Repository {
             ));
         }
         transaction.execute(
-            "INSERT INTO pages(parent_id,title,sort_order) SELECT ?1,'Untitled',COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS ?1",
+            "INSERT INTO pages(parent_id,title,icon,sort_order,created_at,updated_at) SELECT ?1,'Untitled','',COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS ?1",
             [parent],
         )?;
         let subpage_id = transaction.last_insert_rowid();
@@ -209,7 +209,7 @@ impl Repository {
     pub fn ensure_subpage_blocks(&mut self, parent_id: PageId) -> Result<()> {
         let transaction = self.connection.transaction()?;
         let mut child_statement = transaction.prepare_cached(
-            "SELECT id, title FROM pages WHERE parent_id=?1 AND trashed_by IS NULL AND NOT EXISTS(SELECT 1 FROM databases WHERE page_id=pages.id) ORDER BY sort_order, id",
+            "SELECT id, title FROM pages WHERE parent_id=?1 AND trashed_by IS NULL ORDER BY sort_order, id",
         )?;
         let children = child_statement
             .query_map([parent_id], |row| {
@@ -238,7 +238,7 @@ impl Repository {
         drop(block_statement);
 
         let mut changed = false;
-        for (_child_id, child_title) in &children {
+        for (child_id, child_title) in &children {
             let clean_title = child_title.trim();
             let link_target = if clean_title.is_empty() {
                 "Untitled"
@@ -246,9 +246,12 @@ impl Repository {
                 clean_title
             };
             let expected_marker = format!("↗ {link_target}");
+            let child_id_str = child_id.to_string();
 
             let has_matching_block = blocks.iter().any(|(_, _, kind, content)| {
-                if kind == "text" && content.trim_start().starts_with('↗') {
+                if kind == "database" && content.trim() == child_id_str {
+                    true
+                } else if kind == "text" && content.trim_start().starts_with('↗') {
                     let block_target = content
                         .trim_start()
                         .trim_start_matches("↗ ")
@@ -282,6 +285,7 @@ impl Repository {
                         "INSERT INTO blocks(page_id,position,kind,content) VALUES(?1,?2,'text',?3)",
                         params![parent_id, sql_index(next_pos)?, expected_marker],
                     )?;
+                    blocks.push((0, next_pos, "text".to_string(), expected_marker));
                     transaction.execute(
                         "UPDATE pages SET block_count=block_count+1 WHERE id=?1",
                         [parent_id],
@@ -332,7 +336,7 @@ impl Repository {
             }
             transaction.execute(
                 "WITH RECURSIVE descendants(id) AS (SELECT id FROM pages WHERE id=?1 UNION ALL SELECT p.id FROM pages p JOIN descendants d ON p.parent_id=d.id)
-                 UPDATE pages SET trashed_by=?1 WHERE id IN (SELECT id FROM descendants) AND trashed_by IS NULL", [id])?;
+                 UPDATE pages SET trashed_by=?1, updated_at=unixepoch() WHERE id IN (SELECT id FROM descendants) AND trashed_by IS NULL", [id])?;
         }
         transaction.commit()?;
         Ok(())
@@ -354,6 +358,30 @@ impl Repository {
                 transaction.execute("UPDATE pages SET trashed_by=NULL WHERE trashed_by=?1", [id])?;
             }
         }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_pages_permanently(&mut self, ids: &[PageId]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        for &id in ids {
+            transaction.execute(
+                "WITH RECURSIVE descendants(id) AS (
+                    SELECT id FROM pages WHERE id=?1
+                    UNION ALL
+                    SELECT p.id FROM pages p JOIN descendants d ON p.parent_id=d.id
+                 )
+                 DELETE FROM pages WHERE id IN (SELECT id FROM descendants) OR trashed_by=?1",
+                [id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn empty_trash(&mut self) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM pages WHERE trashed_by IS NOT NULL", [])?;
         transaction.commit()?;
         Ok(())
     }
@@ -441,7 +469,7 @@ impl Repository {
 
     pub fn duplicate_page(&mut self, id: PageId) -> Result<PageId> {
         let transaction = self.connection.transaction()?;
-        transaction.execute("INSERT INTO pages(parent_id,title,icon,cover,cover_image,cover_x,cover_y,sort_order,full_width) SELECT source.parent_id,source.title || ' (copy)',source.icon,source.cover,source.cover_image,source.cover_x,source.cover_y,(SELECT COALESCE(MAX(sibling.sort_order)+1,0) FROM pages sibling WHERE sibling.parent_id IS source.parent_id),source.full_width FROM pages source WHERE source.id=?1", [id])?;
+        transaction.execute("INSERT INTO pages(parent_id,title,icon,cover,cover_image,cover_x,cover_y,sort_order,full_width,created_at,updated_at) SELECT source.parent_id,source.title || ' (copy)',source.icon,source.cover,source.cover_image,source.cover_x,source.cover_y,(SELECT COALESCE(MAX(sibling.sort_order)+1,0) FROM pages sibling WHERE sibling.parent_id IS source.parent_id),source.full_width,unixepoch(),unixepoch() FROM pages source WHERE source.id=?1", [id])?;
         let new_id = transaction.last_insert_rowid();
         transaction.execute("INSERT INTO blocks(page_id,position,kind,content,checked,column_group,layout_column,column_width,media_width,text_styles) SELECT ?1,position,kind,content,checked,column_group,layout_column,column_width,media_width,text_styles FROM blocks WHERE page_id=?2 ORDER BY position", params![new_id, id])?;
         transaction.commit()?;
@@ -457,7 +485,7 @@ impl Repository {
         }
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT INTO pages(title,icon,favorite,cover) VALUES('Make room for your thoughts.','✦',1,1)",
+            "INSERT INTO pages(title,icon,favorite,cover,created_at,updated_at) VALUES('Make room for your thoughts.','✦',1,1,unixepoch(),unixepoch())",
             [],
         )?;
         let welcome = transaction.last_insert_rowid();
@@ -498,19 +526,19 @@ impl Repository {
             )?;
         }
         transaction.execute(
-            "INSERT INTO pages(title,icon,cover) VALUES('Idea notebook','◇',2)",
+            "INSERT INTO pages(title,icon,cover,created_at,updated_at) VALUES('Idea notebook','◇',2,unixepoch(),unixepoch())",
             [],
         )?;
         let ideas = transaction.last_insert_rowid();
         transaction.execute("INSERT INTO blocks(page_id,position,content) VALUES(?1,0,'Make room for ideas that are still taking shape.')", [ideas])?;
         transaction.execute(
-            "INSERT INTO pages(parent_id,title,icon) VALUES(?1,'The next big idea','○')",
+            "INSERT INTO pages(parent_id,title,icon,created_at,updated_at) VALUES(?1,'The next big idea','○',unixepoch(),unixepoch())",
             [ideas],
         )?;
         let child = transaction.last_insert_rowid();
         transaction.execute("INSERT INTO blocks(page_id,position) VALUES(?1,0)", [child])?;
         transaction.execute(
-            "INSERT INTO pages(title,icon,cover) VALUES('Weekly plan','☑',3)",
+            "INSERT INTO pages(title,icon,cover,created_at,updated_at) VALUES('Weekly plan','☑',3,unixepoch(),unixepoch())",
             [],
         )?;
         let plan = transaction.last_insert_rowid();
@@ -551,5 +579,31 @@ impl Repository {
                 .optional()?);
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn created_page_has_no_icon() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.sqlite");
+        let mut repository = Repository::open(&db_path).unwrap();
+        let page_id = repository.create_page(None, "New Page").unwrap();
+        let page = repository.page(page_id).unwrap();
+        assert_eq!(page.icon, "");
+    }
+
+    #[test]
+    fn created_subpage_block_has_no_icon() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.sqlite");
+        let mut repository = Repository::open(&db_path).unwrap();
+        let parent_id = repository.create_page(None, "Parent Page").unwrap();
+        let subpage_id = repository.create_subpage_block(parent_id, 0).unwrap();
+        let subpage = repository.page(subpage_id).unwrap();
+        assert_eq!(subpage.icon, "");
     }
 }

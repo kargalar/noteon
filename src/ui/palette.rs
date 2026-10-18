@@ -1,6 +1,26 @@
 use eframe::egui::Color32;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct CustomTheme {
+    pub sidebar: Option<String>,
+    pub text: Option<String>,
+    pub muted: Option<String>,
+    pub border: Option<String>,
+    pub accent_soft: Option<String>,
+    pub hover: Option<String>,
+    pub code: Option<String>,
+    pub gallery_card: Option<String>,
+    pub gallery_border: Option<String>,
+    pub board_card: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct ThemeConfig {
+    pub light: CustomTheme,
+    pub dark: CustomTheme,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub background: Color32,
     pub sidebar: Color32,
@@ -12,6 +32,9 @@ pub struct Palette {
     pub hover: Color32,
     pub danger: Color32,
     pub code: Color32,
+    pub gallery_card: Color32,
+    pub gallery_border: Color32,
+    pub board_card: Color32,
 }
 
 impl Palette {
@@ -28,6 +51,9 @@ impl Palette {
                 hover: Color32::from_rgb(32, 32, 32),
                 danger: Color32::from_rgb(232, 133, 124),
                 code: Color32::from_rgb(28, 28, 28),
+                gallery_card: Color32::from_rgb(14, 14, 14),
+                gallery_border: Color32::from_rgb(38, 38, 38),
+                board_card: Color32::from_rgb(18, 18, 18),
             }
         } else {
             Self {
@@ -41,11 +67,19 @@ impl Palette {
                 hover: Color32::from_rgb(237, 240, 228),
                 danger: Color32::from_rgb(175, 71, 58),
                 code: Color32::from_rgb(243, 245, 236),
+                gallery_card: Color32::from_rgb(246, 246, 240),
+                gallery_border: Color32::from_rgb(230, 232, 220),
+                board_card: Color32::from_rgb(250, 250, 246),
             }
         }
     }
 
-    pub fn customized(mut self, background: Color32, accent: Color32) -> Self {
+    pub fn customized(
+        mut self,
+        background: Color32,
+        accent: Color32,
+        custom: &CustomTheme,
+    ) -> Self {
         let brightness = (0.2126 * f32::from(background.r())
             + 0.7152 * f32::from(background.g())
             + 0.0722 * f32::from(background.b()))
@@ -58,23 +92,70 @@ impl Palette {
             Color32::BLACK
         };
         self.background = background;
-        self.sidebar = mix(
-            background,
-            surface,
-            if light_foreground { 0.035 } else { 0.25 },
-        );
-        self.text = contrast_palette.text;
-        self.muted = contrast_palette.muted;
+        self.sidebar = custom
+            .sidebar
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or_else(|| {
+                mix(
+                    background,
+                    surface,
+                    if light_foreground { 0.035 } else { 0.25 },
+                )
+            });
+        self.text = custom
+            .text
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or(contrast_palette.text);
+        self.muted = custom
+            .muted
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or(contrast_palette.muted);
         self.danger = contrast_palette.danger;
-        self.border = mix(background, self.text, 0.14);
+        self.border = custom
+            .border
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or_else(|| mix(background, self.text, 0.14));
         self.accent = accent;
-        self.accent_soft = mix(
-            background,
-            accent,
-            if light_foreground { 0.15 } else { 0.24 },
-        );
-        self.hover = mix(background, accent, 0.10);
-        self.code = mix(background, self.text, 0.045);
+        self.accent_soft = custom
+            .accent_soft
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or_else(|| {
+                mix(
+                    background,
+                    accent,
+                    if light_foreground { 0.15 } else { 0.24 },
+                )
+            });
+        self.hover = custom
+            .hover
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or_else(|| mix(background, accent, 0.10));
+        self.code = custom
+            .code
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or_else(|| mix(background, self.text, 0.045));
+        self.gallery_card = custom
+            .gallery_card
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or(self.sidebar);
+        self.gallery_border = custom
+            .gallery_border
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or_else(|| self.border.linear_multiply(0.55));
+        self.board_card = custom
+            .board_card
+            .as_deref()
+            .and_then(Self::from_setting)
+            .unwrap_or(self.sidebar);
         self
     }
 

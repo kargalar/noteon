@@ -493,7 +493,7 @@ fn editor_emits_undo_and_redo_intents() {
     let mut editor = editor("Sample content", 1);
     frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
 
-    // Press Ctrl+Z
+    // Press Cmd+Z
     let intents = frame(
         &context,
         &mut editor,
@@ -508,7 +508,22 @@ fn editor_emits_undo_and_redo_intents() {
     );
     assert!(intents.iter().any(|intent| matches!(intent, Intent::Undo)));
 
-    // Press Ctrl+Shift+Z
+    // Press Ctrl+Z
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![Event::Key {
+            key: Key::Z,
+            physical_key: Some(Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL,
+        }],
+        Modifiers::CTRL,
+    );
+    assert!(intents.iter().any(|intent| matches!(intent, Intent::Undo)));
+
+    // Press Cmd+Shift+Z
     let intents = frame(
         &context,
         &mut editor,
@@ -520,6 +535,36 @@ fn editor_emits_undo_and_redo_intents() {
             modifiers: Modifiers::COMMAND | Modifiers::SHIFT,
         }],
         Modifiers::COMMAND | Modifiers::SHIFT,
+    );
+    assert!(intents.iter().any(|intent| matches!(intent, Intent::Redo)));
+
+    // Press Ctrl+Shift+Z
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![Event::Key {
+            key: Key::Z,
+            physical_key: Some(Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL | Modifiers::SHIFT,
+        }],
+        Modifiers::CTRL | Modifiers::SHIFT,
+    );
+    assert!(intents.iter().any(|intent| matches!(intent, Intent::Redo)));
+
+    // Press Ctrl+Y
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![Event::Key {
+            key: Key::Y,
+            physical_key: Some(Key::Y),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL,
+        }],
+        Modifiers::CTRL,
     );
     assert!(intents.iter().any(|intent| matches!(intent, Intent::Redo)));
 }

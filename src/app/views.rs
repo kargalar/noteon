@@ -1,9 +1,11 @@
-use eframe::egui::{self, RichText, Stroke, vec2};
+use eframe::egui::{self, Color32, RichText, Stroke, vec2};
 use egui_dock::{DockArea, OverlayType, Style as DockStyle, TabViewer};
 
 use crate::config;
 use crate::ui::text;
-use crate::ui::{DockSide, Intent, palette::Palette, quiet_button, small_label};
+use crate::ui::{
+    CustomColorKey, DockSide, Intent, ThemeSection, palette::Palette, quiet_button, small_label,
+};
 use crate::worker::Action;
 
 use super::{NoteonApp, tabs::PageTab};
@@ -73,20 +75,32 @@ impl NoteonApp {
                     });
                 });
             });
-        egui::SidePanel::left("sidebar")
-            .exact_width(config::SIDEBAR_WIDTH)
-            .resizable(true)
-            .frame(
-                egui::Frame::new()
-                    .fill(palette.sidebar)
-                    .inner_margin(egui::Margin::symmetric(15, 9))
-                    .stroke(Stroke::new(1.0, palette.border)),
-            )
-            .show(context, |ui| {
-                ui.add_enabled_ui(self.ready && !self.busy && !self.closing, |ui| {
-                    intents.extend(self.sidebar.show(ui, self.selected, self.trash, palette));
+        let available_area = context.available_rect();
+        let sidebar_top = available_area.top();
+        let sidebar_height = available_area.height();
+
+        if self.sidebar_pinned {
+            egui::SidePanel::left("sidebar")
+                .exact_width(config::SIDEBAR_WIDTH)
+                .resizable(true)
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.sidebar)
+                        .inner_margin(egui::Margin::symmetric(15, 9))
+                        .stroke(Stroke::new(1.0, palette.border)),
+                )
+                .show(context, |ui| {
+                    ui.add_enabled_ui(self.ready && !self.busy && !self.closing, |ui| {
+                        intents.extend(self.sidebar.show(
+                            ui,
+                            self.selected,
+                            self.trash,
+                            palette,
+                            true,
+                        ));
+                    });
                 });
-            });
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(palette.background).inner_margin(egui::Margin::same(8)))
             .show(context, |ui| {
@@ -105,7 +119,7 @@ impl NoteonApp {
                 } else if self.trash {
                     intents.extend(self.show_trash(ui, palette));
                 } else {
-                    let (visible_pages, visible_databases) = {
+                    let (mut visible_pages, mut visible_databases) = {
                         let mut viewer = PageTabViewer {
                             editors: &mut self.editors,
                             editor_lru: &mut self.editor_lru,
@@ -143,61 +157,276 @@ impl NoteonApp {
                             .show_inside(ui, &mut viewer);
                         (viewer.visible_pages, viewer.visible_databases)
                     };
+                    if let Some(dialog_id) = self.page_dialog {
+                        visible_pages.insert(dialog_id);
+                        if let Some(parent) = self.sidebar.page(dialog_id).and_then(|p| p.parent_id) {
+                            visible_databases.insert(parent);
+                        }
+                    }
                     self.evict_inactive_editors(&visible_pages);
                     self.evict_inactive_databases(&visible_databases);
                 }
             });
+        if !self.sidebar_pinned {
+            let mouse_pos = context.input(|i| i.pointer.latest_pos());
+            let pointer_down = context.input(|i| i.pointer.any_down());
+            let is_open_prev = context
+                .data(|d| d.get_temp::<bool>(egui::Id::new("sidebar_autohide_open")))
+                .unwrap_or(false);
+
+            let in_y_range = mouse_pos.is_some_and(|pos| {
+                pos.y >= sidebar_top && pos.y <= available_area.bottom()
+            });
+
+            let is_hovered = in_y_range
+                && mouse_pos.is_some_and(|pos| {
+                    if is_open_prev {
+                        pos.x <= config::SIDEBAR_WIDTH + 14.0
+                    } else {
+                        !pointer_down && pos.x <= 14.0
+                    }
+                });
+
+            context.data_mut(|d| {
+                d.insert_temp(egui::Id::new("sidebar_autohide_open"), is_hovered);
+            });
+
+            let open_t = context.animate_bool(egui::Id::new("sidebar_autohide_anim"), is_hovered);
+
+            if open_t < 0.99 {
+                let strip_rect = egui::Rect::from_min_max(
+                    egui::pos2(0.0, sidebar_top),
+                    egui::pos2(3.0, available_area.bottom()),
+                );
+                let strip_color = if is_hovered {
+                    palette.accent
+                } else {
+                    Color32::from_rgba_unmultiplied(
+                        palette.border.r(),
+                        palette.border.g(),
+                        palette.border.b(),
+                        80,
+                    )
+                };
+                context
+                    .layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new("sidebar_strip"),
+                    ))
+                    .rect_filled(strip_rect, 0.0, strip_color);
+            }
+
+            if open_t > 0.001 {
+                let x_pos = (open_t - 1.0) * config::SIDEBAR_WIDTH;
+                egui::Area::new(egui::Id::new("sidebar_overlay"))
+                    .fixed_pos(egui::pos2(x_pos, sidebar_top))
+                    .order(egui::Order::Foreground)
+                    .constrain(false)
+                    .show(context, |ui| {
+                        ui.set_min_width(config::SIDEBAR_WIDTH);
+                        ui.set_max_width(config::SIDEBAR_WIDTH);
+                        ui.set_min_height(sidebar_height);
+                        ui.set_max_height(sidebar_height);
+                        egui::Frame::new()
+                            .fill(palette.sidebar)
+                            .inner_margin(egui::Margin::symmetric(15, 9))
+                            .stroke(Stroke::new(1.0, palette.border))
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.set_min_height(sidebar_height - 18.0);
+                                ui.add_enabled_ui(
+                                    self.ready && !self.busy && !self.closing,
+                                    |ui| {
+                                        intents.extend(self.sidebar.show(
+                                            ui,
+                                            self.selected,
+                                            self.trash,
+                                            palette,
+                                            false,
+                                        ));
+                                    },
+                                );
+                            });
+                    });
+            }
+        }
         if self.ready {
             self.persist_dock_layout();
         }
         intents.extend(self.search.show(context, palette));
         intents.extend(self.show_settings(context, palette));
         self.show_help(context, palette);
+        intents.extend(self.show_page_dialog(context, palette));
         self.handle_intents(intents, context);
     }
 
     fn show_trash(&mut self, ui: &mut egui::Ui, palette: Palette) -> Vec<Intent> {
         let mut intents = Vec::new();
         ui.add_space(35.0);
-        ui.heading(RichText::new("Trash").size(31.0));
-        ui.add_space(8.0);
-        ui.label(RichText::new("Pages and subpages here can be restored.").color(palette.muted));
-        ui.add_space(23.0);
-        let pages: Vec<_> = self
+
+        let mut pages: Vec<_> = self
             .sidebar
             .pages
             .iter()
             .filter(|page| page.trashed_by == Some(page.id))
             .collect();
-        if pages.is_empty() {
-            ui.label("Your trash is empty.");
+
+        let sort_id = egui::Id::new("trash_sort_mode");
+        let mut current_sort = ui.ctx().data(|d| d.get_temp::<u8>(sort_id)).unwrap_or(0);
+
+        match current_sort {
+            0 => pages.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id))),
+            1 => pages.sort_by(|a, b| a.updated_at.cmp(&b.updated_at).then_with(|| a.id.cmp(&b.id))),
+            2 => pages.sort_by(|a, b| a.display_title().to_lowercase().cmp(&b.display_title().to_lowercase())),
+            _ => pages.sort_by(|a, b| b.display_title().to_lowercase().cmp(&a.display_title().to_lowercase())),
         }
-        egui::ScrollArea::vertical().show_rows(ui, 56.0, pages.len(), |ui, range| {
-            for index in range {
-                let page = pages[index];
-                egui::Frame::new()
-                    .fill(palette.sidebar)
-                    .inner_margin(10)
-                    .corner_radius(5)
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
+
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.heading(RichText::new("Trash").size(31.0));
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Buradaki sayfalar geri yüklenebilir veya kalıcı olarak silinebilir.")
+                        .color(palette.muted),
+                );
+            });
+
+            if !pages.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let confirm_id = egui::Id::new("confirm_empty_trash");
+                    let confirming = ui.ctx().data(|d| d.get_temp::<bool>(confirm_id)).unwrap_or(false);
+
+                    if confirming {
                         ui.horizontal(|ui| {
-                            ui.label(format!("{}   {}", page.icon, page.display_title()));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .add_enabled(!self.busy, egui::Button::new("Restore"))
-                                        .clicked()
-                                    {
-                                        intents.push(Intent::Action(Action::Restore(page.id)));
-                                    }
-                                },
-                            );
+                            if ui
+                                .button(
+                                    RichText::new("Evet, tümünü sil")
+                                        .color(palette.danger)
+                                        .strong(),
+                                )
+                                .clicked()
+                            {
+                                intents.push(Intent::Action(Action::EmptyTrash));
+                                ui.ctx().data_mut(|d| d.insert_temp(confirm_id, false));
+                            }
+                            if ui.button("İptal").clicked() {
+                                ui.ctx().data_mut(|d| d.insert_temp(confirm_id, false));
+                            }
                         });
+                    } else {
+                        let empty_btn = egui::Button::new(
+                            RichText::new("🗑  Çöpü tamamen boşalt").color(palette.danger),
+                        );
+                        if ui
+                            .add_enabled(!self.busy, empty_btn)
+                            .on_hover_text("Çöp kutusundaki tüm sayfaları kalıcı olarak sil")
+                            .clicked()
+                        {
+                            ui.ctx().data_mut(|d| d.insert_temp(confirm_id, true));
+                        }
+                    }
+
+                    ui.add_space(12.0);
+
+                    let sort_label = match current_sort {
+                        0 => "⇅ Silinme: En yeni ▼",
+                        1 => "⇅ Silinme: En eski ▲",
+                        2 => "⇅ Başlık (A-Z)",
+                        _ => "⇅ Başlık (Z-A)",
+                    };
+
+                    ui.menu_button(RichText::new(sort_label).color(palette.muted), |ui| {
+                        if ui.selectable_label(current_sort == 0, "Silinme: En yeni (Yeni → Eski)").clicked() {
+                            current_sort = 0;
+                            ui.ctx().data_mut(|d| d.insert_temp(sort_id, 0));
+                            ui.close_menu();
+                        }
+                        if ui.selectable_label(current_sort == 1, "Silinme: En eski (Eski → Yeni)").clicked() {
+                            current_sort = 1;
+                            ui.ctx().data_mut(|d| d.insert_temp(sort_id, 1));
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.selectable_label(current_sort == 2, "Başlık (A → Z)").clicked() {
+                            current_sort = 2;
+                            ui.ctx().data_mut(|d| d.insert_temp(sort_id, 2));
+                            ui.close_menu();
+                        }
+                        if ui.selectable_label(current_sort == 3, "Başlık (Z → A)").clicked() {
+                            current_sort = 3;
+                            ui.ctx().data_mut(|d| d.insert_temp(sort_id, 3));
+                            ui.close_menu();
+                        }
                     });
+                });
             }
         });
+
+        ui.add_space(20.0);
+
+        if pages.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(60.0);
+                ui.label(RichText::new("🗑").size(36.0));
+                ui.add_space(8.0);
+                ui.label(RichText::new("Çöp kutusu boş.").color(palette.muted).size(15.0));
+            });
+        } else {
+            egui::ScrollArea::vertical().show_rows(ui, 62.0, pages.len(), |ui, range| {
+                for index in range {
+                    let page = pages[index];
+                    egui::Frame::new()
+                        .fill(palette.sidebar)
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .corner_radius(6)
+                        .stroke(egui::Stroke::new(1.0, palette.border.linear_multiply(0.5)))
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let icon = if page.icon.is_empty() { "📄" } else { &page.icon };
+                                ui.label(RichText::new(icon).size(15.0));
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(page.display_title()).strong().size(13.5));
+                                    ui.label(
+                                        RichText::new(format!("Silinme: {}", format_trash_date(page.updated_at)))
+                                            .small()
+                                            .color(palette.muted),
+                                    );
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let delete_btn = egui::Button::new(
+                                            RichText::new("Tamamen sil").color(palette.danger).size(12.0),
+                                        );
+                                        if ui
+                                            .add_enabled(!self.busy, delete_btn)
+                                            .on_hover_text("Bu sayfayı kalıcı olarak sil")
+                                            .clicked()
+                                        {
+                                            intents.push(Intent::Action(Action::DeletePermanently(page.id)));
+                                        }
+
+                                        ui.add_space(6.0);
+
+                                        let restore_btn = egui::Button::new(
+                                            RichText::new("Geri yükle").color(palette.accent).size(12.0),
+                                        );
+                                        if ui
+                                            .add_enabled(!self.busy, restore_btn)
+                                            .on_hover_text("Bu sayfayı geri yükle")
+                                            .clicked()
+                                        {
+                                            intents.push(Intent::Action(Action::Restore(page.id)));
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+        }
         intents
     }
 
@@ -208,7 +437,7 @@ impl NoteonApp {
             .open(&mut settings_open)
             .resizable(false)
             .collapsible(false)
-            .default_width(520.0)
+            .default_width(560.0)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
                     if ui.selectable_label(!self.settings_theme_tab, "Data").clicked() {
@@ -219,60 +448,333 @@ impl NoteonApp {
                     }
                 });
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 if self.settings_theme_tab {
-                    ui.label(RichText::new("Appearance").size(21.0).strong());
-                    ui.add_space(8.0);
-
-                    let mut selected_dark = self.dark;
-                    let mut theme_changed = false;
-                    ui.horizontal(|ui| {
-                        ui.label("Theme mode");
-                        theme_changed |= ui.radio_value(&mut selected_dark, false, "Light").changed();
-                        theme_changed |= ui.radio_value(&mut selected_dark, true, "Dark").changed();
-                    });
-                    if theme_changed {
-                        intents.push(Intent::SetTheme(selected_dark));
-                    }
-
-                    let mut background = self.background_color();
-                    ui.horizontal(|ui| {
-                        ui.label("Background color");
-                        if ui.color_edit_button_srgba(&mut background).changed() {
-                            intents.push(Intent::SetBackground(background));
+                    let active_highlight = if let Some((sec, start_time)) = self.settings_theme_highlight {
+                        let elapsed = start_time.elapsed().as_secs_f32();
+                        if elapsed < 3.5 {
+                            context.request_repaint();
+                            Some((sec, elapsed))
+                        } else {
+                            None
                         }
-                        ui.label(Palette::to_setting(background));
-                    });
+                    } else {
+                        None
+                    };
 
-                    let mut accent = self.accent_color();
                     ui.horizontal(|ui| {
-                        ui.label("Main color");
-                        if ui.color_edit_button_srgba(&mut accent).changed() {
-                            intents.push(Intent::SetAccent(accent));
-                        }
-                        ui.label(Palette::to_setting(accent));
+                        ui.label(RichText::new("Görünüm & Tema").size(20.0).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button("↺ Tüm Renkleri Sıfırla")
+                                .on_hover_text("Tüm özel renk ayarlarını varsayılana döndür")
+                                .clicked()
+                            {
+                                intents.push(Intent::ResetAllCustomTheme);
+                            }
+                        });
                     });
-
-                    let mut font_scale = self.font_scale;
-                    ui.horizontal(|ui| {
-                        ui.label("Font size");
-                        if ui.add(
-                            egui::Slider::new(
-                                &mut font_scale,
-                                config::MIN_FONT_SCALE..=config::MAX_FONT_SCALE,
-                            )
-                            .step_by(0.05)
-                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                        ).changed() {
-                            intents.push(Intent::SetFontScale(font_scale));
-                        }
-                    });
+                    ui.add_space(2.0);
                     small_label(
                         ui,
-                        "Background color is saved separately for Light and Dark mode.",
+                        "Renk özelleştirmeleri Açık ve Koyu mod için ayrı ayrı kaydedilir.",
                         palette.muted,
                     );
+                    ui.add_space(8.0);
+
+                    let custom = self.active_custom_theme().clone();
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("theme-settings-scroll")
+                        .max_height(520.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            // Section 1: General
+                            show_theme_section(
+                                ui,
+                                ThemeSection::General,
+                                "Genel & Temel Renkler",
+                                "Tema modu, arka plan, ana vurgu ve genel kenarlıklar",
+                                active_highlight,
+                                palette,
+                                &mut intents,
+                                |ui, intents| {
+                                    let mut selected_dark = self.dark;
+                                    let mut theme_changed = false;
+                                    ui.horizontal(|ui| {
+                                        ui.label("Tema Modu");
+                                        theme_changed |= ui.radio_value(&mut selected_dark, false, "Açık (Light)").changed();
+                                        theme_changed |= ui.radio_value(&mut selected_dark, true, "Koyu (Dark)").changed();
+                                    });
+                                    if theme_changed {
+                                        intents.push(Intent::SetTheme(selected_dark));
+                                    }
+
+                                    let mut background = self.background_color();
+                                    ui.horizontal(|ui| {
+                                        if ui.color_edit_button_srgba(&mut background).changed() {
+                                            intents.push(Intent::SetBackground(background));
+                                        }
+                                        ui.label("Arka plan rengi");
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.label(RichText::new(Palette::to_setting(background)).monospace().small().color(palette.muted));
+                                        });
+                                    });
+
+                                    let mut accent = self.accent_color();
+                                    ui.horizontal(|ui| {
+                                        if ui.color_edit_button_srgba(&mut accent).changed() {
+                                            intents.push(Intent::SetAccent(accent));
+                                        }
+                                        ui.label("Ana renk (Vurgu)");
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.label(RichText::new(Palette::to_setting(accent)).monospace().small().color(palette.muted));
+                                        });
+                                    });
+
+                                    show_color_row(
+                                        ui,
+                                        "Yumuşak vurgu rengi",
+                                        palette.accent_soft,
+                                        custom.accent_soft.as_deref(),
+                                        CustomColorKey::AccentSoft,
+                                        intents,
+                                        palette,
+                                    );
+
+                                    show_color_row(
+                                        ui,
+                                        "Genel kenarlık rengi",
+                                        palette.border,
+                                        custom.border.as_deref(),
+                                        CustomColorKey::Border,
+                                        intents,
+                                        palette,
+                                    );
+
+                                    show_color_row(
+                                        ui,
+                                        "Üzerine gelme / Hover rengi",
+                                        palette.hover,
+                                        custom.hover.as_deref(),
+                                        CustomColorKey::Hover,
+                                        intents,
+                                        palette,
+                                    );
+
+                                    let mut font_scale = self.font_scale;
+                                    ui.horizontal(|ui| {
+                                        ui.label("Yazı tipi boyutu");
+                                        if ui.add(
+                                            egui::Slider::new(
+                                                &mut font_scale,
+                                                config::MIN_FONT_SCALE..=config::MAX_FONT_SCALE,
+                                            )
+                                            .step_by(0.05)
+                                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                                        ).changed() {
+                                            intents.push(Intent::SetFontScale(font_scale));
+                                        }
+                                    });
+                                },
+                            );
+
+                            // Section 2: Sidebar
+                            show_theme_section(
+                                ui,
+                                ThemeSection::Sidebar,
+                                "Kenar Çubuğu",
+                                "Sol panel arka planı ve gezinme listesi",
+                                active_highlight,
+                                palette,
+                                &mut intents,
+                                |ui, intents| {
+                                    show_color_row(
+                                        ui,
+                                        "Kenar çubuğu arka planı",
+                                        palette.sidebar,
+                                        custom.sidebar.as_deref(),
+                                        CustomColorKey::Sidebar,
+                                        intents,
+                                        palette,
+                                    );
+                                    show_color_row(
+                                        ui,
+                                        "Başlık ve metin rengi",
+                                        palette.text,
+                                        custom.text.as_deref(),
+                                        CustomColorKey::Text,
+                                        intents,
+                                        palette,
+                                    );
+                                    show_color_row(
+                                        ui,
+                                        "İkincil / Sönük öğeler",
+                                        palette.muted,
+                                        custom.muted.as_deref(),
+                                        CustomColorKey::Muted,
+                                        intents,
+                                        palette,
+                                    );
+                                },
+                            );
+
+                            // Section 3: Editor
+                            show_theme_section(
+                                ui,
+                                ThemeSection::Editor,
+                                "Editör & Not İçeriği",
+                                "Sayfa metinleri, başlıklar ve kod blokları",
+                                active_highlight,
+                                palette,
+                                &mut intents,
+                                |ui, intents| {
+                                    show_color_row(
+                                        ui,
+                                        "Metin rengi",
+                                        palette.text,
+                                        custom.text.as_deref(),
+                                        CustomColorKey::Text,
+                                        intents,
+                                        palette,
+                                    );
+                                    show_color_row(
+                                        ui,
+                                        "İkincil / Sönük metin",
+                                        palette.muted,
+                                        custom.muted.as_deref(),
+                                        CustomColorKey::Muted,
+                                        intents,
+                                        palette,
+                                    );
+                                    show_color_row(
+                                        ui,
+                                        "Kod bloğu arka planı",
+                                        palette.code,
+                                        custom.code.as_deref(),
+                                        CustomColorKey::Code,
+                                        intents,
+                                        palette,
+                                    );
+                                },
+                            );
+
+                            // Section 4: Header
+                            show_theme_section(
+                                ui,
+                                ThemeSection::Header,
+                                "Sayfa Başlığı & Gezinme",
+                                "Sayfa üst başlığı, breadcrumb yolu ve ikonlar",
+                                active_highlight,
+                                palette,
+                                &mut intents,
+                                |ui, intents| {
+                                    show_color_row(
+                                        ui,
+                                        "Başlık metin rengi",
+                                        palette.text,
+                                        custom.text.as_deref(),
+                                        CustomColorKey::Text,
+                                        intents,
+                                        palette,
+                                    );
+                                    show_color_row(
+                                        ui,
+                                        "Gezinme / Sönük yol rengi",
+                                        palette.muted,
+                                        custom.muted.as_deref(),
+                                        CustomColorKey::Muted,
+                                        intents,
+                                        palette,
+                                    );
+                                },
+                            );
+
+                            // Section 5: Gallery
+                            show_theme_section(
+                                ui,
+                                ThemeSection::Gallery,
+                                "Galeri Görünümü",
+                                "Veritabanı galeri kartları ve çerçeveleri",
+                                active_highlight,
+                                palette,
+                                &mut intents,
+                                |ui, intents| {
+                                    show_color_row(
+                                        ui,
+                                        "Kart arka planı",
+                                        palette.gallery_card,
+                                        custom.gallery_card.as_deref(),
+                                        CustomColorKey::GalleryCard,
+                                        intents,
+                                        palette,
+                                    );
+                                    show_color_row(
+                                        ui,
+                                        "Kart kenarlık rengi",
+                                        palette.gallery_border,
+                                        custom.gallery_border.as_deref(),
+                                        CustomColorKey::GalleryBorder,
+                                        intents,
+                                        palette,
+                                    );
+                                },
+                            );
+
+                            // Section 6: Board
+                            show_theme_section(
+                                ui,
+                                ThemeSection::Board,
+                                "Pano (Kanban) Görünümü",
+                                "Pano sütunlarındaki kart öğeleri",
+                                active_highlight,
+                                palette,
+                                &mut intents,
+                                |ui, intents| {
+                                    show_color_row(
+                                        ui,
+                                        "Pano kartı arka planı",
+                                        palette.board_card,
+                                        custom.board_card.as_deref(),
+                                        CustomColorKey::BoardCard,
+                                        intents,
+                                        palette,
+                                    );
+                                },
+                            );
+
+                            // Section 7: Table
+                            show_theme_section(
+                                ui,
+                                ThemeSection::Table,
+                                "Tablo Görünümü",
+                                "Veritabanı tablosu, hücre çizgileri ve satır vurguları",
+                                active_highlight,
+                                palette,
+                                &mut intents,
+                                |ui, intents| {
+                                    show_color_row(
+                                        ui,
+                                        "Tablo çizgileri / Kenarlık",
+                                        palette.border,
+                                        custom.border.as_deref(),
+                                        CustomColorKey::Border,
+                                        intents,
+                                        palette,
+                                    );
+                                    show_color_row(
+                                        ui,
+                                        "Satır üzerine gelme (Hover)",
+                                        palette.hover,
+                                        custom.hover.as_deref(),
+                                        CustomColorKey::Hover,
+                                        intents,
+                                        palette,
+                                    );
+                                },
+                            );
+                        });
                 } else {
                     ui.label(RichText::new("Your data stays on this device.").size(21.0).strong());
                     ui.add_space(9.0);
@@ -316,11 +818,12 @@ impl NoteonApp {
         self.settings_open = settings_open;
         intents
     }
+
     fn show_help(&mut self, context: &egui::Context, palette: Palette) {
         egui::Window::new("Quick guide").open(&mut self.help_open).collapsible(false).resizable(false).default_width(480.0).show(context, |ui| {
             ui.add_space(8.0);
             egui::Grid::new("shortcuts").spacing(vec2(30.0, 12.0)).show(ui, |ui| {
-                for (key, description) in [("Ctrl + N", "New page"),("Ctrl + K", "Search all notes"),("Ctrl + S", "Save now / retry"),("Alt + â† / â†’", "Previous / next page"),("Enter", "Split at cursor and add a block"),("Shift + Enter", "New line in the same block"),("Right-click the block menu", "Change type, move, or delete")] {
+                for (key, description) in [("Ctrl + N", "New page"), ("Ctrl + F", "Sayfada ara"), ("Ctrl + K", "Search all notes"), ("Ctrl + S", "Save now / retry"), ("Alt + ← / →", "Previous / next page"), ("Enter", "Split at cursor and add a block"), ("Shift + Enter", "New line in the same block"), ("Right-click the block menu", "Change type, move, or delete")] {
                     ui.label(RichText::new(key).monospace().color(palette.accent)); ui.label(description); ui.end_row();
                 }
             });
@@ -331,6 +834,253 @@ impl NoteonApp {
             small_label(ui, "# + Space, - + Space, [] + Space, and > + Space also change block type. Enter inserts a line break in code blocks.", palette.muted);
         });
     }
+
+    fn show_page_dialog(&mut self, context: &egui::Context, palette: Palette) -> Vec<Intent> {
+        let Some(dialog_page_id) = self.page_dialog else {
+            return Vec::new();
+        };
+
+        if self
+            .sidebar
+            .page(dialog_page_id)
+            .is_none_or(|p| p.trashed_by.is_some())
+        {
+            self.page_dialog = None;
+            return Vec::new();
+        }
+
+        let mut intents = Vec::new();
+        let mut close_dialog = false;
+        let mut open_full_page = false;
+
+        let screen = context.screen_rect();
+        let dialog_width = (screen.width() * 0.72).clamp(580.0, 960.0);
+        let dialog_height = (screen.height() * 0.85).clamp(420.0, 880.0);
+
+        let breadcrumbs = self.sidebar.ancestors(dialog_page_id);
+        let record_database_id = self
+            .sidebar
+            .page(dialog_page_id)
+            .and_then(|page| page.parent_id)
+            .filter(|parent| {
+                self.sidebar
+                    .page(*parent)
+                    .is_some_and(|page| page.is_database)
+            });
+
+        let frame = egui::Frame::window(&context.style())
+            .fill(palette.background)
+            .stroke(Stroke::new(1.0, palette.border))
+            .corner_radius(10.0)
+            .inner_margin(egui::Margin::symmetric(16, 12));
+
+        let modal = egui::Modal::new(egui::Id::new("noteon-page-dialog"))
+            .backdrop_color(Color32::from_black_alpha(150))
+            .frame(frame)
+            .show(context, |ui| {
+                ui.set_min_width(dialog_width);
+                ui.set_max_width(dialog_width);
+                ui.set_min_height(dialog_height);
+                ui.set_max_height(dialog_height);
+
+                ui.horizontal(|ui| {
+                    let full_page_btn = egui::Button::new(
+                        RichText::new("↗  Tam sayfa olarak aç")
+                            .font(egui::FontId::proportional(12.5))
+                            .color(palette.muted),
+                    )
+                    .frame(false);
+                    if ui
+                        .add(full_page_btn)
+                        .on_hover_text("Bu sayfayı tam sekmede aç")
+                        .clicked()
+                    {
+                        open_full_page = true;
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let close_btn = egui::Button::new(
+                            RichText::new("✕")
+                                .font(egui::FontId::proportional(14.0))
+                                .color(palette.muted),
+                        )
+                        .frame(false);
+                        if ui.add(close_btn).on_hover_text("Kapat (Esc)").clicked() {
+                            close_dialog = true;
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                if let Some(editor) = self.editors.get_mut(&dialog_page_id) {
+                    let mut visible_dbs = std::collections::HashSet::new();
+                    if let Some(db_id) = record_database_id {
+                        visible_dbs.insert(db_id);
+                    }
+                    let mut db_ctx = crate::ui::editor::DatabaseContext {
+                        record_database_id,
+                        databases: &mut self.databases,
+                        loading: &mut self.database_loading,
+                        property_drafts: &mut self.database_property_drafts,
+                        title_drafts: &mut self.database_title_drafts,
+                        value_drafts: &mut self.database_value_drafts,
+                        visible: &mut visible_dbs,
+                        sidebar: Some(&self.sidebar),
+                    };
+                    intents.extend(editor.show_with_database_context_in_tab(
+                        ui,
+                        palette,
+                        &breadcrumbs,
+                        0xFFFF_FFFF_FFFF_FFFE,
+                        &mut db_ctx,
+                    ));
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(100.0);
+                        ui.spinner();
+                        ui.label("Sayfa yükleniyor…");
+                    });
+                }
+            });
+
+        if open_full_page {
+            self.page_dialog = None;
+            self.open_page(dialog_page_id, None, true);
+        } else if close_dialog || modal.should_close() {
+            self.page_dialog = None;
+        }
+
+        intents
+    }
+}
+
+fn show_color_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    current_color: Color32,
+    custom_val: Option<&str>,
+    key: CustomColorKey,
+    intents: &mut Vec<Intent>,
+    palette: Palette,
+) {
+    ui.horizontal(|ui| {
+        let mut color = current_color;
+        let is_custom = custom_val.is_some();
+        if ui.color_edit_button_srgba(&mut color).changed() {
+            intents.push(Intent::SetCustomThemeColor {
+                key,
+                value: Some(color),
+            });
+        }
+        ui.label(label);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if is_custom {
+                if ui
+                    .small_button("↺")
+                    .on_hover_text("Varsayılana döndür")
+                    .clicked()
+                {
+                    intents.push(Intent::SetCustomThemeColor {
+                        key,
+                        value: None,
+                    });
+                }
+                ui.label(
+                    RichText::new(Palette::to_setting(current_color))
+                        .monospace()
+                        .small()
+                        .color(palette.accent),
+                );
+            } else {
+                ui.label(RichText::new("Varsayılan").small().color(palette.muted));
+            }
+        });
+    });
+}
+
+fn show_theme_section<F>(
+    ui: &mut egui::Ui,
+    section: ThemeSection,
+    title: &str,
+    subtitle: &str,
+    active_highlight: Option<(ThemeSection, f32)>,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    content: F,
+) where
+    F: FnOnce(&mut egui::Ui, &mut Vec<Intent>),
+{
+    let is_highlighted = active_highlight.map(|(s, _)| s) == Some(section);
+    let elapsed = active_highlight.map(|(_, e)| e).unwrap_or(0.0);
+    let pulse = if is_highlighted {
+        (elapsed * 6.0).sin() * 0.5 + 0.5
+    } else {
+        0.0
+    };
+
+    let border_color = if is_highlighted {
+        palette.accent.linear_multiply(0.5 + 0.5 * pulse)
+    } else {
+        palette.border
+    };
+    let border_width = if is_highlighted { 2.0 } else { 1.0 };
+    let frame_fill = if is_highlighted {
+        Color32::from_rgba_unmultiplied(
+            palette.accent_soft.r(),
+            palette.accent_soft.g(),
+            palette.accent_soft.b(),
+            (60.0 + 80.0 * pulse) as u8,
+        )
+    } else {
+        palette.sidebar
+    };
+
+    let frame = egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::same(12))
+        .corner_radius(8.0)
+        .fill(frame_fill)
+        .stroke(Stroke::new(border_width, border_color));
+
+    let frame_resp = frame.show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(title).strong().size(14.0));
+                    if is_highlighted {
+                        ui.label(
+                            RichText::new("✨ Seçili Bölüm")
+                                .size(11.5)
+                                .color(palette.accent)
+                                .strong(),
+                        );
+                    }
+                });
+                if !subtitle.is_empty() {
+                    ui.label(RichText::new(subtitle).small().color(palette.muted));
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("↺ Bölümü Sıfırla")
+                    .on_hover_text("Bu bölümün renklerini varsayılana döndür")
+                    .clicked()
+                {
+                    intents.push(Intent::ResetCustomThemeSection(section));
+                }
+            });
+        });
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+        content(ui, intents);
+    });
+
+    if is_highlighted {
+        frame_resp.response.scroll_to_me(Some(egui::Align::Center));
+    }
+    ui.add_space(8.0);
 }
 
 fn show_window_chrome(
@@ -338,26 +1088,68 @@ fn show_window_chrome(
     palette: Palette,
     active_page: Option<&crate::domain::model::Page>,
 ) {
-    const HEIGHT: f32 = 38.0;
-    const CONTROL_WIDTH: f32 = 34.0;
-    const CONTROL_HEIGHT: f32 = 28.0;
-    const CONTROL_SPACING: f32 = 4.0;
-    const CONTROL_RADIUS: f32 = 6.0;
-    const RIGHT_PADDING: f32 = 8.0;
+    const HEIGHT: f32 = 20.0;
+    const CONTROL_WIDTH: f32 = 26.0;
+    const CONTROL_HEIGHT: f32 = 18.0;
+    const CONTROL_SPACING: f32 = 2.0;
+    const CONTROL_RADIUS: f32 = 3.0;
+    const RIGHT_PADDING: f32 = 4.0;
+
+    let pointer_pos = context.input(|i| i.pointer.latest_pos());
+    let is_dragging = context.input(|i| i.pointer.is_decidedly_dragging());
+    let is_hover_prev = context
+        .data(|d| d.get_temp::<bool>(egui::Id::new("window_chrome_hover_state")))
+        .unwrap_or(false);
+
+    let is_hovered = pointer_pos.is_some_and(|pos| {
+        if is_hover_prev || is_dragging {
+            pos.y >= 0.0 && pos.y <= HEIGHT + 4.0
+        } else {
+            pos.y >= 0.0 && pos.y <= HEIGHT
+        }
+    });
+    context.data_mut(|d| d.insert_temp(egui::Id::new("window_chrome_hover_state"), is_hovered));
+
+    let hover_t = context.animate_bool(egui::Id::new("window_chrome_hover"), is_hovered);
+
+    let fill = if hover_t > 0.0 {
+        Color32::from_rgba_unmultiplied(
+            palette.sidebar.r(),
+            palette.sidebar.g(),
+            palette.sidebar.b(),
+            (hover_t * 255.0) as u8,
+        )
+    } else {
+        Color32::TRANSPARENT
+    };
+
+    let stroke = if hover_t > 0.05 {
+        Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(
+                palette.border.r(),
+                palette.border.g(),
+                palette.border.b(),
+                (hover_t * 255.0) as u8,
+            ),
+        )
+    } else {
+        Stroke::NONE
+    };
 
     egui::TopBottomPanel::top("window-chrome")
         .exact_height(HEIGHT)
-        .frame(
-            egui::Frame::new()
-                .fill(palette.sidebar)
-                .stroke(Stroke::new(1.0, palette.border)),
-        )
+        .frame(egui::Frame::new().fill(fill).stroke(stroke))
         .show(context, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let controls_total_width =
                     CONTROL_WIDTH * 3.0 + CONTROL_SPACING * 2.0 + RIGHT_PADDING;
-                let drag_width = (ui.available_width() - controls_total_width).max(0.0);
+                let drag_width = if hover_t > 0.05 {
+                    (ui.available_width() - controls_total_width).max(0.0)
+                } else {
+                    ui.available_width()
+                };
                 let (drag_rect, drag_response) =
                     ui.allocate_exact_size(vec2(drag_width, HEIGHT), egui::Sense::click_and_drag());
                 if drag_response.drag_started_by(egui::PointerButton::Primary) {
@@ -366,61 +1158,79 @@ fn show_window_chrome(
                 if drag_response.double_clicked() {
                     toggle_maximized(context);
                 }
-                if let Some(page) = active_page {
-                    ui.painter().text(
-                        drag_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        format!("{}  {}", page.icon, page.display_title()),
-                        egui::FontId::proportional(12.0),
-                        palette.muted,
-                    );
-                }
 
-                if chrome_button(
-                    ui,
-                    "−",
-                    CONTROL_WIDTH,
-                    CONTROL_HEIGHT,
-                    CONTROL_RADIUS,
-                    palette,
-                    false,
-                )
-                .clicked()
-                {
-                    context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                }
-                ui.add_space(CONTROL_SPACING);
+                if hover_t > 0.05 {
+                    if let Some(page) = active_page {
+                        let text_color = Color32::from_rgba_unmultiplied(
+                            palette.muted.r(),
+                            palette.muted.g(),
+                            palette.muted.b(),
+                            (hover_t * 255.0) as u8,
+                        );
+                        let header_title = if page.icon.is_empty() {
+                            page.display_title().to_string()
+                        } else {
+                            format!("{}  {}", page.icon, page.display_title())
+                        };
+                        ui.painter().text(
+                            drag_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            header_title,
+                            egui::FontId::proportional(11.0),
+                            text_color,
+                        );
+                    }
 
-                let maximized = context.input(|input| input.viewport().maximized.unwrap_or(false));
-                if chrome_button(
-                    ui,
-                    if maximized { "❐" } else { "□" },
-                    CONTROL_WIDTH,
-                    CONTROL_HEIGHT,
-                    CONTROL_RADIUS,
-                    palette,
-                    false,
-                )
-                .clicked()
-                {
-                    toggle_maximized(context);
-                }
-                ui.add_space(CONTROL_SPACING);
+                    if chrome_button(
+                        ui,
+                        "−",
+                        CONTROL_WIDTH,
+                        CONTROL_HEIGHT,
+                        CONTROL_RADIUS,
+                        palette,
+                        false,
+                        hover_t,
+                    )
+                    .clicked()
+                    {
+                        context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                    ui.add_space(CONTROL_SPACING);
 
-                if chrome_button(
-                    ui,
-                    "×",
-                    CONTROL_WIDTH,
-                    CONTROL_HEIGHT,
-                    CONTROL_RADIUS,
-                    palette,
-                    true,
-                )
-                .clicked()
-                {
-                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                    let maximized =
+                        context.input(|input| input.viewport().maximized.unwrap_or(false));
+                    if chrome_button(
+                        ui,
+                        if maximized { "❐" } else { "□" },
+                        CONTROL_WIDTH,
+                        CONTROL_HEIGHT,
+                        CONTROL_RADIUS,
+                        palette,
+                        false,
+                        hover_t,
+                    )
+                    .clicked()
+                    {
+                        toggle_maximized(context);
+                    }
+                    ui.add_space(CONTROL_SPACING);
+
+                    if chrome_button(
+                        ui,
+                        "×",
+                        CONTROL_WIDTH,
+                        CONTROL_HEIGHT,
+                        CONTROL_RADIUS,
+                        palette,
+                        true,
+                        hover_t,
+                    )
+                    .clicked()
+                    {
+                        context.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    ui.add_space(RIGHT_PADDING);
                 }
-                ui.add_space(RIGHT_PADDING);
             });
         });
 }
@@ -433,6 +1243,7 @@ fn chrome_button(
     radius: f32,
     palette: Palette,
     close: bool,
+    alpha: f32,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), egui::Sense::click());
     if response.hovered() {
@@ -442,16 +1253,22 @@ fn chrome_button(
             if close { palette.danger } else { palette.hover },
         );
     }
+    let text_color = if close && response.hovered() {
+        palette.background
+    } else {
+        Color32::from_rgba_unmultiplied(
+            palette.text.r(),
+            palette.text.g(),
+            palette.text.b(),
+            (alpha * 255.0) as u8,
+        )
+    };
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
-        egui::FontId::proportional(if close { 18.0 } else { 14.0 }),
-        if close && response.hovered() {
-            palette.background
-        } else {
-            palette.text
-        },
+        egui::FontId::proportional(if close { 14.0 } else { 11.0 }),
+        text_color,
     );
     response
 }
@@ -495,7 +1312,13 @@ impl TabViewer for PageTabViewer<'_> {
     fn title(&mut self, page: &mut Self::Tab) -> egui::WidgetText {
         self.sidebar.page(page.page_id).map_or_else(
             || "Page".into(),
-            |page| format!("{} {}", page.icon, page.display_title()).into(),
+            |page| {
+                if page.icon.is_empty() {
+                    page.display_title().to_string().into()
+                } else {
+                    format!("{} {}", page.icon, page.display_title()).into()
+                }
+            },
         )
     }
 
@@ -629,6 +1452,7 @@ impl TabViewer for PageTabViewer<'_> {
                             title_drafts: self.title_drafts,
                             value_drafts: self.value_drafts,
                             visible: &mut self.visible_databases,
+                            sidebar: Some(self.sidebar),
                         },
                     ));
             });
@@ -696,3 +1520,36 @@ fn dock_preview_rect(rect: egui::Rect, side: DockSide) -> egui::Rect {
         }
     }
 }
+
+fn format_trash_date(timestamp: i64) -> String {
+    let Some(date_time) =
+        chrono::DateTime::from_timestamp(timestamp, 0).map(|utc| utc.with_timezone(&chrono::Local))
+    else {
+        return "—".to_owned();
+    };
+    use chrono::{Datelike, Timelike};
+    let month = match date_time.month() {
+        1 => "Oca",
+        2 => "Şub",
+        3 => "Mar",
+        4 => "Nis",
+        5 => "May",
+        6 => "Haz",
+        7 => "Tem",
+        8 => "Ağu",
+        9 => "Eyl",
+        10 => "Eki",
+        11 => "Kas",
+        12 => "Ara",
+        _ => "",
+    };
+    let today = chrono::Local::now().date_naive();
+    if date_time.date_naive() == today {
+        format!("Bugün {:02}:{:02}", date_time.hour(), date_time.minute())
+    } else if date_time.year() == today.year() {
+        format!("{} {} {:02}:{:02}", date_time.day(), month, date_time.hour(), date_time.minute())
+    } else {
+        format!("{} {} {} {:02}:{:02}", date_time.day(), month, date_time.year(), date_time.hour(), date_time.minute())
+    }
+}
+

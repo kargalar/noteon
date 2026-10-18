@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rusqlite::{OptionalExtension, params};
 
 use crate::domain::model::{
-    DEFAULT_DATABASE_STATUS_OPTIONS, DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView,
+    DEFAULT_DATABASE_STATUS_OPTIONS, BlockId, DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView,
     DatabaseViewSettings, PROPERTY_TYPES, PageId, PropertyOption, parse_property_options,
     serialize_property_options,
 };
@@ -40,7 +40,7 @@ impl Repository {
         }
 
         transaction.execute(
-            "INSERT INTO pages(parent_id,title,icon,sort_order) SELECT ?1,'New database','▦',COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS ?1",
+            "INSERT INTO pages(parent_id,title,icon,sort_order,created_at,updated_at) SELECT ?1,'New database','▦',COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS ?1",
             [page],
         )?;
         let database = transaction.last_insert_rowid();
@@ -117,7 +117,7 @@ impl Repository {
             }
         }
         transaction.execute(
-            "INSERT INTO pages(parent_id,title,icon,sort_order) SELECT ?1,'New database','▦',COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS ?1",
+            "INSERT INTO pages(parent_id,title,icon,sort_order,created_at,updated_at) SELECT ?1,'New database','▦',COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS ?1",
             [parent],
         )?;
         let page_id = transaction.last_insert_rowid();
@@ -130,6 +130,38 @@ impl Repository {
             "INSERT INTO blocks(page_id,position) VALUES(?1,0)",
             [page_id],
         )?;
+        if let Some(parent_id) = parent {
+            let block_count: usize = transaction.query_row(
+                "SELECT block_count FROM pages WHERE id=?1",
+                [parent_id],
+                |row| read_usize(row, 0),
+            )?;
+            let empty_id: Option<BlockId> = {
+                let mut stmt = transaction.prepare(
+                    "SELECT id FROM blocks WHERE page_id=?1 AND kind='text' AND content='' ORDER BY position LIMIT 1",
+                )?;
+                stmt.query_row([parent_id], |row| row.get(0)).optional()?
+            };
+            if let Some(eid) = empty_id {
+                transaction.execute(
+                    "UPDATE blocks SET kind='text',content='↗ New database' WHERE id=?1",
+                    [eid],
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO blocks(page_id,position,kind,content) VALUES(?1,?2,'text','↗ New database')",
+                    params![parent_id, sql_index(block_count)?],
+                )?;
+                transaction.execute(
+                    "UPDATE pages SET block_count=block_count+1 WHERE id=?1",
+                    [parent_id],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+                [parent_id],
+            )?;
+        }
         transaction.commit()?;
         Ok(page_id)
     }
@@ -153,7 +185,7 @@ impl Repository {
             return Err(Error::Invalid("Database not found.".into()));
         }
         transaction.execute(
-            "INSERT INTO pages(parent_id,title,sort_order) SELECT ?1,'New record',COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS ?1",
+            "INSERT INTO pages(parent_id,title,sort_order,created_at,updated_at) SELECT ?1,'New record',COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS ?1",
             [database],
         )?;
         let page_id = transaction.last_insert_rowid();

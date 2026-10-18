@@ -59,7 +59,7 @@ pub fn configure(context: &egui::Context) {
             .insert(FontFamily::Name(family_name.into()), font_names);
     }
     context.set_fonts(fonts);
-    apply(context, false, None, None, 1.0);
+    apply(context, false, None, None, 1.0, &super::palette::CustomTheme::default());
 }
 
 pub fn apply(
@@ -68,11 +68,13 @@ pub fn apply(
     background: Option<egui::Color32>,
     accent: Option<egui::Color32>,
     font_scale: f32,
+    custom: &super::palette::CustomTheme,
 ) {
     let base = Palette::new(dark);
     let palette = base.customized(
         background.unwrap_or(base.background),
         accent.unwrap_or(base.accent),
+        custom,
     );
     context.set_zoom_factor(font_scale);
     let mut style = egui::Style {

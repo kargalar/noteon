@@ -54,10 +54,13 @@ impl Editor {
         if !any_block_changed {
             let redo_pressed = ui.input_mut(|i| {
                 i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)
+                    || i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Z)
                     || i.consume_key(Modifiers::COMMAND, Key::Y)
+                    || i.consume_key(Modifiers::CTRL, Key::Y)
             });
             let undo_pressed = ui.input_mut(|i| {
                 i.consume_key(Modifiers::COMMAND, Key::Z)
+                    || i.consume_key(Modifiers::CTRL, Key::Z)
             });
             if redo_pressed {
                 intents.push(Intent::Redo);
@@ -278,6 +281,25 @@ impl Editor {
                 if let Some(block) = self.cache.blocks.get_mut(&position) {
                     self.rendered_blocks += 1;
                     let focus = self.focus_position == Some(position);
+                    let page_link_icon = if block.kind == BlockKind::Text
+                        && block.content.trim_start().starts_with('↗')
+                    {
+                        let target = block
+                            .content
+                            .trim_start()
+                            .trim_start_matches("↗ ")
+                            .trim_start_matches('↗')
+                            .trim();
+                        databases.find_page_icon(target, Some(block.page_id))
+                    } else {
+                        None
+                    };
+                    let find_active = self.find.active_range_for_block(block.id, position);
+                    let find_q = if self.find.open {
+                        Some(self.find.query.as_str())
+                    } else {
+                        None
+                    };
                     if block::show(
                         ui,
                         block_rect,
@@ -288,6 +310,9 @@ impl Editor {
                         palette,
                         widget_scope,
                         intents,
+                        page_link_icon,
+                        find_q,
+                        find_active,
                     ) {
                         self.cache.needs_measure.insert(position);
                     }

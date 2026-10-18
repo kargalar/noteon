@@ -158,3 +158,126 @@ fn database_ctrl_click_and_shift_click_and_delete_rows() {
     assert!(after_escape.is_empty());
 }
 
+#[test]
+fn database_new_record_intent_and_dialog_intents() {
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let mut database = test_database();
+
+    let open_dialog_intent = Intent::OpenInDialog(1);
+    assert!(matches!(open_dialog_intent, Intent::OpenInDialog(1)));
+    let close_dialog_intent = Intent::ClosePageDialog;
+    assert!(matches!(close_dialog_intent, Intent::ClosePageDialog));
+
+    let _ = frame_database(&context, &mut database, Vec::new(), Modifiers::NONE);
+    assert_eq!(database.rows.len(), 4);
+}
+
+#[test]
+fn gallery_select_and_delete_rows() {
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let mut database = test_database();
+    database.view = noteon::domain::model::DatabaseView::Gallery;
+
+    frame_database(&context, &mut database, Vec::new(), Modifiers::NONE);
+
+    let selection_id = egui::Id::new(("database-selected-rows", database.page_id));
+
+    // Select row 2 in gallery
+    context.data_mut(|d| {
+        let mut set = HashSet::new();
+        set.insert(2_i64);
+        d.insert_temp(selection_id, set);
+    });
+
+    // Press Delete key
+    let delete_event = Event::Key {
+        key: Key::Delete,
+        physical_key: Some(Key::Delete),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    let intents = frame_database(&context, &mut database, vec![delete_event], Modifiers::NONE);
+
+    let trashed: Vec<_> = intents
+        .into_iter()
+        .filter_map(|intent| match intent {
+            Intent::Action(noteon::worker::Action::Trash(id)) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(trashed, vec![2]);
+
+    let after_delete: HashSet<PageId> = context
+        .data(|d| d.get_temp(selection_id))
+        .unwrap_or_default();
+    assert!(after_delete.is_empty());
+}
+
+#[test]
+fn table_marquee_drag_selects_rows() {
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let mut database = test_database();
+
+    // 1. Initial render
+    frame_database(&context, &mut database, Vec::new(), Modifiers::NONE);
+
+    let selection_id = egui::Id::new(("database-selected-rows", database.page_id));
+
+    // 2. Drag across rows in 3 frames: press, drag, release
+    let start_pos = egui::pos2(50.0, 160.0);
+    let drag_pos = egui::pos2(200.0, 250.0);
+
+    frame_database(
+        &context,
+        &mut database,
+        vec![
+            Event::PointerMoved(start_pos),
+            Event::PointerButton {
+                pos: start_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+        Modifiers::NONE,
+    );
+
+    let anchor: Option<egui::Pos2> = context
+        .data(|d| d.get_temp(egui::Id::new(("database-table-marquee-anchor", database.page_id))))
+        .flatten();
+    assert_eq!(anchor, Some(start_pos));
+
+    frame_database(
+        &context,
+        &mut database,
+        vec![Event::PointerMoved(drag_pos)],
+        Modifiers::NONE,
+    );
+
+    let active: bool = context
+        .data(|d| d.get_temp(egui::Id::new(("database-table-marquee-active", database.page_id))))
+        .unwrap_or(false);
+    assert!(active);
+
+    let mid_selected: HashSet<PageId> = context
+        .data(|d| d.get_temp(selection_id))
+        .unwrap_or_default();
+    assert!(!mid_selected.is_empty());
+
+    frame_database(
+        &context,
+        &mut database,
+        vec![Event::PointerButton {
+            pos: drag_pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+        Modifiers::NONE,
+    );
+}
+

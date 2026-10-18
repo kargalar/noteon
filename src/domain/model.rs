@@ -537,6 +537,13 @@ pub struct PageSnapshot {
     pub blocks: Vec<Block>,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PageHistorySummary {
+    pub id: u64,
+    pub description: String,
+    pub timestamp: i64,
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchHit {
     pub page_id: PageId,

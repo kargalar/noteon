@@ -6,7 +6,7 @@ use crate::domain::model::{Page, PageEdit, PageId};
 use crate::worker::Action;
 
 use super::text;
-use super::{Intent, palette::Palette, quiet_button};
+use super::{Intent, ThemeSection, palette::Palette, quiet_button};
 
 const ROW_HEIGHT: f32 = 33.0;
 
@@ -212,9 +212,10 @@ impl Sidebar {
         selected: Option<PageId>,
         trash: bool,
         palette: Palette,
+        pinned: bool,
     ) -> Vec<Intent> {
         let mut intents = Vec::new();
-        show_header(ui, palette, &mut intents);
+        show_header(ui, palette, pinned, &mut intents);
         self.show_tree(ui, selected, trash, palette, &mut intents);
         show_footer(ui, trash, palette, &mut intents);
         intents
@@ -375,7 +376,7 @@ impl Sidebar {
     }
 }
 
-fn show_header(ui: &mut Ui, palette: Palette, intents: &mut Vec<Intent>) {
+fn show_header(ui: &mut Ui, palette: Palette, pinned: bool, intents: &mut Vec<Intent>) {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         let (icon_rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
@@ -389,6 +390,17 @@ fn show_header(ui: &mut Ui, palette: Palette, intents: &mut Vec<Intent>) {
         );
         ui.label(RichText::new("noteon").size(24.0).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (pin_icon, pin_color, pin_tip) = if pinned {
+                ("📌", palette.accent, "Unpin sidebar (auto-hide)")
+            } else {
+                ("📌", palette.muted, "Pin sidebar")
+            };
+            if quiet_button(ui, pin_icon, pin_color)
+                .on_hover_text(pin_tip)
+                .clicked()
+            {
+                intents.push(Intent::ToggleSidebarPin);
+            }
             if quiet_button(ui, "⌕", palette.muted)
                 .on_hover_text("Search workspace · Ctrl + K")
                 .clicked()
@@ -413,9 +425,16 @@ fn show_footer(ui: &mut Ui, trash: bool, palette: Palette, intents: &mut Vec<Int
         intents.push(Intent::Trash);
     }
     ui.horizontal(|ui| {
-        if quiet_button(ui, "⚙  Settings", palette.muted).clicked() {
+        let settings_btn = quiet_button(ui, "⚙  Settings", palette.muted);
+        if settings_btn.clicked() {
             intents.push(Intent::Settings);
         }
+        settings_btn.context_menu(|ui| {
+            if ui.button("🎨 Temayı düzenle").clicked() {
+                intents.push(Intent::OpenSettingsTheme(ThemeSection::Sidebar));
+                ui.close_menu();
+            }
+        });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if quiet_button(ui, "?", palette.muted)
                 .on_hover_text("Shortcuts and help")
@@ -553,17 +572,19 @@ impl PageRow<'_> {
 
     fn paint_title(&self, ui: &Ui, rect: egui::Rect, x: f32, palette: Palette) {
         let icon_x = x + 20.0;
-        ui.painter().text(
-            egui::pos2(icon_x, rect.center().y),
-            Align2::CENTER_CENTER,
-            &self.page.icon,
-            FontId::proportional(15.0),
-            if self.active {
-                palette.accent
-            } else {
-                palette.muted
-            },
-        );
+        if !self.page.icon.is_empty() {
+            ui.painter().text(
+                egui::pos2(icon_x, rect.center().y),
+                Align2::CENTER_CENTER,
+                &self.page.icon,
+                FontId::proportional(15.0),
+                if self.active {
+                    palette.accent
+                } else {
+                    palette.muted
+                },
+            );
+        }
         let text_x = icon_x + 16.0;
         let galley = ui.painter().layout(
             self.page.display_title().into(),
@@ -615,6 +636,11 @@ fn show_page_menu(ui: &mut Ui, page: &Page, palette: Palette, intents: &mut Vec<
         intents.push(Intent::Action(Action::Trash(page.id)));
         ui.close_menu();
     }
+    ui.separator();
+    if ui.button("🎨 Temayı düzenle").clicked() {
+        intents.push(Intent::OpenSettingsTheme(ThemeSection::Sidebar));
+        ui.close_menu();
+    }
 }
 
 fn show_bulk_page_menu(
@@ -646,6 +672,11 @@ fn show_bulk_page_menu(
         for id in selected_pages {
             intents.push(Intent::Action(Action::Trash(*id)));
         }
+        ui.close_menu();
+    }
+    ui.separator();
+    if ui.button("🎨 Temayı düzenle").clicked() {
+        intents.push(Intent::OpenSettingsTheme(ThemeSection::Sidebar));
         ui.close_menu();
     }
 }

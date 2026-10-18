@@ -10,7 +10,7 @@ use crate::ui::page_properties::{
 };
 use crate::worker::Action;
 
-use super::{Intent, palette::Palette};
+use super::{Intent, ThemeSection, palette::Palette};
 
 const TABLE_NAME_WIDTH: f32 = 250.0;
 const TABLE_CREATED_WIDTH: f32 = 135.0;
@@ -481,28 +481,6 @@ fn show_inner(
                         }
                     }
 
-                    if data.view == DatabaseView::Gallery {
-                        egui::ComboBox::from_id_salt(("gallery-columns", data.page_id))
-                            .selected_text(format!("{} items/row", data.gallery_columns))
-                            .show_ui(ui, |ui| {
-                                for columns in 1..=6 {
-                                    if ui
-                                        .selectable_label(
-                                            data.gallery_columns == columns,
-                                            format!("{columns} items/row"),
-                                        )
-                                        .clicked()
-                                        && data.gallery_columns != columns
-                                    {
-                                        intents.push(Intent::Action(Action::SetDatabaseGalleryColumns {
-                                            page: data.page_id,
-                                            columns,
-                                        }));
-                                    }
-                                }
-                            });
-                    }
-
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let new_btn = egui::Button::new(
                             RichText::new("+ New record")
@@ -639,54 +617,93 @@ fn show_view_options(ui: &mut Ui, data: &mut DatabaseData, intents: &mut Vec<Int
         .collect();
     let view = data.view;
     let settings = &mut data.view_settings;
-    ui.menu_button("View options", |ui| match view {
-        DatabaseView::Table => {
-            changed |= ui
-                .checkbox(&mut settings.table_show_created_at, "Show created date")
-                .changed();
-            ui.separator();
-            ui.label("Visible properties");
-            changed |= property_visibility_options(
-                ui,
-                properties,
-                &mut settings.table_visible_properties,
-                usize::MAX,
-            );
+    ui.menu_button("View options", |ui| {
+        ui.set_min_width(220.0);
+        match view {
+            DatabaseView::Table => {
+                changed |= ui
+                    .checkbox(&mut settings.table_show_created_at, "Show created date")
+                    .changed();
+                ui.separator();
+                ui.label("Visible properties");
+                changed |= property_visibility_options(
+                    ui,
+                    properties,
+                    &mut settings.table_visible_properties,
+                    usize::MAX,
+                );
+            }
+            DatabaseView::Gallery => {
+                ui.horizontal(|ui| {
+                    ui.label("Items per row");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        egui::ComboBox::from_id_salt(("gallery-columns-options", data.page_id))
+                            .selected_text(format!("{} items/row", data.gallery_columns))
+                            .show_ui(ui, |ui| {
+                                for columns in 1..=6 {
+                                    if ui
+                                        .selectable_label(
+                                            data.gallery_columns == columns,
+                                            format!("{columns} items/row"),
+                                        )
+                                        .clicked()
+                                        && data.gallery_columns != columns
+                                    {
+                                        data.gallery_columns = columns;
+                                        intents.push(Intent::Action(Action::SetDatabaseGalleryColumns {
+                                            page: data.page_id,
+                                            columns,
+                                        }));
+                                    }
+                                }
+                            });
+                    });
+                });
+                ui.separator();
+                changed |= ui
+                    .checkbox(&mut settings.gallery_show_cover, "Show cover image")
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut settings.gallery_show_title, "Show title")
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut settings.gallery_show_description, "Show description")
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut settings.gallery_show_created_at, "Show created date")
+                    .changed();
+                ui.separator();
+                ui.label("Visible properties");
+                changed |= property_visibility_options(
+                    ui,
+                    properties,
+                    &mut settings.gallery_visible_properties,
+                    2,
+                );
+            }
+            DatabaseView::Board => {
+                changed |= ui
+                    .checkbox(&mut settings.board_show_description, "Show description")
+                    .changed();
+                ui.separator();
+                ui.label("Visible properties");
+                changed |= property_visibility_options(
+                    ui,
+                    &board_properties,
+                    &mut settings.board_visible_properties,
+                    2,
+                );
+            }
         }
-        DatabaseView::Gallery => {
-            changed |= ui
-                .checkbox(&mut settings.gallery_show_cover, "Show cover image")
-                .changed();
-            changed |= ui
-                .checkbox(&mut settings.gallery_show_title, "Show title")
-                .changed();
-            changed |= ui
-                .checkbox(&mut settings.gallery_show_description, "Show description")
-                .changed();
-            changed |= ui
-                .checkbox(&mut settings.gallery_show_created_at, "Show created date")
-                .changed();
-            ui.separator();
-            ui.label("Visible properties");
-            changed |= property_visibility_options(
-                ui,
-                properties,
-                &mut settings.gallery_visible_properties,
-                2,
-            );
-        }
-        DatabaseView::Board => {
-            changed |= ui
-                .checkbox(&mut settings.board_show_description, "Show description")
-                .changed();
-            ui.separator();
-            ui.label("Visible properties");
-            changed |= property_visibility_options(
-                ui,
-                &board_properties,
-                &mut settings.board_visible_properties,
-                2,
-            );
+        ui.separator();
+        let current_section = match view {
+            DatabaseView::Gallery => ThemeSection::Gallery,
+            DatabaseView::Board => ThemeSection::Board,
+            DatabaseView::Table => ThemeSection::Table,
+        };
+        if ui.button("🎨 Temayı düzenle").clicked() {
+            intents.push(Intent::OpenSettingsTheme(current_section));
+            ui.close_menu();
         }
     });
     if changed {
@@ -763,7 +780,7 @@ pub fn show_record_properties(
     let collapse_id = egui::Id::new(("record-properties-collapsed", data.page_id, page_id));
     let mut collapsed = ui
         .ctx()
-        .data(|d| d.get_temp::<bool>(collapse_id))
+        .data_mut(|d| d.get_persisted::<bool>(collapse_id).or_else(|| d.get_temp::<bool>(collapse_id)))
         .unwrap_or(false);
 
     ui.horizontal(|ui| {
@@ -789,17 +806,36 @@ pub fn show_record_properties(
                             )
                             .frame(false),
                         )
-                        .on_hover_text(
-                            "Click to collapse/expand · Right-click to manage database properties",
-                        );
+                        .on_hover_text(if collapsed {
+                            "Özellikleri göster / genişlet · Sağ tık: Menü"
+                        } else {
+                            "Özellikleri gizle / daralt · Sağ tık: Menü"
+                        });
 
                     if header_btn.clicked() {
                         collapsed = !collapsed;
-                        ui.ctx().data_mut(|d| d.insert_temp(collapse_id, collapsed));
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(collapse_id, collapsed);
+                            d.insert_persisted(collapse_id, collapsed);
+                        });
                     }
 
                     header_btn.context_menu(|ui| {
                         ui.set_min_width(220.0);
+                        let toggle_label = if collapsed {
+                            "👁  Özellikleri göster"
+                        } else {
+                            "👁  Özellikleri gizle"
+                        };
+                        if ui.button(toggle_label).clicked() {
+                            collapsed = !collapsed;
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(collapse_id, collapsed);
+                                d.insert_persisted(collapse_id, collapsed);
+                            });
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         ui.menu_button("+  Add database property", |ui| {
                             add_property_menu(ui, data, intents);
                         });
@@ -817,6 +853,30 @@ pub fn show_record_properties(
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let toggle_label = if collapsed { "👁 Göster" } else { "✕ Gizle" };
+                        let toggle_btn = ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(toggle_label)
+                                        .font(FontId::proportional(11.0))
+                                        .color(palette.muted),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text(if collapsed {
+                                "Özellikleri göster"
+                            } else {
+                                "Özellikleri gizle"
+                            });
+
+                        if toggle_btn.clicked() {
+                            collapsed = !collapsed;
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(collapse_id, collapsed);
+                                d.insert_persisted(collapse_id, collapsed);
+                            });
+                        }
+
                         ui.menu_button(
                             RichText::new("+ Property")
                                 .font(FontId::proportional(12.0))
@@ -1372,17 +1432,35 @@ fn show_table(
                 ui.input(|i| (i.modifiers.ctrl || i.modifiers.command, i.modifiers.shift));
             let primary_clicked = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
             let secondary_clicked = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
-            let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+            let primary_down = ui.input(|i| i.pointer.primary_down());
+            let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+            let primary_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+            let pointer_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
+
+            let marquee_anchor_id = egui::Id::new(("database-table-marquee-anchor", data.page_id));
+            let marquee_active_id = egui::Id::new(("database-table-marquee-active", data.page_id));
+            let marquee_base_id = egui::Id::new(("database-table-marquee-base", data.page_id));
+
+            let mut marquee_anchor: Option<egui::Pos2> = ui.ctx().data(|d| d.get_temp(marquee_anchor_id)).flatten();
+            let mut marquee_active: bool = ui.ctx().data(|d| d.get_temp(marquee_active_id)).unwrap_or(false);
+            let mut marquee_base: std::collections::HashSet<crate::domain::model::PageId> = ui
+                .ctx()
+                .data(|d| d.get_temp(marquee_base_id))
+                .unwrap_or_default();
 
             if !selected_rows.is_empty() && !ui.ctx().wants_keyboard_input() {
-                if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+                let delete_pressed = ui.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+                });
+                if delete_pressed {
                     for id in &selected_rows {
                         intents.push(Intent::Action(Action::Trash(*id)));
                     }
                     selected_rows.clear();
                     anchor_row = None;
                 }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                     selected_rows.clear();
                     anchor_row = None;
                 }
@@ -1397,6 +1475,64 @@ fn show_table(
                 TABLE_ROW_HEIGHT,
             );
 
+            let rows_start_cursor = ui.cursor().min;
+            let rows_area = egui::Rect::from_min_size(
+                rows_start_cursor,
+                egui::vec2(table_width.max(ui.available_width()), active_rows_h),
+            );
+
+            if primary_pressed && let Some(pos) = pointer_pos && rows_area.contains(pos) {
+                marquee_anchor = Some(pos);
+                marquee_active = false;
+                marquee_base = if is_ctrl { selected_rows.clone() } else { std::collections::HashSet::new() };
+            }
+
+            if primary_down && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
+                let delta = (pos - anchor).length();
+                if !marquee_active && delta > 6.0 {
+                    marquee_active = true;
+                    if let Some(focused) = ui.ctx().memory(|m| m.focused()) {
+                        ui.ctx().memory_mut(|m| m.surrender_focus(focused));
+                    }
+                }
+            }
+
+            let selection_rect = if marquee_active && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
+                let rect = egui::Rect::from_two_pos(anchor, pos);
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new(("table-marquee-painter", data.page_id)),
+                ));
+                painter.rect_filled(
+                    rect,
+                    2.0,
+                    Color32::from_rgba_unmultiplied(
+                        palette.accent.r(),
+                        palette.accent.g(),
+                        palette.accent.b(),
+                        30,
+                    ),
+                );
+                painter.rect_stroke(
+                    rect,
+                    2.0,
+                    egui::Stroke::new(1.2, palette.accent),
+                    egui::StrokeKind::Inside,
+                );
+                let edge_zone = 28.0;
+                if pos.y < rows_area.top() + edge_zone {
+                    let speed = ((rows_area.top() + edge_zone - pos.y) * 0.45).clamp(2.0, 18.0);
+                    ui.scroll_with_delta(egui::vec2(0.0, speed));
+                } else if pos.y > rows_area.bottom() - edge_zone {
+                    let speed = ((pos.y - (rows_area.bottom() - edge_zone)) * 0.45).clamp(2.0, 18.0);
+                    ui.scroll_with_delta(egui::vec2(0.0, -speed));
+                }
+                ui.ctx().request_repaint();
+                Some(rect)
+            } else {
+                None
+            };
+
             egui::ScrollArea::vertical()
                 .id_salt(("table-rows-vscroll", data.page_id))
                 .max_height(active_rows_h)
@@ -1406,15 +1542,22 @@ fn show_table(
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                     for row in &rows[visible] {
                         let row_id = row.page.id;
-                        let is_row_selected = selected_rows.contains(&row_id);
                         let row_cursor = ui.cursor().min;
                         let row_rect = egui::Rect::from_min_size(
                             row_cursor,
                             egui::vec2(table_width, TABLE_ROW_HEIGHT),
                         );
+                        if let Some(sel_rect) = selection_rect {
+                            if sel_rect.intersects(row_rect) {
+                                selected_rows.insert(row_id);
+                            } else if !marquee_base.contains(&row_id) {
+                                selected_rows.remove(&row_id);
+                            }
+                        }
+                        let is_row_selected = selected_rows.contains(&row_id);
                         let row_hovered = ui.rect_contains_pointer(row_rect);
 
-                        if primary_clicked && let Some(pos) = pointer_pos && row_rect.contains(pos) {
+                        if primary_clicked && !marquee_active && let Some(pos) = pointer_pos && row_rect.contains(pos) {
                             if is_ctrl {
                                 if selected_rows.contains(&row_id) {
                                     selected_rows.remove(&row_id);
@@ -1440,7 +1583,7 @@ fn show_table(
                                 }
                             }
                         }
-                        if secondary_clicked && let Some(pos) = pointer_pos && row_rect.contains(pos) {
+                        if secondary_clicked && !marquee_active && let Some(pos) = pointer_pos && row_rect.contains(pos) {
                             if !selected_rows.contains(&row_id) {
                                 selected_rows.clear();
                                 selected_rows.insert(row_id);
@@ -1479,7 +1622,7 @@ fn show_table(
                                         if is_row_selected {
                                             ui.painter().rect_filled(sel_box_rect.shrink(2.5), 2.0, palette.accent);
                                         }
-                                        if sel_resp.clicked() {
+                                        if sel_resp.clicked() && !marquee_active {
                                             if is_ctrl {
                                                 if selected_rows.contains(&row_id) {
                                                     selected_rows.remove(&row_id);
@@ -1552,7 +1695,7 @@ fn show_table(
                                             title: title.clone(),
                                         }));
                                     }
-                                    if response.double_clicked() {
+                                    if response.double_clicked() && !marquee_active {
                                         intents.push(Intent::Open(row.page.id, None));
                                     }
                                     response.context_menu(|ui| {
@@ -1578,6 +1721,10 @@ fn show_table(
                                                 intents.push(Intent::Open(row.page.id, None));
                                                 ui.close_menu();
                                             }
+                                            if ui.button("🗖  Diyalog olarak aç").clicked() {
+                                                intents.push(Intent::OpenInDialog(row.page.id));
+                                                ui.close_menu();
+                                            }
                                             if ui.button("Duplicate").clicked() {
                                                 intents.push(Intent::Action(Action::Duplicate(row.page.id)));
                                                 ui.close_menu();
@@ -1587,6 +1734,11 @@ fn show_table(
                                                 intents.push(Intent::Action(Action::Trash(row.page.id)));
                                                 ui.close_menu();
                                             }
+                                        }
+                                        ui.separator();
+                                        if ui.button("🎨 Temayı düzenle").clicked() {
+                                            intents.push(Intent::OpenSettingsTheme(ThemeSection::Table));
+                                            ui.close_menu();
                                         }
                                     });
                                     if hovered {
@@ -1708,6 +1860,24 @@ fn show_table(
                 }
             });
 
+            if primary_clicked
+                && !is_ctrl
+                && !is_shift
+                && !marquee_active
+                && let Some(pos) = pointer_pos
+                && rows_area.contains(pos)
+                && pos.y > rows_start_cursor.y + (rows.len() as f32 * TABLE_ROW_HEIGHT)
+            {
+                selected_rows.clear();
+                anchor_row = None;
+            }
+
+            if primary_released {
+                marquee_anchor = None;
+                marquee_active = false;
+                marquee_base.clear();
+            }
+
             if !selected_rows.is_empty() {
                 let count = selected_rows.len();
                 ui.add_space(6.0);
@@ -1737,6 +1907,9 @@ fn show_table(
             }
 
             ui.ctx().data_mut(|d| {
+                d.insert_temp(marquee_anchor_id, marquee_anchor);
+                d.insert_temp(marquee_active_id, marquee_active);
+                d.insert_temp(marquee_base_id, marquee_base);
                 d.insert_temp(selection_id, selected_rows.clone());
                 d.insert_temp(anchor_id, anchor_row);
             });
@@ -2668,6 +2841,41 @@ fn show_cards(
     }
     let (is_ctrl, is_shift) =
         ui.input(|i| (i.modifiers.ctrl || i.modifiers.command, i.modifiers.shift));
+    let primary_clicked = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+    let secondary_clicked = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
+    let primary_down = ui.input(|i| i.pointer.primary_down());
+    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+    let primary_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+    let pointer_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
+
+    let marquee_anchor_id = egui::Id::new(("database-cards-marquee-anchor", data.page_id));
+    let marquee_active_id = egui::Id::new(("database-cards-marquee-active", data.page_id));
+    let marquee_base_id = egui::Id::new(("database-cards-marquee-base", data.page_id));
+
+    let mut marquee_anchor: Option<egui::Pos2> = ui.ctx().data(|d| d.get_temp(marquee_anchor_id)).flatten();
+    let mut marquee_active: bool = ui.ctx().data(|d| d.get_temp(marquee_active_id)).unwrap_or(false);
+    let mut marquee_base: std::collections::HashSet<crate::domain::model::PageId> = ui
+        .ctx()
+        .data(|d| d.get_temp(marquee_base_id))
+        .unwrap_or_default();
+
+    if !selected_rows.is_empty() && !ui.ctx().wants_keyboard_input() {
+        let delete_pressed = ui.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+        });
+        if delete_pressed {
+            for id in &selected_rows {
+                intents.push(Intent::Action(Action::Trash(*id)));
+            }
+            selected_rows.clear();
+            anchor_row = None;
+        }
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            selected_rows.clear();
+            anchor_row = None;
+        }
+    }
 
     let columns = columns.max(1);
     let row_count = rows.len().div_ceil(columns);
@@ -2705,6 +2913,64 @@ fn show_cards(
         card_height,
     );
 
+    let cards_start_cursor = ui.cursor().min;
+    let cards_area = egui::Rect::from_min_size(
+        cards_start_cursor,
+        egui::vec2(total_width, active_h),
+    );
+
+    if primary_pressed && let Some(pos) = pointer_pos && cards_area.contains(pos) {
+        marquee_anchor = Some(pos);
+        marquee_active = false;
+        marquee_base = if is_ctrl { selected_rows.clone() } else { std::collections::HashSet::new() };
+    }
+
+    if primary_down && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
+        let delta = (pos - anchor).length();
+        if !marquee_active && delta > 6.0 {
+            marquee_active = true;
+            if let Some(focused) = ui.ctx().memory(|m| m.focused()) {
+                ui.ctx().memory_mut(|m| m.surrender_focus(focused));
+            }
+        }
+    }
+
+    let selection_rect = if marquee_active && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
+        let rect = egui::Rect::from_two_pos(anchor, pos);
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new(("cards-marquee-painter", data.page_id)),
+        ));
+        painter.rect_filled(
+            rect,
+            2.0,
+            Color32::from_rgba_unmultiplied(
+                palette.accent.r(),
+                palette.accent.g(),
+                palette.accent.b(),
+                30,
+            ),
+        );
+        painter.rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.2, palette.accent),
+            egui::StrokeKind::Inside,
+        );
+        let edge_zone = 28.0;
+        if pos.y < cards_area.top() + edge_zone {
+            let speed = ((cards_area.top() + edge_zone - pos.y) * 0.45).clamp(2.0, 18.0);
+            ui.scroll_with_delta(egui::vec2(0.0, speed));
+        } else if pos.y > cards_area.bottom() - edge_zone {
+            let speed = ((pos.y - (cards_area.bottom() - edge_zone)) * 0.45).clamp(2.0, 18.0);
+            ui.scroll_with_delta(egui::vec2(0.0, -speed));
+        }
+        ui.ctx().request_repaint();
+        Some(rect)
+    } else {
+        None
+    };
+
     if row_count == 0 {
         let (empty_rect, _) =
             ui.allocate_exact_size(egui::vec2(total_width, active_h), egui::Sense::hover());
@@ -2733,25 +2999,32 @@ fn show_cards(
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = col_gap;
                         for row in rows.iter().skip(row_index * columns).take(columns) {
-                            let is_selected = selected_rows.contains(&row.page.id);
                             let (card_rect, card_resp) = ui.allocate_exact_size(
                                 egui::vec2(card_width, card_height),
                                 egui::Sense::click(),
                             );
+                            if let Some(sel_rect) = selection_rect {
+                                if sel_rect.intersects(card_rect) {
+                                    selected_rows.insert(row.page.id);
+                                } else if !marquee_base.contains(&row.page.id) {
+                                    selected_rows.remove(&row.page.id);
+                                }
+                            }
+                            let is_selected = selected_rows.contains(&row.page.id);
                             let hovered = card_resp.hovered();
                             let bg = if is_selected {
                                 palette.accent_soft
                             } else if hovered {
                                 palette.hover
                             } else {
-                                palette.sidebar
+                                palette.gallery_card
                             };
                             let border_color = if is_selected {
                                 palette.accent
                             } else if hovered {
                                 palette.accent.linear_multiply(0.6)
                             } else {
-                                palette.border.linear_multiply(0.55)
+                                palette.gallery_border
                             };
                             ui.painter().rect_filled(card_rect, 8.0, bg);
                             ui.painter().rect_stroke(
@@ -2761,7 +3034,38 @@ fn show_cards(
                                 egui::StrokeKind::Inside,
                             );
 
-                            if card_resp.clicked() && !busy {
+                            card_resp.context_menu(|ui| {
+                                if ui.button("↗  Sayfayı aç").clicked() {
+                                    intents.push(Intent::Open(row.page.id, None));
+                                    ui.close_menu();
+                                }
+                                if ui.button("🗖  Diyalog olarak aç").clicked() {
+                                    intents.push(Intent::OpenInDialog(row.page.id));
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if ui.button(RichText::new("🗑  Sil").color(palette.danger)).clicked() {
+                                    intents.push(Intent::Action(Action::Trash(row.page.id)));
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if ui.button("🎨 Temayı düzenle").clicked() {
+                                    intents.push(Intent::OpenSettingsTheme(ThemeSection::Gallery));
+                                    ui.close_menu();
+                                }
+                            });
+
+                            if secondary_clicked && !marquee_active && let Some(pos) = pointer_pos && card_rect.contains(pos) {
+                                if !selected_rows.contains(&row.page.id) {
+                                    selected_rows.clear();
+                                    selected_rows.insert(row.page.id);
+                                    anchor_row = Some(row.page.id);
+                                }
+                            }
+
+                            if card_resp.double_clicked() && !busy {
+                                intents.push(Intent::Open(row.page.id, None));
+                            } else if card_resp.clicked() && !busy && !marquee_active {
                                 if is_ctrl {
                                     if selected_rows.contains(&row.page.id) {
                                         selected_rows.remove(&row.page.id);
@@ -2783,10 +3087,83 @@ fn show_cards(
                                     selected_rows.clear();
                                     selected_rows.insert(row.page.id);
                                     anchor_row = Some(row.page.id);
-                                    intents.push(Intent::Open(row.page.id, None));
                                 }
                             }
                             card_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                            if hovered || is_selected {
+                                let sel_box_rect = egui::Rect::from_center_size(
+                                    card_rect.left_top() + egui::vec2(16.0, 16.0),
+                                    egui::vec2(16.0, 16.0),
+                                );
+                                let sel_resp = ui.interact(
+                                    sel_box_rect,
+                                    ui.id().with(("card-sel", row.page.id)),
+                                    egui::Sense::click(),
+                                );
+                                let check_stroke = egui::Stroke::new(
+                                    1.0,
+                                    if is_selected { palette.accent } else { palette.muted },
+                                );
+                                ui.painter().rect_filled(sel_box_rect, 3.0, palette.sidebar);
+                                ui.painter().rect_stroke(sel_box_rect, 3.0, check_stroke, egui::StrokeKind::Inside);
+                                if is_selected {
+                                    ui.painter().rect_filled(sel_box_rect.shrink(3.0), 2.0, palette.accent);
+                                }
+                                if sel_resp.clicked() && !marquee_active {
+                                    if is_ctrl {
+                                        if selected_rows.contains(&row.page.id) {
+                                            selected_rows.remove(&row.page.id);
+                                        } else {
+                                            selected_rows.insert(row.page.id);
+                                            anchor_row = Some(row.page.id);
+                                        }
+                                    } else if is_shift {
+                                        let anchor = anchor_row.unwrap_or(row.page.id);
+                                        let p1 = rows.iter().position(|r| r.page.id == anchor).unwrap_or(0);
+                                        let p2 = rows.iter().position(|r| r.page.id == row.page.id).unwrap_or(0);
+                                        let start = p1.min(p2);
+                                        let end = p1.max(p2);
+                                        selected_rows.clear();
+                                        for r in &rows[start..=end] {
+                                            selected_rows.insert(r.page.id);
+                                        }
+                                    } else if is_selected && selected_rows.len() == 1 {
+                                        selected_rows.clear();
+                                        anchor_row = None;
+                                    } else {
+                                        selected_rows.clear();
+                                        selected_rows.insert(row.page.id);
+                                        anchor_row = Some(row.page.id);
+                                    }
+                                }
+                            }
+
+                            if hovered {
+                                let open_box_rect = egui::Rect::from_center_size(
+                                    card_rect.right_top() + egui::vec2(-28.0, 16.0),
+                                    egui::vec2(44.0, 18.0),
+                                );
+                                let open_resp = ui.interact(
+                                    open_box_rect,
+                                    ui.id().with(("card-open", row.page.id)),
+                                    egui::Sense::click(),
+                                );
+                                let bg = if open_resp.hovered() { palette.accent } else { palette.sidebar };
+                                let fg = if open_resp.hovered() { Color32::WHITE } else { palette.muted };
+                                ui.painter().rect_filled(open_box_rect, 3.0, bg);
+                                ui.painter().rect_stroke(open_box_rect, 3.0, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+                                ui.painter().text(
+                                    open_box_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "OPEN ↗",
+                                    FontId::proportional(10.0),
+                                    fg,
+                                );
+                                if open_resp.clicked() && !marquee_active {
+                                    intents.push(Intent::Open(row.page.id, None));
+                                }
+                            }
 
                             let inner_rect = card_rect.shrink(10.0);
                             let mut card_ui = ui.new_child(
@@ -2923,6 +3300,52 @@ fn show_cards(
             });
     }
 
+    if primary_clicked
+        && !is_ctrl
+        && !is_shift
+        && !marquee_active
+        && let Some(pos) = pointer_pos
+        && cards_area.contains(pos)
+        && pos.y > cards_start_cursor.y + natural_h
+    {
+        selected_rows.clear();
+        anchor_row = None;
+    }
+
+    if primary_released {
+        marquee_anchor = None;
+        marquee_active = false;
+        marquee_base.clear();
+    }
+
+    if !selected_rows.is_empty() {
+        let count = selected_rows.len();
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("{count} record{} selected", if count == 1 { "" } else { "s" }))
+                    .strong()
+                    .color(palette.accent),
+            );
+            if ui.button("Duplicate").clicked() {
+                for id in &selected_rows {
+                    intents.push(Intent::Action(Action::Duplicate(*id)));
+                }
+            }
+            if ui.button(RichText::new("Delete").color(palette.danger)).clicked() {
+                for id in &selected_rows {
+                    intents.push(Intent::Action(Action::Trash(*id)));
+                }
+                selected_rows.clear();
+                anchor_row = None;
+            }
+            if ui.button("Clear selection").clicked() {
+                selected_rows.clear();
+                anchor_row = None;
+            }
+        });
+    }
+
     ui.add_space(6.0);
     let new_btn = egui::Button::new(
         RichText::new("+ New record")
@@ -2944,6 +3367,9 @@ fn show_cards(
     }
 
     ui.ctx().data_mut(|d| {
+        d.insert_temp(marquee_anchor_id, marquee_anchor);
+        d.insert_temp(marquee_active_id, marquee_active);
+        d.insert_temp(marquee_base_id, marquee_base);
         d.insert_temp(selection_id, selected_rows);
         d.insert_temp(anchor_id, anchor_row);
     });
@@ -3014,6 +3440,24 @@ fn show_board(
     }
     let (is_ctrl, is_shift) =
         ui.input(|i| (i.modifiers.ctrl || i.modifiers.command, i.modifiers.shift));
+
+    if !selected_rows.is_empty() && !ui.ctx().wants_keyboard_input() {
+        let delete_pressed = ui.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+        });
+        if delete_pressed {
+            for id in &selected_rows {
+                intents.push(Intent::Action(Action::Trash(*id)));
+            }
+            selected_rows.clear();
+            anchor_row = None;
+        }
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            selected_rows.clear();
+            anchor_row = None;
+        }
+    }
 
     let board_visible_properties = data.view_settings.board_visible_properties.clone();
     let show_board_desc = data.view_settings.board_show_description;
@@ -3207,7 +3651,7 @@ fn show_board(
                                         } else if is_hovered {
                                             palette.hover
                                         } else {
-                                            palette.sidebar
+                                            palette.board_card
                                         };
                                         let stroke_col = if is_selected {
                                             palette.accent
@@ -3319,6 +3763,15 @@ fn show_board(
                                         card_resp.context_menu(|ui| {
                                             if ui.button("Open page").clicked() {
                                                 intents.push(Intent::Open(row.page.id, None));
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("🗖  Diyalog olarak aç").clicked() {
+                                                intents.push(Intent::OpenInDialog(row.page.id));
+                                                ui.close_menu();
+                                            }
+                                            ui.separator();
+                                            if ui.button("🎨 Temayı düzenle").clicked() {
+                                                intents.push(Intent::OpenSettingsTheme(ThemeSection::Board));
                                                 ui.close_menu();
                                             }
                                             ui.separator();
@@ -3530,6 +3983,9 @@ fn show_board(
 }
 
 pub(crate) fn format_date(timestamp: i64) -> String {
+    if timestamp <= 0 {
+        return "—".to_owned();
+    }
     let Some(date_time) =
         chrono::DateTime::from_timestamp(timestamp, 0).map(|utc| utc.with_timezone(&chrono::Local))
     else {
@@ -3573,8 +4029,14 @@ fn format_date_at(date_time: chrono::DateTime<chrono::Local>, today: chrono::Nai
 
 #[cfg(test)]
 mod date_format_tests {
-    use super::format_date_at;
+    use super::{format_date, format_date_at};
     use chrono::{Local, NaiveDate, TimeZone};
+
+    #[test]
+    fn zero_or_negative_timestamp_returns_dash() {
+        assert_eq!(format_date(0), "—");
+        assert_eq!(format_date(-1), "—");
+    }
 
     #[test]
     fn date_format_hides_year_for_this_year_and_time_for_other_days() {

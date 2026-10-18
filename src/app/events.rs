@@ -24,11 +24,16 @@ impl NoteonApp {
                     accent_color,
                     font_scale,
                     dock_layout,
+                    sidebar_pinned,
+                    custom_theme,
                 } => {
                     for page in &mut pages {
                         self.saves.overlay_page(page);
                     }
                     self.sidebar.set_pages(pages);
+                    if let Some(pinned) = sidebar_pinned {
+                        self.sidebar_pinned = pinned.as_str() != "false";
+                    }
                     self.dark = dark;
                     if let Some(color) = light_background.as_deref().and_then(Palette::from_setting)
                     {
@@ -44,6 +49,11 @@ impl NoteonApp {
                         .filter(|value: &f32| value.is_finite())
                         .unwrap_or(crate::config::DEFAULT_FONT_SCALE)
                         .clamp(crate::config::MIN_FONT_SCALE, crate::config::MAX_FONT_SCALE);
+                    if let Some(raw) = custom_theme {
+                        if let Ok(config) = serde_json::from_str(&raw) {
+                            self.custom_theme = config;
+                        }
+                    }
                     self.apply_theme(context);
                     if let Some(layout) = dock_layout {
                         let valid_pages: HashSet<_> = self
@@ -75,6 +85,7 @@ impl NoteonApp {
                 Event::Document {
                     generation,
                     mut document,
+                    history,
                 } => {
                     if let Some((page_id, jump)) = self.pending_documents.remove(&generation)
                         && page_id == document.page.id
@@ -84,11 +95,14 @@ impl NoteonApp {
                         }
                         self.sidebar.reveal(page_id);
                         self.saves.overlay_page(&mut document.page);
-                        self.editors
-                            .entry(page_id)
-                            .or_default()
-                            .bind(document, generation, jump);
+                        let editor = self.editors.entry(page_id).or_default();
+                        editor.bind(document, generation, jump);
+                        editor.history = history;
                         self.touch_editor(page_id);
+                        if self.pending_dialog == Some(page_id) {
+                            self.pending_dialog = None;
+                            self.page_dialog = Some(page_id);
+                        }
                     }
                 }
                 Event::Blocks {
@@ -103,6 +117,9 @@ impl NoteonApp {
                     {
                         self.saves.overlay_blocks(&mut blocks);
                         editor.cache.insert(start, blocks);
+                        if editor.find.open {
+                            editor.find.update_matches(editor.document.as_ref(), &editor.cache.blocks);
+                        }
                     }
                 }
                 Event::Database(mut data) => {
@@ -117,7 +134,14 @@ impl NoteonApp {
                     self.search.hits = hits;
                     self.search.loading = false;
                 }
-                Event::Saved(id) => self.saves.acknowledge(id),
+                Event::Saved { id, histories } => {
+                    self.saves.acknowledge(id);
+                    for (page_id, history) in histories {
+                        if let Some(editor) = self.editors.get_mut(&page_id) {
+                            editor.history = history;
+                        }
+                    }
+                }
                 Event::ActionDone {
                     mut pages,
                     document,
@@ -125,6 +149,8 @@ impl NoteonApp {
                     focus,
                     notice,
                     refresh_database,
+                    created_record_document,
+                    history,
                 } => {
                     self.busy = false;
                     for page in &mut pages {
@@ -151,14 +177,19 @@ impl NoteonApp {
                     }
                     if let Some(mut document) = document {
                         let id = document.page.id;
-                        if self.selected != Some(id) {
-                            self.history.truncate(self.history_index + 1);
-                            self.history.push(id);
-                            self.history_index = self.history.len() - 1;
+                        let in_dialog = self.page_dialog == Some(id);
+                        if !in_dialog {
+                            if self.selected != Some(id) {
+                                self.history.truncate(self.history_index + 1);
+                                self.history.push(id);
+                                self.history_index = self.history.len() - 1;
+                            }
+                            self.activate_page_tab(id, false);
+                            self.selected = Some(id);
+                            self.trash = false;
+                            self.sidebar.reveal(id);
+                            self.record_navigation(id, false);
                         }
-                        self.activate_page_tab(id, false);
-                        self.selected = Some(id);
-                        self.trash = false;
                         self.generation += 1;
                         self.loading = false;
                         self.saves.overlay_page(&mut document.page);
@@ -166,10 +197,33 @@ impl NoteonApp {
                             .entry(id)
                             .or_default()
                             .bind(document, self.generation, focus);
+                        if let Some(hist) = history {
+                            if let Some(editor) = self.editors.get_mut(&id) {
+                                editor.history = hist;
+                            }
+                        }
                         self.touch_editor(id);
-                        self.sidebar.reveal(id);
-                        self.record_navigation(id, false);
+                    } else if let Some(mut doc) = created_record_document {
+                        let id = doc.page.id;
+                        self.generation += 1;
+                        self.saves.overlay_page(&mut doc.page);
+                        let mut editor = crate::ui::editor::Editor::default();
+                        editor.title_focus = true;
+                        editor.bind(doc, self.generation, Some(0));
+                        if let Some(hist) = history {
+                            editor.history = hist;
+                        }
+                        self.editors.insert(id, editor);
+                        self.touch_editor(id);
+                        self.page_dialog = Some(id);
                     } else {
+                        if let Some(hist) = history {
+                            if let Some(page) = self.selected {
+                                if let Some(editor) = self.editors.get_mut(&page) {
+                                    editor.history = hist;
+                                }
+                            }
+                        }
                         for editor in self.editors.values_mut() {
                             if let Some(document) = editor.document.as_mut()
                                 && let Some(page) = self.sidebar.page(document.page.id)

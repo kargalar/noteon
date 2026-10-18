@@ -244,7 +244,7 @@ fn version_four_workspaces_migrate_custom_page_properties() {
     let version: i32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
 }
 
 #[test]
@@ -267,6 +267,42 @@ fn version_two_workspaces_migrate_page_metadata_and_database_tables() {
     assert_eq!(page.priority, 0);
     assert!(!page.is_database);
     assert!(repository.database_property_owner(1).unwrap().is_none());
+}
+
+#[test]
+fn newly_created_database_record_and_page_have_positive_created_at() {
+    let (_directory, mut repository) = database();
+    let page = repository.create_page(None, "Yeni Sayfa").unwrap();
+    assert!(repository.page(page).unwrap().created_at > 0);
+
+    let database = repository.create_database(None).unwrap();
+    assert!(repository.page(database).unwrap().created_at > 0);
+
+    let record = repository.create_database_record(database).unwrap();
+    assert!(repository.page(record).unwrap().created_at > 0);
+}
+
+#[test]
+fn legacy_pages_with_zero_created_at_are_migrated_to_valid_timestamp() {
+    let (directory, mut repository) = database();
+    let page_id = repository.create_page(None, "Legacy Test").unwrap();
+    drop(repository);
+    let path = directory.path().join("test.sqlite");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE pages SET created_at=0, updated_at=1710000000 WHERE id=?1",
+            [page_id],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 12)
+        .unwrap();
+    drop(connection);
+
+    let repository = Repository::open(&path).unwrap();
+    let page = repository.page(page_id).unwrap();
+    assert_eq!(page.created_at, 1710000000);
 }
 
 #[test]
@@ -932,6 +968,75 @@ fn subpage_blocks_lifecycle_create_sync_ensure_and_trash() {
     repository.trash_page(child2).unwrap();
     let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
     assert!(!parent_blocks.iter().any(|b| b.content == "↗ İkinci Alt"));
+}
+
+#[test]
+fn subpage_database_gets_link_block_in_parent_and_inline_is_not_duplicated() {
+    let (_directory, mut repository) = database();
+    let parent = repository.create_page(None, "Ana Sayfa").unwrap();
+
+    // 1. Create a database under parent
+    let sub_db = repository.create_database(Some(parent)).unwrap();
+    let mut edit = PageEdit::from(&repository.page(sub_db).unwrap());
+    edit.title = "Suicide Notes".into();
+    repository
+        .save(&SaveBatch {
+            pages: vec![edit],
+            blocks: Vec::new(),
+        })
+        .unwrap();
+
+    let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
+    assert!(parent_blocks.iter().any(|b| b.content == "↗ Suicide Notes"));
+
+    // 2. If the block was removed, ensure_subpage_blocks recreates it
+    repository.delete_blocks(parent, &[parent_blocks[0].id]).unwrap();
+    // Wait, delete_blocks with ↗ might trash the child if it finds it, so let's verify ensure_subpage_blocks recreates it if child is active
+    let _ = repository.restore_pages(&[sub_db]);
+    repository.ensure_subpage_blocks(parent).unwrap();
+    let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
+    assert!(parent_blocks.iter().any(|b| b.content == "↗ Suicide Notes"));
+
+    // 3. Inline database block is NOT duplicated with a text link block
+    let inline_db = repository.create_database_block(parent, 2).unwrap();
+    let mut edit_inline = PageEdit::from(&repository.page(inline_db).unwrap());
+    edit_inline.title = "Tablo Görünümü".into();
+    repository
+        .save(&SaveBatch {
+            pages: vec![edit_inline],
+            blocks: Vec::new(),
+        })
+        .unwrap();
+    repository.ensure_subpage_blocks(parent).unwrap();
+    let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
+    assert!(parent_blocks.iter().any(|b| b.kind == BlockKind::Database && b.content == inline_db.to_string()));
+    assert!(!parent_blocks.iter().any(|b| b.content == "↗ Tablo Görünümü"));
+}
+
+
+#[test]
+fn permanent_delete_and_empty_trash_remove_pages_completely() {
+    let (_directory, mut repository) = database();
+
+    let page1 = repository.create_page(None, "Sayfa 1").unwrap();
+    let child1 = repository.create_page(Some(page1), "Alt Sayfa 1").unwrap();
+    let page2 = repository.create_page(None, "Sayfa 2").unwrap();
+
+    repository.trash_pages(&[page1, page2]).unwrap();
+    assert!(repository.page(page1).unwrap().trashed_by.is_some());
+    assert!(repository.page(child1).unwrap().trashed_by.is_some());
+    assert!(repository.page(page2).unwrap().trashed_by.is_some());
+
+    // Permanently delete page2
+    repository.delete_pages_permanently(&[page2]).unwrap();
+    assert!(repository.page(page2).is_err());
+    assert!(repository.page(page1).is_ok());
+    assert!(repository.page(child1).is_ok());
+
+    // Empty trash
+    repository.empty_trash().unwrap();
+    assert!(repository.page(page1).is_err());
+    assert!(repository.page(child1).is_err());
 }
 
 

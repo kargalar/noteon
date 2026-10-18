@@ -15,6 +15,8 @@ pub enum Intent {
     Open(PageId, Option<usize>),
     OpenTitle(String),
     OpenInTab(PageId),
+    OpenInDialog(PageId),
+    ClosePageDialog,
     OpenUrl(String),
     OpenFileExplorer(String),
     DockPage(PageId, u64, DockSide),
@@ -29,6 +31,8 @@ pub enum Intent {
         start: usize,
     },
     Search,
+    FindInPage,
+    ToggleSidebarPin,
     ToggleTheme,
     SetTheme(bool),
     SetBackground(egui::Color32),
@@ -36,12 +40,44 @@ pub enum Intent {
     SetFontScale(f32),
     Trash,
     Settings,
+    OpenSettingsTheme(ThemeSection),
+    SetCustomThemeColor {
+        key: CustomColorKey,
+        value: Option<egui::Color32>,
+    },
+    ResetCustomThemeSection(ThemeSection),
+    ResetAllCustomTheme,
     Help,
     RetrySave,
     Back,
     Forward,
     Undo,
     Redo,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeSection {
+    General,
+    Sidebar,
+    Editor,
+    Header,
+    Gallery,
+    Board,
+    Table,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CustomColorKey {
+    Sidebar,
+    Text,
+    Muted,
+    Border,
+    AccentSoft,
+    Hover,
+    Code,
+    GalleryCard,
+    GalleryBorder,
+    BoardCard,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +111,134 @@ pub fn small_label(ui: &mut Ui, text: &str, color: Color32) {
     );
 }
 
+use crate::ui::palette::Palette;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconTab {
+    Color,
+    Monochrome,
+}
+
+pub fn show_icon_picker_content(
+    ui: &mut Ui,
+    id_salt: &impl std::hash::Hash,
+    current_icon: &str,
+    selected_icon: &mut Option<String>,
+) {
+    ui.set_min_width(280.0);
+
+    let tab_id = egui::Id::new(("icon-picker-tab", id_salt));
+    let mut active_tab = ui
+        .ctx()
+        .data(|data| data.get_temp::<IconTab>(tab_id))
+        .unwrap_or(IconTab::Color);
+
+    ui.horizontal(|ui| {
+        if ui
+            .selectable_label(active_tab == IconTab::Color, "Renkli")
+            .clicked()
+        {
+            active_tab = IconTab::Color;
+            ui.ctx().data_mut(|data| data.insert_temp(tab_id, active_tab));
+        }
+        if ui
+            .selectable_label(active_tab == IconTab::Monochrome, "Renksiz")
+            .clicked()
+        {
+            active_tab = IconTab::Monochrome;
+            ui.ctx().data_mut(|data| data.insert_temp(tab_id, active_tab));
+        }
+    });
+
+    ui.add_space(4.0);
+
+    let search_id = egui::Id::new(("icon-picker-search", id_salt));
+    let mut query = ui
+        .ctx()
+        .data(|data| data.get_temp::<String>(search_id))
+        .unwrap_or_default();
+    let search = ui.add(
+        egui::TextEdit::singleline(&mut query)
+            .hint_text("İkon ara…")
+            .desired_width(f32::INFINITY),
+    );
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(search_id, query.clone()));
+
+    let query_clean = query.trim().to_lowercase();
+    let icon_list = match active_tab {
+        IconTab::Color => crate::config::COLOR_ICONS,
+        IconTab::Monochrome => crate::config::MONOCHROME_ICONS,
+    };
+
+    let matching_icons = icon_list
+        .iter()
+        .filter(|(name, icon)| {
+            query_clean.is_empty()
+                || name.contains(&query_clean)
+                || icon.contains(query_clean.as_str())
+        })
+        .collect::<Vec<_>>();
+
+    if matching_icons.is_empty() {
+        ui.add_space(8.0);
+        ui.label(RichText::new("İkon bulunamadı").color(ui.visuals().weak_text_color()));
+    } else {
+        egui::ScrollArea::vertical()
+            .max_height(280.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new(("icon-picker-grid", id_salt))
+                    .num_columns(8)
+                    .spacing([3.0, 3.0])
+                    .show(ui, |ui| {
+                        for (index, (name, icon)) in matching_icons.iter().enumerate() {
+                            let icon_font_size = match active_tab {
+                                IconTab::Color => 19.0,
+                                IconTab::Monochrome => 17.0,
+                            };
+                            if ui
+                                .add_sized(
+                                    [30.0, 30.0],
+                                    egui::Button::new(RichText::new(*icon).size(icon_font_size)),
+                                )
+                                .on_hover_text(*name)
+                                .clicked()
+                            {
+                                *selected_icon = Some((*icon).to_string());
+                                ui.ctx().data_mut(|data| {
+                                    data.insert_temp(search_id, String::new());
+                                });
+                                ui.close_menu();
+                            }
+                            if (index + 1) % 8 == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+            });
+    }
+
+    if !current_icon.is_empty() {
+        ui.add_space(4.0);
+        ui.separator();
+        if ui
+            .button(RichText::new("🗑  İkonu kaldır").size(12.0).color(ui.visuals().error_fg_color))
+            .clicked()
+        {
+            *selected_icon = Some(String::new());
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(search_id, String::new());
+            });
+            ui.close_menu();
+        }
+    }
+
+    if search.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        ui.close_menu();
+    }
+}
+
 pub fn icon_picker_button(
     ui: &mut Ui,
     id_salt: impl std::hash::Hash,
@@ -89,67 +253,29 @@ pub fn icon_picker_button(
         current_icon
     };
     let mut text = RichText::new(button_text).size(font_size);
-    if let Some(color) = color {
-        text = text.color(color);
+    if !crate::config::is_color_icon(button_text) {
+        if let Some(color) = color {
+            text = text.color(color);
+        }
     }
     ui.menu_button(text, |ui| {
-        ui.set_min_width(280.0);
-        let search_id = egui::Id::new(("icon-picker-search", &id_salt));
-        let mut query = ui
-            .ctx()
-            .data(|data| data.get_temp::<String>(search_id))
-            .unwrap_or_default();
-        let search = ui.add(
-            egui::TextEdit::singleline(&mut query)
-                .hint_text("Search icons")
-                .desired_width(f32::INFINITY),
-        );
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(search_id, query.clone()));
+        show_icon_picker_content(ui, &id_salt, current_icon, &mut selected_icon);
+    });
+    selected_icon
+}
 
-        let query = query.trim().to_lowercase();
-        let matching_icons = crate::config::PAGE_ICONS
-            .iter()
-            .filter(|(name, icon)| {
-                query.is_empty() || name.contains(&query) || icon.contains(query.as_str())
-            })
-            .collect::<Vec<_>>();
-        if matching_icons.is_empty() {
-            ui.label("No icons found");
-        } else {
-            egui::ScrollArea::vertical()
-                .max_height(300.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    egui::Grid::new(("icon-picker-grid", &id_salt))
-                        .num_columns(8)
-                        .spacing([3.0, 3.0])
-                        .show(ui, |ui| {
-                            for (index, (name, icon)) in matching_icons.iter().enumerate() {
-                                if ui
-                                    .add_sized(
-                                        [30.0, 30.0],
-                                        egui::Button::new(RichText::new(*icon).size(19.0)),
-                                    )
-                                    .on_hover_text(*name)
-                                    .clicked()
-                                {
-                                    selected_icon = Some((*icon).to_string());
-                                    ui.ctx().data_mut(|data| {
-                                        data.insert_temp(search_id, String::new());
-                                    });
-                                    ui.close_menu();
-                                }
-                                if (index + 1) % 8 == 0 {
-                                    ui.end_row();
-                                }
-                            }
-                        });
-                });
-        }
-        if search.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-            ui.close_menu();
-        }
+pub fn add_icon_picker_button(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash,
+    palette: Palette,
+) -> Option<String> {
+    let mut selected_icon = None;
+    let text = RichText::new("☺  İkon ekle")
+        .size(12.5)
+        .color(palette.muted);
+
+    ui.menu_button(text, |ui| {
+        show_icon_picker_content(ui, &id_salt, "", &mut selected_icon);
     });
     selected_icon
 }

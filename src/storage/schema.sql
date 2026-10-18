@@ -3,7 +3,7 @@ CREATE TABLE pages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     parent_id INTEGER REFERENCES pages(id) ON DELETE SET NULL,
     title TEXT NOT NULL DEFAULT '',
-    icon TEXT NOT NULL DEFAULT '▤',
+    icon TEXT NOT NULL DEFAULT '',
     favorite INTEGER NOT NULL DEFAULT 0 CHECK(favorite IN (0,1)),
     trashed_by INTEGER,
     cover INTEGER NOT NULL DEFAULT 0,
@@ -103,5 +103,5 @@ CREATE TRIGGER blocks_au AFTER UPDATE OF content ON blocks WHEN old.content != n
     INSERT INTO block_search(block_search,rowid,content) VALUES('delete',old.id,old.content);
     INSERT INTO block_search(rowid,content) VALUES(new.id,new.content);
 END;
-PRAGMA user_version=12;
+PRAGMA user_version=13;
 COMMIT;

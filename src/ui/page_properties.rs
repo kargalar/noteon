@@ -222,10 +222,10 @@ pub fn show(
     } = target;
     let scope_id = widget_scope.unwrap_or_default();
     let section_width = max_width.clamp(300.0, 680.0);
-    let collapse_id = egui::Id::new(("page-properties-collapsed", page, scope_id));
+    let collapse_id = egui::Id::new(("page-properties-collapsed", page));
     let mut collapsed = ui
         .ctx()
-        .data(|d| d.get_temp::<bool>(collapse_id))
+        .data_mut(|d| d.get_persisted::<bool>(collapse_id).or_else(|| d.get_temp::<bool>(collapse_id)))
         .unwrap_or(false);
 
     let section_hover_id = egui::Id::new(("page-properties-section-hover", page, scope_id));
@@ -258,11 +258,18 @@ pub fn show(
                             )
                             .frame(false),
                         )
-                        .on_hover_text("Click to collapse/expand · Right-click to manage properties");
+                        .on_hover_text(if collapsed {
+                            "Özellikleri göster / genişlet · Sağ tık: Menü"
+                        } else {
+                            "Özellikleri gizle / daralt · Sağ tık: Menü"
+                        });
 
                     if header_btn.clicked() {
                         collapsed = !collapsed;
-                        ui.ctx().data_mut(|d| d.insert_temp(collapse_id, collapsed));
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(collapse_id, collapsed);
+                            d.insert_persisted(collapse_id, collapsed);
+                        });
                     }
 
                     header_btn.context_menu(|ui| {
@@ -277,6 +284,32 @@ pub fn show(
                             palette,
                             intents,
                         );
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let toggle_label = if collapsed { "👁 Göster" } else { "✕ Gizle" };
+                        let toggle_btn = ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(toggle_label)
+                                        .font(FontId::proportional(11.0))
+                                        .color(palette.muted),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text(if collapsed {
+                                "Özellikleri göster"
+                            } else {
+                                "Özellikleri gizle"
+                            });
+
+                        if toggle_btn.clicked() {
+                            collapsed = !collapsed;
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(collapse_id, collapsed);
+                                d.insert_persisted(collapse_id, collapsed);
+                            });
+                        }
                     });
                 });
 
@@ -412,17 +445,17 @@ fn show_section_context_menu(
             .color(palette.muted),
     );
     ui.add_space(4.0);
-    if ui
-        .button(if *collapsed {
-            "▾  Expand properties"
-        } else {
-            "▸  Collapse properties"
-        })
-        .clicked()
-    {
+    let toggle_label = if *collapsed {
+        "👁  Özellikleri göster"
+    } else {
+        "👁  Özellikleri gizle"
+    };
+    if ui.button(toggle_label).clicked() {
         *collapsed = !*collapsed;
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(collapse_id, *collapsed));
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(collapse_id, *collapsed);
+            d.insert_persisted(collapse_id, *collapsed);
+        });
         ui.close_menu();
     }
     ui.separator();
@@ -1705,7 +1738,13 @@ pub fn format_iso_date_pretty(value: &str) -> String {
     let Ok(date) = NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d") else {
         return value.to_owned();
     };
-    format!("{} {} {}", date.day(), month_name(date.month()), date.year())
+    use chrono::Datelike;
+    let today = chrono::Local::now().date_naive();
+    if date.year() == today.year() {
+        format!("{} {}", date.day(), month_name(date.month()))
+    } else {
+        format!("{} {} {}", date.day(), month_name(date.month()), date.year())
+    }
 }
 
 fn month_name(month: u32) -> &'static str {

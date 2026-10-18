@@ -61,7 +61,7 @@ impl Repository {
             &parsed_title
         };
         let transaction = self.connection.transaction()?;
-        transaction.execute("INSERT INTO pages(title,sort_order) SELECT ?1,COALESCE(MAX(sort_order)+1,0) FROM pages WHERE parent_id IS NULL", [title])?;
+        transaction.execute("INSERT INTO pages(title,sort_order,created_at,updated_at) SELECT ?1,COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS NULL", [title])?;
         let page = transaction.last_insert_rowid();
         {
             let mut insert = transaction.prepare_cached(

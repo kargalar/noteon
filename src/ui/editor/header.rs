@@ -1,7 +1,7 @@
 use super::block;
 use crate::config::UNTITLED;
 use crate::domain::model::{Document, Page, PageEdit};
-use crate::ui::{Intent, palette::Palette, quiet_button, small_label, text};
+use crate::ui::{Intent, ThemeSection, palette::Palette, quiet_button, small_label, text};
 use crate::worker::Action;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, vec2};
 
@@ -28,11 +28,14 @@ pub(super) fn show(
     breadcrumbs: &[crate::ui::BreadcrumbItem],
     widget_scope: Option<u64>,
     record_properties: RecordPropertiesContext<'_>,
+    find_query: Option<&str>,
+    is_find_title_active: bool,
+    history: &[crate::domain::model::PageHistorySummary],
 ) -> (Canvas, Vec<Intent>) {
     let mut intents = Vec::new();
     let page = &mut document.page;
     let mut page_changed = false;
-    breadcrumb(ui, page, palette, breadcrumbs, &mut intents, &mut page_changed);
+    breadcrumb(ui, page, palette, breadcrumbs, &mut intents, &mut page_changed, history);
     ui.add_space(8.0);
     ui.separator();
     let width = ui.available_width();
@@ -181,6 +184,9 @@ pub(super) fn show(
         widget_scope,
         palette,
         &mut intents,
+        find_query,
+        is_find_title_active,
+        history,
     );
     if page_changed {
         intents.push(Intent::PageChanged(PageEdit::from(&*page)));
@@ -245,6 +251,7 @@ fn breadcrumb(
     breadcrumbs: &[crate::ui::BreadcrumbItem],
     intents: &mut Vec<Intent>,
     page_changed: &mut bool,
+    history: &[crate::domain::model::PageHistorySummary],
 ) {
     ui.horizontal(|ui| {
         if quiet_button(ui, "‹", palette.muted)
@@ -279,9 +286,18 @@ fn breadcrumb(
             }
             ui.label(RichText::new("/").size(12.0).color(palette.muted));
         }
-        ui.label(RichText::new(format!("{}  {}", page.icon, page.display_title())).size(12.0));
+        let current_label = if page.icon.is_empty() {
+            page.display_title().to_string()
+        } else {
+            format!("{}  {}", page.icon, page.display_title())
+        };
+        ui.label(RichText::new(current_label).size(12.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button("···", |ui| {
+                ui.menu_button("🕒  Değişiklik Geçmişi", |ui| {
+                    show_history_menu(ui, page.id, history, palette, intents);
+                });
+                ui.separator();
                 let full_width_label = if page.full_width {
                     "⤡  Standard width"
                 } else {
@@ -290,6 +306,28 @@ fn breadcrumb(
                 if ui.button(full_width_label).clicked() {
                     page.full_width = !page.full_width;
                     *page_changed = true;
+                    ui.close_menu();
+                }
+                let collapse_id = egui::Id::new(("page-properties-collapsed", page.id));
+                let is_collapsed = ui
+                    .ctx()
+                    .data_mut(|d| d.get_persisted::<bool>(collapse_id).or_else(|| d.get_temp::<bool>(collapse_id)))
+                    .unwrap_or(false);
+                let toggle_label = if is_collapsed {
+                    "👁  Özellikleri göster"
+                } else {
+                    "👁  Özellikleri gizle"
+                };
+                if ui.button(toggle_label).clicked() {
+                    let new_state = !is_collapsed;
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(collapse_id, new_state);
+                        d.insert_persisted(collapse_id, new_state);
+                    });
+                    ui.close_menu();
+                }
+                if ui.button("🔍  Sayfada ara\tCtrl + F").clicked() {
+                    intents.push(Intent::FindInPage);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -318,6 +356,16 @@ fn breadcrumb(
                     ui.close_menu();
                 }
             });
+            ui.menu_button(
+                RichText::new("🕒")
+                    .font(FontId::proportional(12.5))
+                    .color(if history.is_empty() { palette.muted } else { palette.accent }),
+                |ui| {
+                    show_history_menu(ui, page.id, history, palette, intents);
+                },
+            )
+            .response
+            .on_hover_text("Değişiklik Geçmişi (Son 10)");
             if quiet_button(
                 ui,
                 if page.full_width { "⤡" } else { "⤢" },
@@ -384,21 +432,89 @@ fn title(
     widget_scope: Option<u64>,
     palette: Palette,
     intents: &mut Vec<Intent>,
+    find_query: Option<&str>,
+    is_find_title_active: bool,
+    history: &[crate::domain::model::PageHistorySummary],
 ) -> bool {
     let mut changed = false;
+
+    let title_hover_id = egui::Id::new(("title-hover-area", page.id, widget_scope));
+    let was_hovered = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(title_hover_id))
+        .unwrap_or_default();
+    let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+    let title_zone = egui::Rect::from_min_size(
+        egui::pos2(inset, ui.cursor().min.y),
+        egui::vec2(document_width, 76.0),
+    );
+    let is_pointer_over = pointer_pos.map_or(false, |pos| title_zone.contains(pos));
+    let show_add_button = page.icon.is_empty() && (is_pointer_over || was_hovered);
+
+    let mut add_button_hovered = false;
+    if page.icon.is_empty() {
+        if show_add_button {
+            ui.horizontal(|ui| {
+                ui.add_space(inset);
+                let btn_resp = ui.scope(|ui| {
+                    if let Some(new_icon) = crate::ui::add_icon_picker_button(
+                        ui,
+                        ("add-icon-btn", page.id, widget_scope),
+                        palette,
+                    ) {
+                        page.icon = new_icon;
+                        changed = true;
+                    }
+                });
+                if btn_resp.response.hovered() {
+                    add_button_hovered = true;
+                }
+            });
+        } else {
+            ui.add_space(26.0);
+        }
+    }
+
+    let title_w = if page.icon.is_empty() {
+        document_width
+    } else {
+        document_width - 42.0
+    };
+
+    let mut title_resp_hovered = false;
     ui.horizontal(|ui| {
         ui.add_space(inset);
-        changed = identity(ui, page, palette);
-        ui.add_space(4.0);
-        let title_resp = ui.add_sized(
-            [document_width - 42.0, 51.0],
-            egui::TextEdit::singleline(&mut page.title)
-                .id(title_widget_id(page.id, widget_scope))
-                .font(FontId::proportional(34.0))
-                .frame(false)
-                .hint_text(UNTITLED)
-                .margin(egui::Margin::ZERO),
-        );
+        if !page.icon.is_empty() {
+            changed |= identity(ui, page, palette);
+            ui.add_space(4.0);
+        }
+        let find_clean = find_query.map(|q| q.trim()).unwrap_or("");
+        let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
+            if !find_clean.is_empty() {
+                block::layout_title_with_find(
+                    ui,
+                    text,
+                    wrap_width,
+                    FontId::proportional(34.0),
+                    palette.text,
+                    find_clean,
+                    is_find_title_active,
+                )
+            } else {
+                let font = FontId::proportional(34.0);
+                let job = egui::text::LayoutJob::simple(text.to_string(), font, palette.text, wrap_width);
+                ui.fonts(|f| f.layout_job(job))
+            }
+        };
+        let title_edit = egui::TextEdit::singleline(&mut page.title)
+            .id(title_widget_id(page.id, widget_scope))
+            .font(FontId::proportional(34.0))
+            .frame(false)
+            .hint_text(UNTITLED)
+            .margin(egui::Margin::ZERO)
+            .layouter(&mut layouter);
+        let title_resp = ui.add_sized([title_w, 51.0], title_edit);
+        title_resp_hovered = title_resp.hovered();
         changed |= title_resp.changed();
         if *title_focus {
             title_resp.request_focus();
@@ -414,7 +530,16 @@ fn title(
             );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&page.icon).size(16.0));
+                if let Some(new_icon) = crate::ui::icon_picker_button(
+                    ui,
+                    ("ctx-icon-picker", page.id, widget_scope),
+                    if page.icon.is_empty() { "☺" } else { &page.icon },
+                    16.0,
+                    Some(palette.accent),
+                ) {
+                    page.icon = new_icon;
+                    changed = true;
+                }
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut page.title)
                         .hint_text(UNTITLED)
@@ -433,6 +558,31 @@ fn title(
                 changed = true;
                 ui.close_menu();
             }
+            let collapse_id = egui::Id::new(("page-properties-collapsed", page.id));
+            let is_collapsed = ui
+                .ctx()
+                .data_mut(|d| d.get_persisted::<bool>(collapse_id).or_else(|| d.get_temp::<bool>(collapse_id)))
+                .unwrap_or(false);
+            let toggle_label = if is_collapsed {
+                "👁  Özellikleri göster"
+            } else {
+                "👁  Özellikleri gizle"
+            };
+            if ui.button(toggle_label).clicked() {
+                let new_state = !is_collapsed;
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(collapse_id, new_state);
+                    d.insert_persisted(collapse_id, new_state);
+                });
+                ui.close_menu();
+            }
+            if ui.button("🔍  Sayfada ara\tCtrl + F").clicked() {
+                intents.push(Intent::FindInPage);
+                ui.close_menu();
+            }
+            ui.menu_button("🕒  Değişiklik Geçmişi", |ui| {
+                show_history_menu(ui, page.id, history, palette, intents);
+            });
             ui.separator();
             ui.menu_button("+  Add property", |ui| {
                 for (kind, label) in crate::domain::model::PROPERTY_TYPES {
@@ -520,7 +670,15 @@ fn title(
                 intents.push(Intent::Action(Action::Duplicate(page.id)));
                 ui.close_menu();
             }
+            ui.separator();
+            if ui.button("🎨 Temayı düzenle").clicked() {
+                intents.push(Intent::OpenSettingsTheme(ThemeSection::Header));
+                ui.close_menu();
+            }
         });
+    });
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(title_hover_id, title_resp_hovered || add_button_hovered);
     });
     changed
 }
@@ -556,4 +714,117 @@ fn cover(ui: &Ui, rect: Rect, color: Color32) {
         FontId::proportional(22.0),
         Color32::from_rgb(60, 80, 48),
     );
+}
+
+fn format_history_timestamp(timestamp: i64) -> String {
+    let Some(date_time) = chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|utc| utc.with_timezone(&chrono::Local))
+    else {
+        return "—".to_owned();
+    };
+    let now = chrono::Local::now();
+    let diff = now.signed_duration_since(date_time);
+    if diff.num_seconds() < 60 && diff.num_seconds() >= 0 {
+        return "Az önce".to_owned();
+    }
+    if diff.num_minutes() < 60 && diff.num_minutes() > 0 {
+        return format!("{} dk önce", diff.num_minutes());
+    }
+    use chrono::{Datelike, Timelike};
+    if date_time.date_naive() == now.date_naive() {
+        format!("{:02}:{:02}", date_time.hour(), date_time.minute())
+    } else {
+        format!(
+            "{}.{:02} {:02}:{:02}",
+            date_time.day(),
+            date_time.month(),
+            date_time.hour(),
+            date_time.minute()
+        )
+    }
+}
+
+pub(super) fn show_history_menu(
+    ui: &mut Ui,
+    page_id: crate::domain::model::PageId,
+    history: &[crate::domain::model::PageHistorySummary],
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    ui.set_min_width(300.0);
+    ui.label(
+        RichText::new("🕒  DEĞİŞİKLİK GEÇMİŞİ")
+            .font(FontId::proportional(11.0))
+            .strong()
+            .color(palette.muted),
+    );
+    ui.label(
+        RichText::new("Son 10 değişiklik (Ctrl + Z / Ctrl + Shift + Z)")
+            .font(FontId::proportional(10.0))
+            .color(palette.muted),
+    );
+    ui.separator();
+
+    if history.is_empty() {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new("Henüz kayıtlı bir değişiklik geçmişi bulunmuyor.")
+                .font(FontId::proportional(12.0))
+                .color(palette.muted),
+        );
+        ui.add_space(6.0);
+    } else {
+        egui::ScrollArea::vertical()
+            .max_height(340.0)
+            .show(ui, |ui| {
+                for (idx, entry) in history.iter().enumerate() {
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        let icon = match entry.description.as_str() {
+                            s if s.contains("taşındı") => "↕",
+                            s if s.contains("silindi") => "🗑",
+                            s if s.contains("eklendi") => "➕",
+                            s if s.contains("türü") => "🔄",
+                            s if s.contains("Görev") => "☑",
+                            s if s.contains("Başlık") => "🏷",
+                            s if s.contains("Özellik") => "⚙",
+                            _ => "📝",
+                        };
+                        ui.label(
+                            RichText::new(icon)
+                                .font(FontId::proportional(13.0))
+                                .color(palette.accent),
+                        );
+                        ui.vertical(|ui| {
+                            let title_text = if idx == 0 {
+                                format!("{} (Son)", entry.description)
+                            } else {
+                                entry.description.clone()
+                            };
+                            ui.label(RichText::new(title_text).strong().font(FontId::proportional(12.0)));
+                            ui.label(
+                                RichText::new(format_history_timestamp(entry.timestamp))
+                                    .font(FontId::proportional(10.5))
+                                    .color(palette.muted),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let btn = egui::Button::new(
+                                RichText::new("Geri yükle")
+                                    .font(FontId::proportional(11.0))
+                                    .color(palette.accent),
+                            );
+                            if ui.add(btn).clicked() {
+                                intents.push(Intent::Action(Action::RestorePageHistory {
+                                    page: page_id,
+                                    entry_id: entry.id,
+                                }));
+                                ui.close_menu();
+                            }
+                        });
+                    });
+                    ui.separator();
+                }
+            });
+    }
 }

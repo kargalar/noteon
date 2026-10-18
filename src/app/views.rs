@@ -867,6 +867,12 @@ impl NoteonApp {
                     .page(*parent)
                     .is_some_and(|page| page.is_database)
             });
+        if let Some(database_id) = record_database_id
+            && !self.databases.contains_key(&database_id)
+            && !self.database_loading.contains(&database_id)
+        {
+            intents.push(Intent::LoadDatabase(database_id));
+        }
 
         let frame = egui::Frame::window(&context.style())
             .fill(palette.background)
@@ -1403,22 +1409,20 @@ impl TabViewer for PageTabViewer<'_> {
             self.database_lru.push_back(page_id);
             if let Some(database) = self.databases.get_mut(&page_id) {
                 let page_icon = self.sidebar.page(page_id).map(|p| p.icon.clone());
-                ui.add_enabled_ui(!self.busy, |ui| {
-                    crate::ui::database::show(
-                        ui,
-                        database,
-                        page_icon.as_deref(),
-                        &breadcrumbs,
-                        self.busy,
-                        self.palette,
-                        self.intents,
-                        &mut crate::ui::database::Drafts {
-                            properties: self.property_drafts,
-                            titles: self.title_drafts,
-                            values: self.value_drafts,
-                        },
-                    );
-                });
+                crate::ui::database::show(
+                    ui,
+                    database,
+                    page_icon.as_deref(),
+                    &breadcrumbs,
+                    self.busy,
+                    self.palette,
+                    self.intents,
+                    &mut crate::ui::database::Drafts {
+                        properties: self.property_drafts,
+                        titles: self.title_drafts,
+                        values: self.value_drafts,
+                    },
+                );
             } else if self.database_loading.contains(&page_id) {
                 ui.vertical_centered(|ui| {
                     ui.add_space(130.0);
@@ -1437,25 +1441,23 @@ impl TabViewer for PageTabViewer<'_> {
                 .as_ref()
                 .is_some_and(|document| document.page.id == page_id)
         {
-            ui.add_enabled_ui(!self.busy, |ui| {
-                self.intents
-                    .extend(editor.show_with_database_context_in_tab(
-                        ui,
-                        self.palette,
-                        &breadcrumbs,
-                        target_instance,
-                        &mut crate::ui::editor::DatabaseContext {
-                            record_database_id,
-                            databases: self.databases,
-                            loading: self.database_loading,
-                            property_drafts: self.property_drafts,
-                            title_drafts: self.title_drafts,
-                            value_drafts: self.value_drafts,
-                            visible: &mut self.visible_databases,
-                            sidebar: Some(self.sidebar),
-                        },
-                    ));
-            });
+            self.intents
+                .extend(editor.show_with_database_context_in_tab(
+                    ui,
+                    self.palette,
+                    &breadcrumbs,
+                    target_instance,
+                    &mut crate::ui::editor::DatabaseContext {
+                        record_database_id,
+                        databases: self.databases,
+                        loading: self.database_loading,
+                        property_drafts: self.property_drafts,
+                        title_drafts: self.title_drafts,
+                        value_drafts: self.value_drafts,
+                        visible: &mut self.visible_databases,
+                        sidebar: Some(self.sidebar),
+                    },
+                ));
         } else if self
             .pending_documents
             .values()

@@ -448,7 +448,11 @@ impl NoteonApp {
     }
 
     fn action(&mut self, action: Action) {
-        if self.busy || !self.ready || self.closing {
+        self.action_in_batch(action, false);
+    }
+
+    fn action_in_batch(&mut self, action: Action, allow_if_busy: bool) {
+        if (!allow_if_busy && self.busy) || !self.ready || self.closing {
             return;
         }
         if self.saves.failed {
@@ -610,7 +614,28 @@ impl NoteonApp {
         self.database_loading.remove(&page);
     }
 
+    pub(super) fn refresh_database(&mut self, page: PageId) {
+        if let Some(database) = self.databases.get(&page) {
+            for row in &database.rows {
+                self.database_title_drafts.remove(&row.page.id);
+                for property in &database.properties {
+                    self.database_value_drafts
+                        .remove(&(row.page.id, property.id));
+                }
+            }
+            for property in &database.properties {
+                self.database_property_drafts.remove(&property.id);
+            }
+            if self.database_loading.insert(page) && !self.send(Request::Database(page)) {
+                self.database_loading.remove(&page);
+            }
+        } else {
+            self.database_loading.remove(&page);
+        }
+    }
+
     fn handle_intents(&mut self, intents: Vec<Intent>, context: &egui::Context) {
+        let mut dispatched_action_in_batch = false;
         // Editing and Enter can occur in the same frame: persist the edited prefix first.
         let (edits, actions): (Vec<_>, Vec<_>) = intents
             .into_iter()
@@ -680,7 +705,8 @@ impl NoteonApp {
                             }
                         }
                     }
-                    self.action(action);
+                    self.action_in_batch(action, dispatched_action_in_batch);
+                    dispatched_action_in_batch = true;
                 }
                 Intent::BlockChanged(block) => {
                     if block.position == 0

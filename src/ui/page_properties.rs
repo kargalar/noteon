@@ -323,12 +323,11 @@ pub fn show(
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let toggle_label = if collapsed { "👁 Göster" } else { "✕ Gizle" };
                         let toggle_btn = ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new(toggle_label)
-                                        .font(FontId::proportional(11.0))
+                                    RichText::new("👁")
+                                        .font(FontId::proportional(12.5))
                                         .color(palette.muted),
                                 )
                                 .frame(false),
@@ -345,30 +344,6 @@ pub fn show(
                                 d.insert_temp(collapse_id, collapsed);
                                 d.insert_persisted(collapse_id, collapsed);
                             });
-                        }
-
-                        if let Some(ref record_ctx) = record_context {
-                            ui.menu_button(
-                                RichText::new("+ Property")
-                                    .font(FontId::proportional(12.0))
-                                    .color(palette.muted),
-                                |ui| {
-                                    crate::ui::database::add_property_menu(ui, record_ctx.data, intents);
-                                },
-                            )
-                            .response
-                            .on_hover_text("Add property to database");
-                        } else {
-                            ui.menu_button(
-                                RichText::new("+ Property")
-                                    .font(FontId::proportional(12.0))
-                                    .color(palette.muted),
-                                |ui| {
-                                    show_add_property_panel(ui, page, scope_id, properties, busy, palette, intents);
-                                },
-                            )
-                            .response
-                            .on_hover_text("Add property to page");
                         }
                     });
                 });
@@ -610,49 +585,77 @@ fn show_section_context_menu(
 }
 
 fn show_created_row(ui: &mut Ui, created_at: i64, section_width: f32, palette: Palette) {
+    let created_row_id = ui.id().with("created-row-hover");
+    let was_hovered = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(created_row_id))
+        .unwrap_or(false);
+    let bg_fill = if was_hovered {
+        blend_color(palette.background, palette.hover, 0.55)
+    } else {
+        Color32::TRANSPARENT
+    };
+    let value_width = (section_width - LABEL_COLUMN_WIDTH - 28.0).max(120.0);
+
     let row_resp = egui::Frame::new()
-        .corner_radius(5)
-        .inner_margin(egui::Margin::symmetric(6, 3))
+        .fill(Color32::TRANSPARENT)
+        .inner_margin(egui::Margin::symmetric(0, 1))
         .show(ui, |ui| {
             ui.set_min_width(section_width - 12.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                ui.allocate_ui_with_layout(
-                    vec2(LABEL_COLUMN_WIDTH, 24.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.label(
-                            RichText::new("🕒")
-                                .font(FontId::proportional(12.5))
-                                .color(palette.muted),
+
+                // Left container: Created label
+                egui::Frame::new()
+                    .fill(bg_fill)
+                    .corner_radius(5)
+                    .inner_margin(egui::Margin::symmetric(6, 3))
+                    .show(ui, |ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2(LABEL_COLUMN_WIDTH - 12.0, 24.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    RichText::new("🕒")
+                                        .font(FontId::proportional(12.5))
+                                        .color(palette.muted),
+                                );
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("Created")
+                                        .font(FontId::proportional(13.0))
+                                        .color(palette.muted),
+                                );
+                            },
                         );
-                        ui.add_space(6.0);
-                        ui.label(
-                            RichText::new("Created")
-                                .font(FontId::proportional(13.0))
-                                .color(palette.muted),
+                    });
+
+                // Right container: Created date
+                egui::Frame::new()
+                    .fill(bg_fill)
+                    .corner_radius(5)
+                    .inner_margin(egui::Margin::symmetric(6, 3))
+                    .show(ui, |ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2(value_width - 12.0, 24.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    RichText::new(crate::ui::database::format_date(created_at))
+                                        .font(FontId::proportional(13.0))
+                                        .color(palette.muted),
+                                );
+                            },
                         );
-                    },
-                );
-                ui.label(
-                    RichText::new(crate::ui::database::format_date(created_at))
-                        .font(FontId::proportional(13.0))
-                        .color(palette.muted),
-                );
+                    });
             });
         });
-    if row_resp.response.hovered() {
-        ui.painter().rect_filled(
-            row_resp.response.rect,
-            5.0,
-            Color32::from_rgba_unmultiplied(
-                palette.hover.r(),
-                palette.hover.g(),
-                palette.hover.b(),
-                70,
-            ),
-        );
+
+    let hovered_now = ui.rect_contains_pointer(row_resp.response.rect);
+    if hovered_now != was_hovered {
+        ui.ctx().request_repaint();
     }
+    ui.ctx().data_mut(|d| d.insert_temp(created_row_id, hovered_now));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -680,46 +683,67 @@ fn show_property_row(
         Color32::TRANSPARENT
     };
 
+    let value_width = (section_width - LABEL_COLUMN_WIDTH - 28.0).max(120.0);
+
     let frame_resp = egui::Frame::new()
-        .fill(bg_fill)
-        .corner_radius(5)
-        .inner_margin(egui::Margin::symmetric(6, 3))
+        .fill(Color32::TRANSPARENT)
+        .inner_margin(egui::Margin::symmetric(0, 1))
         .show(ui, |ui| {
             ui.set_min_width(section_width - 12.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+            ui.push_id(("page-prop-row-scope", property.id), |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
 
-                // Left column: Property Header Button (supports both left-click and right-click to open edit panel)
-                show_property_header_button(
-                    ui, page, property, index, total, busy, palette, is_row_hovered, intents,
-                );
+                    // Left container: Property Header Button
+                    egui::Frame::new()
+                        .fill(bg_fill)
+                        .corner_radius(5)
+                        .inner_margin(egui::Margin::symmetric(6, 3))
+                        .show(ui, |ui| {
+                            show_property_header_button(
+                                ui,
+                                page,
+                                property,
+                                index,
+                                total,
+                                busy,
+                                palette,
+                                is_row_hovered,
+                                intents,
+                            );
+                        });
 
-                // Right column: Property Value Editor
-                let value_width = (section_width - LABEL_COLUMN_WIDTH - 32.0).max(120.0);
-                ui.allocate_ui_with_layout(
-                    vec2(value_width, ROW_MIN_HEIGHT - 6.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        property_value_editor(
-                            ui,
-                            page,
-                            property,
-                            value_width,
-                            busy,
-                            palette,
-                            intents,
-                        );
-                    },
-                );
+                    // Right container: Property Value Editor
+                    egui::Frame::new()
+                        .fill(bg_fill)
+                        .corner_radius(5)
+                        .inner_margin(egui::Margin::symmetric(6, 3))
+                        .show(ui, |ui| {
+                            ui.allocate_ui_with_layout(
+                                vec2(value_width - 12.0, ROW_MIN_HEIGHT - 6.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    property_value_editor(
+                                        ui,
+                                        page,
+                                        property,
+                                        value_width - 12.0,
+                                        busy,
+                                        palette,
+                                        intents,
+                                    );
+                                },
+                            );
+                        });
+                });
             });
         });
 
     let hovered_now = ui.rect_contains_pointer(frame_resp.response.rect);
+    if hovered_now != is_row_hovered {
+        ui.ctx().request_repaint();
+    }
     ui.ctx().data_mut(|d| d.insert_temp(row_id, hovered_now));
-
-    frame_resp.response.context_menu(|ui| {
-        show_property_edit_panel(ui, page, property, index, total, busy, palette, intents);
-    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -735,21 +759,12 @@ fn show_property_header_button(
     intents: &mut Vec<Intent>,
 ) {
     let icon = property_icon(&property.kind);
-    let label_text = if row_hovered {
-        format!("{icon}   {}", property.name)
-    } else {
-        format!("{icon}   {}", property.name)
-    };
+    let label_text = format!("{icon}   {}", property.name);
 
     ui.allocate_ui_with_layout(
-        vec2(LABEL_COLUMN_WIDTH, 24.0),
+        vec2(LABEL_COLUMN_WIDTH - 12.0, 24.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            let btn_width = if row_hovered {
-                LABEL_COLUMN_WIDTH - 26.0
-            } else {
-                LABEL_COLUMN_WIDTH
-            };
             ui.scope(|ui| {
                 ui.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
                 ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
@@ -783,40 +798,6 @@ fn show_property_header_button(
                         );
                     });
             });
-
-            let dots_id = ui.id().with(("prop-dots-open", page, property.id));
-            let was_dots_open = ui
-                .ctx()
-                .data(|d| d.get_temp::<bool>(dots_id))
-                .unwrap_or(false);
-            if row_hovered || was_dots_open {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let dots_resp = ui.menu_button(
-                        RichText::new("⋯")
-                            .font(FontId::proportional(13.0))
-                            .color(palette.muted),
-                        |ui| {
-                            show_property_edit_panel(
-                                ui, page, property, index, total, busy, palette, intents,
-                            );
-                        },
-                    );
-                    let mut is_dots_open = dots_resp.inner.is_some();
-                    let ctx_resp = dots_resp
-                        .response
-                        .on_hover_text("Edit property")
-                        .context_menu(|ui| {
-                            show_property_edit_panel(
-                                ui, page, property, index, total, busy, palette, intents,
-                            );
-                        });
-                    if ctx_resp.is_some() {
-                        is_dots_open = true;
-                    }
-                    ui.ctx().data_mut(|d| d.insert_temp(dots_id, is_dots_open));
-                });
-            }
-            let _ = btn_width;
         },
     );
 }
@@ -929,88 +910,106 @@ pub fn show_property_edit_panel(
                 .max_height(175.0)
                 .show(ui, |ui| {
                     for (idx, opt) in property.options.iter().enumerate() {
-                        let opt_id = ("page-prop-opt-edit", page, property.id, idx, &opt.name);
-                        let mut edited_opt = read_draft(ui, opt_id, &opt.name);
-                        let opt_color = resolve_option_color(opt.color.as_deref());
-                        let dot_color = option_base_color(palette, &property.kind, &opt.name, opt_color);
-                        ui.horizontal(|ui| {
-                            ui.menu_button(
-                                RichText::new("●")
-                                    .font(FontId::proportional(14.0))
-                                    .color(dot_color),
-                                |ui| {
-                                    show_color_palette_grid(ui, palette, opt_color, |new_color| {
-                                        let mut reordered = property.options.clone();
-                                        if let Some(target) = reordered.get_mut(idx) {
-                                            target.color = new_color;
-                                            intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                                                page,
-                                                property: property.id,
-                                                options: reordered,
-                                            }));
-                                        }
-                                    });
-                                },
-                            )
-                            .response
-                            .on_hover_text("Change color");
+                        ui.push_id(("page-prop-opt-row", idx), |ui| {
+                            let opt_id = ("page-prop-opt-edit", page, property.id, idx, &opt.name);
+                            let mut edited_opt = read_draft(ui, opt_id, &opt.name);
+                            let opt_color = resolve_option_color(opt.color.as_deref());
+                            let dot_color =
+                                option_base_color(palette, &property.kind, &opt.name, opt_color);
+                            ui.horizontal(|ui| {
+                                ui.menu_button(
+                                    RichText::new("●")
+                                        .font(FontId::proportional(14.0))
+                                        .color(dot_color),
+                                    |ui| {
+                                        show_color_palette_grid(
+                                            ui,
+                                            palette,
+                                            opt_color,
+                                            |new_color| {
+                                                let mut reordered = property.options.clone();
+                                                if let Some(target) = reordered.get_mut(idx) {
+                                                    target.color = new_color;
+                                                    intents.push(Intent::Action(
+                                                        Action::SetPagePropertyOptions {
+                                                            page,
+                                                            property: property.id,
+                                                            options: reordered,
+                                                        },
+                                                    ));
+                                                }
+                                            },
+                                        );
+                                    },
+                                )
+                                .response
+                                .on_hover_text("Change color");
 
-                            let resp = ui.add_enabled(
-                                !busy,
-                                egui::TextEdit::singleline(&mut edited_opt).desired_width(135.0),
-                            );
-                            save_draft(ui, opt_id, &edited_opt, resp.changed());
-                            let commit = resp.lost_focus()
-                                || (resp.has_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                            if commit && !edited_opt.trim().is_empty() && edited_opt.trim() != opt.name {
-                                intents.push(Intent::Action(Action::RenamePagePropertyOption {
-                                    page,
-                                    property: property.id,
-                                    old_option: opt.name.clone(),
-                                    new_option: edited_opt.trim().to_owned(),
-                                }));
-                                clear_draft(ui, opt_id);
-                            }
-                            if idx > 0
-                                && ui
-                                    .small_button("↑")
-                                    .on_hover_text("Move option up")
+                                let resp = ui.add_enabled(
+                                    !busy,
+                                    egui::TextEdit::singleline(&mut edited_opt)
+                                        .desired_width(135.0),
+                                );
+                                save_draft(ui, opt_id, &edited_opt, resp.changed());
+                                let commit = resp.lost_focus()
+                                    || (resp.has_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                                if commit
+                                    && !edited_opt.trim().is_empty()
+                                    && edited_opt.trim() != opt.name
+                                {
+                                    intents.push(Intent::Action(
+                                        Action::RenamePagePropertyOption {
+                                            page,
+                                            property: property.id,
+                                            old_option: opt.name.clone(),
+                                            new_option: edited_opt.trim().to_owned(),
+                                        },
+                                    ));
+                                    clear_draft(ui, opt_id);
+                                }
+                                if idx > 0
+                                    && ui
+                                        .small_button("↑")
+                                        .on_hover_text("Move option up")
+                                        .clicked()
+                                {
+                                    let mut reordered = property.options.clone();
+                                    reordered.swap(idx, idx - 1);
+                                    intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                        page,
+                                        property: property.id,
+                                        options: reordered,
+                                    }));
+                                }
+                                if idx + 1 < property.options.len()
+                                    && ui
+                                        .small_button("↓")
+                                        .on_hover_text("Move option down")
+                                        .clicked()
+                                {
+                                    let mut reordered = property.options.clone();
+                                    reordered.swap(idx, idx + 1);
+                                    intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                        page,
+                                        property: property.id,
+                                        options: reordered,
+                                    }));
+                                }
+                                if ui
+                                    .small_button(RichText::new("✕").color(palette.danger))
+                                    .on_hover_text("Delete option")
                                     .clicked()
-                            {
-                                let mut reordered = property.options.clone();
-                                reordered.swap(idx, idx - 1);
-                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                                    page,
-                                    property: property.id,
-                                    options: reordered,
-                                }));
-                            }
-                            if idx + 1 < property.options.len()
-                                && ui
-                                    .small_button("↓")
-                                    .on_hover_text("Move option down")
-                                    .clicked()
-                            {
-                                let mut reordered = property.options.clone();
-                                reordered.swap(idx, idx + 1);
-                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                                    page,
-                                    property: property.id,
-                                    options: reordered,
-                                }));
-                            }
-                            if ui
-                                .small_button(RichText::new("✕").color(palette.danger))
-                                .on_hover_text("Delete option")
-                                .clicked()
-                            {
-                                intents.push(Intent::Action(Action::RemovePagePropertyOption {
-                                    page,
-                                    property: property.id,
-                                    option: opt.name.clone(),
-                                }));
-                            }
+                                {
+                                    intents.push(Intent::Action(
+                                        Action::RemovePagePropertyOption {
+                                            page,
+                                            property: property.id,
+                                            option: opt.name.clone(),
+                                        },
+                                    ));
+                                }
+                            });
                         });
                     }
                 });
@@ -1157,7 +1156,7 @@ fn show_single_option_editor(
     ui: &mut Ui,
     page: PageId,
     property: &PageProperty,
-    busy: bool,
+    _busy: bool,
     palette: Palette,
     intents: &mut Vec<Intent>,
 ) {
@@ -1185,27 +1184,28 @@ fn show_single_option_editor(
         } else {
             Stroke::new(1.0, pill_border)
         };
-        ui.add_enabled_ui(!busy, |ui| {
-            ui.menu_button(
-                RichText::new(display_label)
-                    .font(FontId::proportional(12.5))
-                    .color(pill_text),
-                |ui| {
-                    ui.set_min_width(205.0);
-                    if !is_empty
-                        && ui
-                            .selectable_label(false, RichText::new("—  Clear").color(palette.muted))
-                            .clicked()
-                    {
-                        set_value(intents, page, property.id, String::new());
-                        ui.close_menu();
-                    }
-                    for option in &property.options {
+        ui.menu_button(
+            RichText::new(display_label)
+                .font(FontId::proportional(12.5))
+                .color(pill_text),
+            |ui| {
+                ui.set_min_width(215.0);
+                if !is_empty
+                    && ui
+                        .selectable_label(false, RichText::new("—  Clear").color(palette.muted))
+                        .clicked()
+                {
+                    set_value(intents, page, property.id, String::new());
+                    ui.close_menu();
+                }
+                for (idx, option) in property.options.iter().enumerate() {
+                    ui.push_id(("single-opt-item", idx), |ui| {
                         let selected = property.value == option.name;
                         let opt_color = resolve_option_color(option.color.as_deref());
                         let (_, _, opt_text_col) =
                             option_pill_colors(palette, &property.kind, &option.name, opt_color);
-                        let dot_color = option_base_color(palette, &property.kind, &option.name, opt_color);
+                        let dot_color =
+                            option_base_color(palette, &property.kind, &option.name, opt_color);
                         ui.horizontal(|ui| {
                             ui.menu_button(
                                 RichText::new("●")
@@ -1214,13 +1214,17 @@ fn show_single_option_editor(
                                 |ui| {
                                     show_color_palette_grid(ui, palette, opt_color, |new_color| {
                                         let mut opts = property.options.clone();
-                                        if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
+                                        if let Some(target) =
+                                            opts.iter_mut().find(|o| o.name == option.name)
+                                        {
                                             target.color = new_color;
-                                            intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                                                page,
-                                                property: property.id,
-                                                options: opts,
-                                            }));
+                                            intents.push(Intent::Action(
+                                                Action::SetPagePropertyOptions {
+                                                    page,
+                                                    property: property.id,
+                                                    options: opts,
+                                                },
+                                            ));
                                         }
                                     });
                                 },
@@ -1243,39 +1247,64 @@ fn show_single_option_editor(
                                 set_value(intents, page, property.id, option.name.clone());
                                 ui.close_menu();
                             }
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("✕")
+                                                    .font(FontId::proportional(11.0))
+                                                    .color(palette.danger),
+                                            )
+                                            .frame(false),
+                                        )
+                                        .on_hover_text(format!("Delete '{}' option", option.name))
+                                        .clicked()
+                                    {
+                                        intents.push(Intent::Action(
+                                            Action::RemovePagePropertyOption {
+                                                page,
+                                                property: property.id,
+                                                option: option.name.clone(),
+                                            },
+                                        ));
+                                    }
+                                },
+                            );
                         });
-                    }
-                    ui.separator();
-                    let quick_id = ("page-prop-quick-opt", page, property.id);
-                    let mut new_opt = read_draft(ui, quick_id, "");
-                    ui.horizontal(|ui| {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut new_opt)
-                                .hint_text("Create option…")
-                                .desired_width(140.0),
-                        );
-                        save_draft(ui, quick_id, &new_opt, resp.changed());
-                        let enter =
-                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (enter || ui.small_button("+").clicked()) && !new_opt.trim().is_empty() {
-                            let trimmed = new_opt.trim().to_owned();
-                            let mut opts = property.options.clone();
-                            if !opts.iter().any(|o| o.name == trimmed) {
-                                opts.push(PropertyOption::new(&trimmed));
-                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                                    page,
-                                    property: property.id,
-                                    options: opts,
-                                }));
-                            }
-                            set_value(intents, page, property.id, trimmed);
-                            clear_draft(ui, quick_id);
-                            ui.close_menu();
-                        }
                     });
-                },
-            );
-        });
+                }
+                ui.separator();
+                let quick_id = ("page-prop-quick-opt", page, property.id);
+                let mut new_opt = read_draft(ui, quick_id, "");
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut new_opt)
+                            .hint_text("Create option…")
+                            .desired_width(140.0),
+                    );
+                    save_draft(ui, quick_id, &new_opt, resp.changed());
+                    let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (enter || ui.small_button("+").clicked()) && !new_opt.trim().is_empty() {
+                        let trimmed = new_opt.trim().to_owned();
+                        let mut opts = property.options.clone();
+                        if !opts.iter().any(|o| o.name == trimmed) {
+                            opts.push(PropertyOption::new(&trimmed));
+                            intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                page,
+                                property: property.id,
+                                options: opts,
+                            }));
+                        }
+                        set_value(intents, page, property.id, trimmed);
+                        clear_draft(ui, quick_id);
+                        ui.close_menu();
+                    }
+                });
+            },
+        );
     });
 }
 
@@ -1302,91 +1331,115 @@ fn show_multi_option_editor(
         ui.style_mut().visuals.widgets.active.bg_stroke = Stroke::NONE;
         ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
 
-        for item in &selected {
-            let item_color = resolve_option_color(property.option_color(item));
-            let (pill_bg, _pill_border, pill_text) =
-                option_pill_colors(palette, "multi-select", item, item_color);
-            let pill_btn = egui::Button::new(
-                RichText::new(format!("{item}  ✕"))
-                    .font(FontId::proportional(12.0))
-                    .color(pill_text),
-            )
-            .fill(pill_bg)
-            .stroke(Stroke::NONE)
-            .corner_radius(4);
+        for (idx, item) in selected.iter().enumerate() {
+            ui.push_id(("multi-pill", idx), |ui| {
+                let item_color = resolve_option_color(property.option_color(item));
+                let (pill_bg, _pill_border, pill_text) =
+                    option_pill_colors(palette, "multi-select", item, item_color);
+                let pill_btn = egui::Button::new(
+                    RichText::new(format!("{item}  ✕"))
+                        .font(FontId::proportional(12.0))
+                        .color(pill_text),
+                )
+                .fill(pill_bg)
+                .stroke(Stroke::NONE)
+                .corner_radius(4);
 
-            let resp = ui
-                .add_enabled(!busy, pill_btn)
-                .on_hover_text(format!("Click to remove '{item}' · Right-click to change color"));
-            if resp.clicked() {
-                let mut updated = selected.clone();
-                updated.retain(|candidate| candidate != item);
-                set_value(intents, page, property.id, updated.join("|"));
-            }
-            resp.context_menu(|ui| {
-                show_color_palette_grid(ui, palette, item_color, |new_color| {
-                    let mut opts = property.options.clone();
-                    if let Some(target) = opts.iter_mut().find(|o| o.name == *item) {
-                        target.color = new_color;
-                        intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                            page,
-                            property: property.id,
-                            options: opts,
-                        }));
-                    }
+                let resp = ui
+                    .add_enabled(!busy, pill_btn)
+                    .on_hover_text(format!(
+                        "Click to remove '{item}' · Right-click to change color"
+                    ));
+                if resp.clicked() {
+                    let mut updated = selected.clone();
+                    updated.retain(|candidate| candidate != item);
+                    set_value(intents, page, property.id, updated.join("|"));
+                }
+                resp.context_menu(|ui| {
+                    show_color_palette_grid(ui, palette, item_color, |new_color| {
+                        let mut opts = property.options.clone();
+                        if let Some(target) = opts.iter_mut().find(|o| o.name == *item) {
+                            target.color = new_color;
+                            intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                page,
+                                property: property.id,
+                                options: opts,
+                            }));
+                        }
+                    });
                 });
             });
         }
 
-        let trigger_label = if selected.is_empty() { "Empty" } else { "+" };
+        let trigger_label = if selected.is_empty() {
+            "+ Add option"
+        } else {
+            "+ Add"
+        };
         ui.scope(|ui| {
             ui.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
             ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
             ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-            ui.add_enabled_ui(!busy, |ui| {
-                ui.menu_button(
-                    RichText::new(trigger_label)
-                        .font(FontId::proportional(12.5))
-                        .color(palette.muted),
-                    |ui| {
-                        ui.set_min_width(205.0);
-                        if !selected.is_empty()
-                            && ui
-                                .button(RichText::new("Clear all").small().color(palette.muted))
-                                .clicked()
-                        {
-                            set_value(intents, page, property.id, String::new());
-                            ui.close_menu();
-                        }
-                        if property.options.is_empty() {
-                            ui.label(
-                                RichText::new("No options yet. Create one below.")
-                                    .small()
-                                    .italics()
-                                    .color(palette.muted),
-                            );
-                        }
-                        for option in &property.options {
+            ui.spacing_mut().button_padding = vec2(6.0, 2.0);
+            ui.menu_button(
+                RichText::new(trigger_label)
+                    .font(FontId::proportional(12.0))
+                    .color(palette.muted),
+                |ui| {
+                    ui.set_min_width(230.0);
+                    if !selected.is_empty()
+                        && ui
+                            .button(RichText::new("Clear all").small().color(palette.muted))
+                            .clicked()
+                    {
+                        set_value(intents, page, property.id, String::new());
+                        ui.close_menu();
+                    }
+                    if property.options.is_empty() {
+                        ui.label(
+                            RichText::new("No options yet. Create one below.")
+                                .small()
+                                .italics()
+                                .color(palette.muted),
+                        );
+                    }
+                    for (idx, option) in property.options.iter().enumerate() {
+                        ui.push_id(("multi-opt-item", idx), |ui| {
                             let mut checked = selected.contains(&option.name);
                             let opt_color = resolve_option_color(option.color.as_deref());
-                            let dot_color = option_base_color(palette, "multi-select", &option.name, opt_color);
+                            let dot_color = option_base_color(
+                                palette,
+                                "multi-select",
+                                &option.name,
+                                opt_color,
+                            );
                             ui.horizontal(|ui| {
                                 ui.menu_button(
                                     RichText::new("●")
                                         .font(FontId::proportional(13.0))
                                         .color(dot_color),
                                     |ui| {
-                                        show_color_palette_grid(ui, palette, opt_color, |new_color| {
-                                            let mut opts = property.options.clone();
-                                            if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
-                                                target.color = new_color;
-                                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                                                    page,
-                                                    property: property.id,
-                                                    options: opts,
-                                                }));
-                                            }
-                                        });
+                                        show_color_palette_grid(
+                                            ui,
+                                            palette,
+                                            opt_color,
+                                            |new_color| {
+                                                let mut opts = property.options.clone();
+                                                if let Some(target) = opts
+                                                    .iter_mut()
+                                                    .find(|o| o.name == option.name)
+                                                {
+                                                    target.color = new_color;
+                                                    intents.push(Intent::Action(
+                                                        Action::SetPagePropertyOptions {
+                                                            page,
+                                                            property: property.id,
+                                                            options: opts,
+                                                        },
+                                                    ));
+                                                }
+                                            },
+                                        );
                                     },
                                 )
                                 .response
@@ -1403,44 +1456,71 @@ fn show_multi_option_editor(
                                     }
                                     set_value(intents, page, property.id, updated.join("|"));
                                 }
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new("✕")
+                                                        .font(FontId::proportional(11.0))
+                                                        .color(palette.danger),
+                                                )
+                                                .frame(false),
+                                            )
+                                            .on_hover_text(format!(
+                                                "Delete '{}' option",
+                                                option.name
+                                            ))
+                                            .clicked()
+                                        {
+                                            intents.push(Intent::Action(
+                                                Action::RemovePagePropertyOption {
+                                                    page,
+                                                    property: property.id,
+                                                    option: option.name.clone(),
+                                                },
+                                            ));
+                                        }
+                                    },
+                                );
                             });
-                        }
-                        ui.separator();
-                        let quick_id = ("page-prop-multi-quick-opt", page, property.id);
-                        let mut new_opt = read_draft(ui, quick_id, "");
-                        ui.horizontal(|ui| {
-                            let resp = ui.add(
-                                egui::TextEdit::singleline(&mut new_opt)
-                                    .hint_text("Create option…")
-                                    .desired_width(145.0),
-                            );
-                            save_draft(ui, quick_id, &new_opt, resp.changed());
-                            let enter =
-                                resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if (enter || ui.small_button("+").clicked())
-                                && !new_opt.trim().is_empty()
-                            {
-                                let trimmed = new_opt.trim().to_owned();
-                                let mut opts = property.options.clone();
-                                if !opts.iter().any(|o| o.name == trimmed) {
-                                    opts.push(PropertyOption::new(&trimmed));
-                                    intents.push(Intent::Action(Action::SetPagePropertyOptions {
-                                        page,
-                                        property: property.id,
-                                        options: opts,
-                                    }));
-                                }
-                                let mut updated = selected.clone();
-                                if !updated.contains(&trimmed) {
-                                    updated.push(trimmed);
-                                }
-                                set_value(intents, page, property.id, updated.join("|"));
-                                clear_draft(ui, quick_id);
-                            }
                         });
-                    },
-                );
-            });
+                    }
+                    ui.separator();
+                    let quick_id = ("page-prop-multi-quick-opt", page, property.id);
+                    let mut new_opt = read_draft(ui, quick_id, "");
+                    ui.horizontal(|ui| {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut new_opt)
+                                .hint_text("Create option…")
+                                .desired_width(160.0),
+                        );
+                        save_draft(ui, quick_id, &new_opt, resp.changed());
+                        let enter =
+                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (enter || ui.small_button("+").clicked()) && !new_opt.trim().is_empty() {
+                            let trimmed = new_opt.trim().to_owned();
+                            let mut opts = property.options.clone();
+                            if !opts.iter().any(|o| o.name == trimmed) {
+                                opts.push(PropertyOption::new(&trimmed));
+                                intents.push(Intent::Action(Action::SetPagePropertyOptions {
+                                    page,
+                                    property: property.id,
+                                    options: opts,
+                                }));
+                            }
+                            let mut updated = selected.clone();
+                            if !updated.contains(&trimmed) {
+                                updated.push(trimmed);
+                            }
+                            set_value(intents, page, property.id, updated.join("|"));
+                            clear_draft(ui, quick_id);
+                        }
+                    });
+                },
+            );
         });
     });
 }
@@ -1449,86 +1529,54 @@ fn show_date_editor(
     ui: &mut Ui,
     page: PageId,
     property: &PageProperty,
-    busy: bool,
+    _busy: bool,
     palette: Palette,
     intents: &mut Vec<Intent>,
 ) {
-    let value_id = ("property-value", page, property.id);
-    let mut value = read_draft(ui, value_id, &property.value);
-    if !ui.ctx().memory(|m| m.has_focus(ui.id().with(value_id))) && value != property.value {
-        value = property.value.clone();
-    }
+    let has_date = !property.value.is_empty();
+    let pill_bg = if has_date {
+        palette.accent_soft
+    } else {
+        Color32::TRANSPARENT
+    };
+    let btn_label = if has_date {
+        format!("📅  {}", format_iso_date_pretty(&property.value))
+    } else {
+        "📅  Empty".to_owned()
+    };
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
+    ui.scope(|ui| {
+        ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_bg;
+        ui.style_mut().visuals.widgets.inactive.bg_fill = pill_bg;
+        ui.style_mut().visuals.widgets.inactive.bg_stroke = if has_date {
+            Stroke::new(1.0, palette.accent.linear_multiply(0.3))
+        } else {
+            Stroke::NONE
+        };
+        ui.spacing_mut().button_padding = vec2(8.0, 3.0);
 
-        // Calendar popup button
-        ui.scope(|ui| {
-            let has_date = !property.value.is_empty();
-            let pill_bg = if has_date {
-                palette.accent_soft
-            } else {
-                Color32::TRANSPARENT
-            };
-            ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_bg;
-            ui.style_mut().visuals.widgets.inactive.bg_fill = pill_bg;
-            ui.style_mut().visuals.widgets.inactive.bg_stroke = if has_date {
-                Stroke::new(1.0, palette.accent.linear_multiply(0.3))
-            } else {
-                Stroke::NONE
-            };
-            ui.spacing_mut().button_padding = vec2(6.0, 2.0);
-
-            let btn_label = if has_date {
-                format!("📅  {}", format_iso_date_pretty(&property.value))
-            } else {
-                "📅".to_owned()
-            };
-            ui.menu_button(
-                RichText::new(btn_label)
-                    .font(FontId::proportional(12.0))
-                    .color(if has_date {
-                        palette.text
-                    } else {
-                        palette.muted
-                    }),
-                |ui| {
-                    if let Some(chosen) = show_date_picker_popup(
-                        ui,
-                        ("page-prop-cal", page, property.id),
-                        &property.value,
-                        palette,
-                    ) {
-                        clear_draft(ui, value_id);
-                        set_value(intents, page, property.id, chosen);
-                        ui.close_menu();
-                    }
-                },
-            )
-            .response
-            .on_hover_text("Open calendar date picker");
-        });
-
-        // Direct inline YYYY-MM-DD editor
-        let response = ui.add_enabled(
-            !busy,
-            egui::TextEdit::singleline(&mut value)
-                .id(ui.id().with(value_id))
-                .hint_text(if property.value.is_empty() {
-                    "YYYY-MM-DD"
-                } else {
-                    ""
-                })
+        ui.menu_button(
+            RichText::new(btn_label)
                 .font(FontId::proportional(12.5))
-                .frame(false)
-                .margin(egui::Margin::symmetric(4, 2))
-                .desired_width(100.0),
-        );
-        save_draft(ui, value_id, &value, response.changed());
-        let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (response.lost_focus() || enter) && value.trim() != property.value {
-            set_value(intents, page, property.id, value.trim().to_owned());
-        }
+                .color(if has_date {
+                    palette.text
+                } else {
+                    palette.muted
+                }),
+            |ui| {
+                if let Some(chosen) = show_date_picker_popup(
+                    ui,
+                    ("page-prop-cal", page, property.id),
+                    &property.value,
+                    palette,
+                ) {
+                    set_value(intents, page, property.id, chosen);
+                    ui.close_menu();
+                }
+            },
+        )
+        .response
+        .on_hover_text("Click to select date from calendar");
     });
 }
 

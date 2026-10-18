@@ -165,7 +165,7 @@ impl NoteonApp {
                     self.database_lru
                         .retain(|id| self.databases.contains_key(id));
                     if let Some(database) = refresh_database {
-                        self.invalidate_database(database);
+                        self.refresh_database(database);
                     }
                     if let Some((page_id, properties)) = page_properties
                         && let Some(document) = self

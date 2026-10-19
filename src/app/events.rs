@@ -147,6 +147,7 @@ impl NoteonApp {
                     document,
                     page_properties,
                     focus,
+                    focus_at_end,
                     notice,
                     refresh_database,
                     created_record_document,
@@ -196,7 +197,7 @@ impl NoteonApp {
                         self.editors
                             .entry(id)
                             .or_default()
-                            .bind(document, self.generation, focus);
+                            .bind_with_focus(document, self.generation, focus, focus_at_end);
                         if let Some(hist) = history {
                             if let Some(editor) = self.editors.get_mut(&id) {
                                 editor.history = hist;

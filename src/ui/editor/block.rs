@@ -139,6 +139,7 @@ pub fn show(
     rect: Rect,
     block: &mut Block,
     focus: bool,
+    focus_at_end: bool,
     selected: bool,
     bulk_selection_active: bool,
     selected_blocks: &[BlockId],
@@ -441,6 +442,7 @@ pub fn show(
                 text_rect,
                 block,
                 text_focus,
+                focus_at_end,
                 palette,
                 widget_scope,
                 intents,
@@ -876,6 +878,7 @@ fn show_text(
     text_rect: Rect,
     block: &mut Block,
     focus: bool,
+    focus_at_end: bool,
     palette: Palette,
     widget_scope: Option<u64>,
     intents: &mut Vec<Intent>,
@@ -905,6 +908,45 @@ fn show_text(
                 .max_height(text_rect.height())
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    let editor_id = block_widget_id("block", block.id, widget_scope);
+                    let was_focused = ui.ctx().memory(|m| m.has_focus(editor_id));
+                    let was_empty = block.content.is_empty();
+
+                    let backspace_event = ui.input(|i| {
+                        i.events.iter().any(|e| match e {
+                            egui::Event::Key {
+                                key: Key::Backspace | Key::Delete,
+                                pressed: true,
+                                modifiers,
+                                ..
+                            } => modifiers.is_none(),
+                            _ => false,
+                        })
+                    });
+
+                    if (was_focused || focus) && was_empty && backspace_event {
+                        ui.input_mut(|i| {
+                            i.consume_key(Modifiers::NONE, Key::Backspace);
+                            i.consume_key(Modifiers::NONE, Key::Delete);
+                            i.events.retain(|e| !matches!(e, egui::Event::Key { key: Key::Backspace | Key::Delete, .. }));
+                        });
+                        if block.kind != BlockKind::Text {
+                            block.kind = BlockKind::Text;
+                            block.text_styles.clear();
+                            ui.ctx().memory_mut(|m| m.request_focus(editor_id));
+                            changed = true;
+                            return;
+                        } else {
+                            ui.ctx().memory_mut(|m| m.surrender_focus(editor_id));
+                            intents.push(Intent::Action(Action::DeleteBlock {
+                                page: block.page_id,
+                                block: block.id,
+                            }));
+                            changed = true;
+                            return;
+                        }
+                    }
+
                     let snapshot_id =
                         block_widget_id("text-content-snapshot", block.id, widget_scope);
                     let previous_content =
@@ -930,8 +972,25 @@ fn show_text(
                             find_active_match,
                         )
                     };
+                    let format_selection_id = block_widget_id("format-selection", block.id, widget_scope);
+                    let prev_edit_state = egui::text_edit::TextEditState::load(ui.ctx(), editor_id);
+                    let selected_char_range_before = prev_edit_state
+                        .as_ref()
+                        .and_then(|s| s.cursor.char_range())
+                        .map(|r| {
+                            let min = r.primary.index.min(r.secondary.index);
+                            let max = r.primary.index.max(r.secondary.index);
+                            min..max
+                        })
+                        .or_else(|| {
+                            ui.ctx()
+                                .data(|d| d.get_temp::<std::ops::Range<usize>>(format_selection_id))
+                        })
+                        .filter(|r| r.start < r.end);
+                    let initial_char_count = block.content.chars().count();
+
                     let mut output = egui::TextEdit::multiline(&mut block.content)
-                        .id(block_widget_id("block", block.id, widget_scope))
+                        .id(editor_id)
                         .font(base_font.clone())
                         .text_color(base_color)
                         .layouter(&mut layouter)
@@ -945,7 +1004,7 @@ fn show_text(
                         } else {
                             KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter)
                         })
-                        .lock_focus(block.kind == BlockKind::Code)
+                        .lock_focus(true)
                         .show(ui);
                     update_multi_click_selection(ui, &mut output);
                     if output.response.changed()
@@ -968,15 +1027,68 @@ fn show_text(
                     }
                     if focus {
                         output.response.request_focus();
-                        let cursor = egui::text::CCursor::new(0);
+                        let char_count = block.content.chars().count();
+                        let cursor = if focus_at_end {
+                            egui::text::CCursor::new(char_count)
+                        } else {
+                            egui::text::CCursor::new(0)
+                        };
                         output
                             .state
                             .cursor
                             .set_char_range(Some(egui::text::CCursorRange::one(cursor)));
                         output.state.store(ui.ctx(), output.response.id);
                     }
-                    focused = output.response.has_focus();
+                    focused = output.response.has_focus() || output.response.lost_focus();
                     changed |= output.response.changed();
+
+                    let current_selection = output
+                        .cursor_range
+                        .map(|range| range.as_sorted_char_range())
+                        .filter(|range| range.start < range.end);
+                    let selected_char_range = selected_char_range_before.or(current_selection);
+
+                    let content_was_cut = block.content.chars().count() < initial_char_count;
+                    let had_selection = selected_char_range.is_some() || content_was_cut;
+
+                    if focused {
+                        let cut_pressed = ui.input_mut(|i| {
+                            (i.consume_key(Modifiers::CTRL, Key::X) || i.consume_key(Modifiers::COMMAND, Key::X))
+                                || i.events.iter().any(|e| matches!(e, egui::Event::Cut))
+                        });
+                        if cut_pressed {
+                            ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Cut)));
+                            if had_selection {
+                                if !content_was_cut && let Some(range) = selected_char_range {
+                                    let text = &block.content;
+                                    let char_indices: Vec<(usize, char)> = text.char_indices().collect();
+                                    let start_byte = char_indices.get(range.start).map(|(i, _)| *i).unwrap_or(text.len());
+                                    let end_byte = char_indices.get(range.end).map(|(i, _)| *i).unwrap_or(text.len());
+                                    if start_byte < end_byte {
+                                        let cut_text = text[start_byte..end_byte].to_string();
+                                        ui.ctx().copy_text(cut_text);
+                                        block.content.replace_range(start_byte..end_byte, "");
+                                        if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), editor_id) {
+                                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(range.start))));
+                                            state.store(ui.ctx(), editor_id);
+                                        }
+                                        changed = true;
+                                    }
+                                }
+                            } else {
+                                if !block.content.is_empty() {
+                                    ui.ctx().copy_text(block.content.clone());
+                                }
+                                ui.ctx().memory_mut(|m| m.surrender_focus(editor_id));
+                                intents.push(Intent::Action(Action::DeleteBlock {
+                                    page: block.page_id,
+                                    block: block.id,
+                                }));
+                                changed = true;
+                                return;
+                            }
+                        }
+                    }
 
                     let detected_links = super::links::find_links_and_paths(&block.content);
                     if !detected_links.is_empty() {
@@ -1305,12 +1417,22 @@ fn show_text(
                         output.response.request_focus();
                         changed = true;
                     } else {
+                        let cursor_range = output
+                            .cursor_range
+                            .map(|range| range.as_sorted_char_range())
+                            .or_else(|| {
+                                egui::text_edit::TextEditState::load(ui.ctx(), editor_id)
+                                    .and_then(|state| state.cursor.char_range())
+                                    .map(|range| {
+                                        let min = range.primary.index.min(range.secondary.index);
+                                        let max = range.primary.index.max(range.secondary.index);
+                                        min..max
+                                    })
+                            });
                         changed |= handle_enter(
                             ui,
                             block,
-                            output
-                                .cursor_range
-                                .map(|range| range.as_sorted_char_range()),
+                            cursor_range,
                             focused,
                             intents,
                         );
@@ -2166,13 +2288,33 @@ fn handle_enter(
     focused: bool,
     intents: &mut Vec<Intent>,
 ) -> bool {
-    if !focused || block.kind == BlockKind::Code || !consume_plain_enter(ui) {
+    if !focused {
+        return false;
+    }
+    let is_code = block.kind == BlockKind::Code;
+    let enter_triggered = if is_code {
+        ui.input_mut(|input| {
+            input.consume_key(Modifiers::SHIFT, Key::Enter)
+                || input.consume_key(Modifiers::CTRL, Key::Enter)
+                || input.consume_key(Modifiers::COMMAND, Key::Enter)
+        })
+    } else {
+        consume_plain_enter(ui)
+    };
+    if !enter_triggered {
         return false;
     }
     if block.kind == BlockKind::Text
         && (block.content.trim_start().starts_with('↗') || parse_file_link(&block.content).is_some())
     {
-        return false;
+        intents.push(Intent::Action(Action::InsertBlock {
+            page: block.page_id,
+            position: block.position + 1,
+            kind: BlockKind::Text,
+            content: String::new(),
+            text_styles: Vec::new(),
+        }));
+        return true;
     }
     if let Some(kind) = BlockKind::shortcut(&block.content) {
         block.kind = kind;
@@ -2205,9 +2347,24 @@ fn handle_enter(
 
 fn consume_plain_enter(ui: &mut Ui) -> bool {
     ui.input_mut(|input| {
-        let plain_enter = input.events.iter().any(|event| matches!(event,
-            egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. } if modifiers.is_none()));
-        plain_enter && input.consume_key(Modifiers::NONE, Key::Enter)
+        let has_enter = input.events.iter().any(|event| match event {
+            egui::Event::Key {
+                key: Key::Enter,
+                pressed: true,
+                modifiers,
+                ..
+            } => modifiers.is_none(),
+            _ => false,
+        });
+        if has_enter {
+            input.consume_key(Modifiers::NONE, Key::Enter);
+            input.events.retain(|event| !matches!(event,
+                egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. } if modifiers.is_none()
+            ));
+            true
+        } else {
+            false
+        }
     })
 }
 

@@ -791,3 +791,126 @@ fn add_icon_menu_open_state_persists_when_open() {
     );
 }
 
+fn backspace() -> Event {
+    Event::Key {
+        key: Key::Backspace,
+        physical_key: Some(Key::Backspace),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+fn cut() -> Event {
+    Event::Key {
+        key: Key::X,
+        physical_key: Some(Key::X),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::CTRL,
+    }
+}
+
+#[test]
+fn empty_block_backspace_removes_block() {
+    let context = egui::Context::default();
+    let mut editor = editor("", 2);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    context.memory_mut(|memory| memory.request_focus(egui::Id::new(("block", 2_i64))));
+    let intents = frame(&context, &mut editor, vec![backspace()], Modifiers::NONE);
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::DeleteBlock { block, .. }) if *block == 2)),
+        "Expected DeleteBlock intent for empty block on backspace"
+    );
+}
+
+#[test]
+fn focused_block_ctrl_x_without_selection_cuts_entire_block() {
+    let context = egui::Context::default();
+    let mut editor = editor("Kesilecek blok metni", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    context.memory_mut(|memory| memory.request_focus(egui::Id::new(("block", 1_i64))));
+    let intents = frame(&context, &mut editor, vec![cut()], Modifiers::CTRL);
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::DeleteBlock { block, .. }) if *block == 1)),
+        "Expected DeleteBlock intent on Ctrl+X without selection"
+    );
+}
+
+#[test]
+fn enter_creates_new_block_below() {
+    let context = egui::Context::default();
+    let mut editor = editor("İlk satır", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    context.memory_mut(|memory| memory.request_focus(egui::Id::new(("block", 1_i64))));
+    let intents = frame(&context, &mut editor, vec![enter(Modifiers::NONE)], Modifiers::NONE);
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::InsertBlock { position, .. }) if *position == 1)),
+        "Expected InsertBlock at position 1 on Enter"
+    );
+}
+
+#[test]
+fn selected_block_enter_in_viewport() {
+    let context = egui::Context::default();
+    let mut editor = editor("Seçili blok", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    editor.selected_blocks.insert(1);
+    let enter_intents = frame(&context, &mut editor, vec![enter(Modifiers::NONE)], Modifiers::NONE);
+    assert!(
+        enter_intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::InsertBlock { position, .. }) if *position == 1)),
+        "Expected InsertBlock when block is selected and Enter is pressed"
+    );
+}
+
+#[test]
+fn selected_block_ctrl_x_in_viewport() {
+    let context = egui::Context::default();
+    let mut editor = editor("Seçili blok", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    editor.selected_blocks.insert(1);
+    let cut_intents = frame(&context, &mut editor, vec![cut()], Modifiers::CTRL);
+    assert!(
+        cut_intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::DeleteBlocks { blocks, .. }) if blocks == &[1])),
+        "Expected DeleteBlocks when block is selected and Ctrl+X is pressed"
+    );
+}
+
+#[test]
+fn focused_block_ctrl_x_with_selection_cuts_only_selected_text() {
+    let context = egui::Context::default();
+    let mut editor = editor("Hello world", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    let editor_id = egui::Id::new(("block", 1_i64));
+    context.memory_mut(|memory| memory.request_focus(editor_id));
+
+    let mut state = egui::text_edit::TextEditState::default();
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+        egui::text::CCursor::new(0),
+        egui::text::CCursor::new(5),
+    )));
+    state.store(&context, editor_id);
+
+    let intents = frame(&context, &mut editor, vec![cut()], Modifiers::CTRL);
+    assert!(
+        !intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::DeleteBlock { .. }))),
+        "Block should not be deleted when cutting selected text"
+    );
+    assert_eq!(editor.cache.blocks[&0].content, " world");
+}
+

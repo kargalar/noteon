@@ -330,6 +330,7 @@ pub enum Event {
         document: Option<Document>,
         page_properties: Option<(PageId, Vec<crate::domain::model::PageProperty>)>,
         focus: Option<usize>,
+        focus_at_end: bool,
         notice: Option<String>,
         refresh_database: Option<PageId>,
         created_record_document: Option<Document>,
@@ -623,6 +624,7 @@ fn perform_action(
     action: Action,
 ) -> Result<Event> {
     let mut focus = None;
+    let mut focus_at_end = false;
     let mut notice = None;
     let mut refresh_database = None;
     let mut refresh_page_properties = None;
@@ -1090,11 +1092,19 @@ fn perform_action(
             }
         }
         Action::DeleteBlock { page, block } => {
+            let pos = repository.block_position(block).ok().flatten();
             repository.delete_block(block)?;
+            focus = pos.map(|p| p.saturating_sub(1));
+            focus_at_end = true;
             Some(page)
         }
         Action::DeleteBlocks { page, blocks } => {
+            let first_pos = blocks
+                .first()
+                .and_then(|id| repository.block_position(*id).ok().flatten());
             repository.delete_blocks(page, &blocks)?;
+            focus = first_pos.map(|p| p.saturating_sub(1));
+            focus_at_end = true;
             Some(page)
         }
         Action::SetBlocksKind { page, blocks, kind } => {
@@ -1237,6 +1247,7 @@ fn perform_action(
             })
             .transpose()?,
         focus,
+        focus_at_end,
         notice,
         refresh_database,
         created_record_document,

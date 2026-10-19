@@ -493,6 +493,18 @@ impl Repository {
         Ok(id)
     }
 
+    pub fn block_position(&self, id: BlockId) -> Result<Option<usize>> {
+        self.connection
+            .query_row(
+                "SELECT position FROM blocks WHERE id=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|opt| opt.map(|p| p.max(0) as usize))
+            .map_err(Into::into)
+    }
+
     pub fn delete_block(&mut self, id: BlockId) -> Result<()> {
         let page: PageId = self.connection.query_row(
             "SELECT page_id FROM blocks WHERE id=?1",

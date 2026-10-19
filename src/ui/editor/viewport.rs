@@ -291,6 +291,7 @@ impl Editor {
                 if let Some(block) = self.cache.blocks.get_mut(&position) {
                     self.rendered_blocks += 1;
                     let focus = self.focus_position == Some(position);
+                    let focus_at_end = self.focus_at_end;
                     let page_link_icon = if block.kind == BlockKind::Text
                         && block.content.trim_start().starts_with('↗')
                     {
@@ -315,6 +316,7 @@ impl Editor {
                         block_rect,
                         block,
                         focus,
+                        focus_at_end,
                         is_selected,
                         bulk_selection_active,
                         &ordered_selected_blocks,
@@ -384,6 +386,7 @@ impl Editor {
                     }
                     if focus {
                         self.focus_position = None;
+                        self.focus_at_end = false;
                     }
                     touched.push(position);
                 } else {
@@ -776,34 +779,86 @@ impl Editor {
         if !self.selected_blocks.is_empty() && !ui.ctx().wants_keyboard_input() {
             let ordered_ids = self.ordered_selected_block_ids();
             let mut clear_selection = false;
+            let mut do_delete = false;
+            let mut do_duplicate = false;
+            let mut do_enter = false;
+            let mut do_copy = false;
+            let mut do_cut = false;
+
             ui.input_mut(|input| {
                 if input.consume_key(Modifiers::NONE, Key::Escape) {
                     clear_selection = true;
                 } else if input.consume_key(Modifiers::NONE, Key::Delete)
                     || input.consume_key(Modifiers::NONE, Key::Backspace)
                 {
-                    intents.push(Intent::Action(Action::DeleteBlocks {
-                        page: page_id,
-                        blocks: ordered_ids.clone(),
-                    }));
+                    do_delete = true;
+                    clear_selection = true;
+                } else if input.consume_key(Modifiers::NONE, Key::Enter) {
+                    do_enter = true;
+                    clear_selection = true;
+                } else if input.consume_key(Modifiers::COMMAND, Key::X)
+                    || input.consume_key(Modifiers::CTRL, Key::X)
+                    || input.events.iter().any(|e| matches!(e, egui::Event::Cut))
+                {
+                    input.events.retain(|e| !matches!(e, egui::Event::Cut));
+                    do_cut = true;
                     clear_selection = true;
                 } else if input.consume_key(Modifiers::COMMAND, Key::D)
                     || input.consume_key(Modifiers::CTRL, Key::D)
                 {
-                    intents.push(Intent::Action(Action::DuplicateBlocks {
-                        page: page_id,
-                        blocks: ordered_ids.clone(),
-                    }));
+                    do_duplicate = true;
                 } else if input.consume_key(Modifiers::COMMAND, Key::C)
                     || input.consume_key(Modifiers::CTRL, Key::C)
                     || input.events.iter().any(|e| matches!(e, egui::Event::Copy))
                 {
-                    let copied = self.selected_blocks_plain_text();
-                    if !copied.is_empty() {
-                        ui.ctx().copy_text(copied);
-                    }
+                    input.events.retain(|e| !matches!(e, egui::Event::Copy));
+                    do_copy = true;
                 }
             });
+
+            if do_delete {
+                intents.push(Intent::Action(Action::DeleteBlocks {
+                    page: page_id,
+                    blocks: ordered_ids.clone(),
+                }));
+            }
+            if do_enter {
+                if let Some(last_id) = ordered_ids.last() {
+                    if let Some(pos) = self.document.as_ref().and_then(|doc| {
+                        doc.outline.iter().position(|stub| stub.id == *last_id)
+                    }) {
+                        intents.push(Intent::Action(Action::InsertBlock {
+                            page: page_id,
+                            position: pos + 1,
+                            kind: BlockKind::Text,
+                            content: String::new(),
+                            text_styles: Vec::new(),
+                        }));
+                    }
+                }
+            }
+            if do_cut {
+                let copied = self.selected_blocks_plain_text();
+                if !copied.is_empty() {
+                    ui.ctx().copy_text(copied);
+                }
+                intents.push(Intent::Action(Action::DeleteBlocks {
+                    page: page_id,
+                    blocks: ordered_ids.clone(),
+                }));
+            }
+            if do_duplicate {
+                intents.push(Intent::Action(Action::DuplicateBlocks {
+                    page: page_id,
+                    blocks: ordered_ids.clone(),
+                }));
+            }
+            if do_copy {
+                let copied = self.selected_blocks_plain_text();
+                if !copied.is_empty() {
+                    ui.ctx().copy_text(copied);
+                }
+            }
             if clear_selection {
                 self.selected_blocks.clear();
                 self.bulk_menu_pos = None;

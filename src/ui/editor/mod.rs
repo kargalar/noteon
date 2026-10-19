@@ -22,6 +22,7 @@ pub struct Editor {
     pub generation: u64,
     pub jump_to: Option<usize>,
     pub focus_position: Option<usize>,
+    pub focus_at_end: bool,
     pub rendered_blocks: usize,
     pub visual_rows: Vec<Vec<usize>>,
     pub position_to_row: Vec<usize>,
@@ -97,9 +98,21 @@ impl Editor {
         self.cache = BlockCache::default();
         self.generation = generation;
         self.focus_position = focus;
+        self.focus_at_end = false;
         self.jump_to = focus.or(if same_page { None } else { Some(0) });
         self.last_width = 0.0;
         self.reset_scroll = same_page && focus.is_none();
+    }
+
+    pub fn bind_with_focus(
+        &mut self,
+        document: Document,
+        generation: u64,
+        focus: Option<usize>,
+        focus_at_end: bool,
+    ) {
+        self.bind(document, generation, focus);
+        self.focus_at_end = focus_at_end;
     }
 
     pub fn open_find(&mut self) {

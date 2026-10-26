@@ -169,7 +169,12 @@ impl NoteonApp {
                 }
             });
         if !self.sidebar_pinned {
-            let mouse_pos = context.input(|i| i.pointer.latest_pos());
+            let has_pointer = context.input(|i| i.pointer.has_pointer());
+            let mouse_pos = if has_pointer {
+                context.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.latest_pos()))
+            } else {
+                None
+            };
             let pointer_down = context.input(|i| i.pointer.any_down());
             let is_open_prev = context
                 .data(|d| d.get_temp::<bool>(egui::Id::new("sidebar_autohide_open")))
@@ -181,17 +186,15 @@ impl NoteonApp {
             let in_sidebar = in_y_range
                 && mouse_pos.is_some_and(|pos| {
                     if is_open_prev {
-                        pos.x <= config::SIDEBAR_WIDTH + 14.0
+                        pos.x >= 0.0 && pos.x <= config::SIDEBAR_WIDTH + 8.0
                     } else {
-                        !pointer_down && pos.x <= 14.0
+                        !pointer_down && pos.x >= 0.0 && pos.x <= 14.0
                     }
                 });
 
-            let clicked_outside = context.input(|input| input.pointer.any_pressed())
-                && !in_sidebar
-                && !crate::ui::menus::pointer_in_menu(context);
+            let in_menu = crate::ui::menus::pointer_in_menu(context);
             let is_open = if is_open_prev {
-                !clicked_outside
+                in_sidebar || in_menu
             } else {
                 in_sidebar
             };

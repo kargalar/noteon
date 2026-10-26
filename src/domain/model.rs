@@ -5,14 +5,60 @@ pub type BlockId = i64;
 
 pub const PRIORITY_LABELS: [&str; 4] = ["None", "Low", "Medium", "High"];
 pub const DEFAULT_DATABASE_STATUS_OPTIONS: [&str; 3] = ["To do", "In progress", "Done"];
-pub const PROPERTY_TYPES: [(&str, &str); 7] = [
+pub const PROPERTY_TYPES: [(&str, &str); 22] = [
     ("text", "Text"),
     ("number", "Number"),
-    ("date", "Date"),
-    ("status", "Status"),
     ("select", "Select"),
     ("multi-select", "Multi-select"),
+    ("status", "Status"),
+    ("date", "Date"),
+    ("person", "Person"),
+    ("files", "Files & media"),
     ("checkbox", "Checkbox"),
+    ("url", "URL"),
+    ("phone", "Phone"),
+    ("email", "Email"),
+    ("relation", "Relation"),
+    ("rollup", "Rollup"),
+    ("formula", "Formula"),
+    ("button", "Button"),
+    ("id", "ID"),
+    ("place", "Place"),
+    ("created_time", "Created time"),
+    ("last_edited_time", "Last edited time"),
+    ("created_by", "Created by"),
+    ("last_edited_by", "Last edited by"),
+];
+
+pub const PROPERTY_TYPE_GROUPS: [&[(&str, &str)]; 3] = [
+    &[
+        ("text", "Text"),
+        ("number", "Number"),
+        ("select", "Select"),
+        ("multi-select", "Multi-select"),
+        ("status", "Status"),
+        ("date", "Date"),
+        ("person", "Person"),
+        ("files", "Files & media"),
+        ("checkbox", "Checkbox"),
+        ("url", "URL"),
+        ("phone", "Phone"),
+        ("email", "Email"),
+    ],
+    &[
+        ("relation", "Relation"),
+        ("rollup", "Rollup"),
+        ("formula", "Formula"),
+        ("button", "Button"),
+        ("id", "ID"),
+        ("place", "Place"),
+    ],
+    &[
+        ("created_time", "Created time"),
+        ("last_edited_time", "Last edited time"),
+        ("created_by", "Created by"),
+        ("last_edited_by", "Last edited by"),
+    ],
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -339,6 +385,129 @@ pub struct DatabaseData {
     pub rows: Vec<DatabaseRow>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NewRecordOpenMode {
+    #[default]
+    FocusName,
+    Dialog,
+    FullPage,
+}
+
+impl NewRecordOpenMode {
+    pub const ALL: [Self; 3] = [Self::FocusName, Self::Dialog, Self::FullPage];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FocusName => "Sadece başlığa odaklan",
+            Self::Dialog => "Diyalog olarak aç",
+            Self::FullPage => "Tam sayfa aç",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NumberCalculation {
+    #[default]
+    None,
+    Sum,
+    Average,
+    Min,
+    Max,
+    Median,
+    Count,
+}
+
+impl NumberCalculation {
+    pub const ALL: [Self; 7] = [
+        Self::None,
+        Self::Sum,
+        Self::Average,
+        Self::Min,
+        Self::Max,
+        Self::Median,
+        Self::Count,
+    ];
+
+    pub fn menu_label(self) -> &'static str {
+        match self {
+            Self::None => "Boş",
+            Self::Sum => "Topla",
+            Self::Average => "Ortalamasını göster",
+            Self::Min => "En küçük (Min)",
+            Self::Max => "En büyük (Max)",
+            Self::Median => "Ortanca (Medyan)",
+            Self::Count => "Sayı adedi",
+        }
+    }
+
+    pub fn format_result(self, numbers: &[f64]) -> String {
+        match self {
+            Self::None => String::new(),
+            Self::Sum => {
+                let sum: f64 = numbers.iter().sum();
+                format!("Toplam {}", format_calc_number(sum))
+            }
+            Self::Average => {
+                if numbers.is_empty() {
+                    "Ortalama 0".to_owned()
+                } else {
+                    let avg = numbers.iter().sum::<f64>() / numbers.len() as f64;
+                    format!("Ortalama {}", format_calc_number(avg))
+                }
+            }
+            Self::Min => {
+                if numbers.is_empty() {
+                    "Min —".to_owned()
+                } else {
+                    let min = numbers.iter().copied().fold(f64::INFINITY, f64::min);
+                    format!("Min {}", format_calc_number(min))
+                }
+            }
+            Self::Max => {
+                if numbers.is_empty() {
+                    "Max —".to_owned()
+                } else {
+                    let max = numbers.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    format!("Max {}", format_calc_number(max))
+                }
+            }
+            Self::Median => {
+                if numbers.is_empty() {
+                    "Medyan —".to_owned()
+                } else {
+                    let mut sorted = numbers.to_vec();
+                    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    let mid = sorted.len() / 2;
+                    let median = if sorted.len() % 2 == 1 {
+                        sorted[mid]
+                    } else {
+                        (sorted[mid - 1] + sorted[mid]) / 2.0
+                    };
+                    format!("Medyan {}", format_calc_number(median))
+                }
+            }
+            Self::Count => format!("Adet {}", numbers.len()),
+        }
+    }
+}
+
+pub fn format_calc_number(val: f64) -> String {
+    if !val.is_finite() {
+        return "0".to_owned();
+    }
+    if (val - val.round()).abs() < 1e-9 {
+        format!("{}", val.round() as i64)
+    } else {
+        let formatted = format!("{val:.2}");
+        formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    }
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct DatabaseViewSettings {
@@ -355,6 +524,8 @@ pub struct DatabaseViewSettings {
     pub table_height: Option<f32>,
     pub board_show_description: bool,
     pub board_visible_properties: Option<Vec<i64>>,
+    pub new_record_open_mode: NewRecordOpenMode,
+    pub table_column_calculations: std::collections::HashMap<i64, NumberCalculation>,
 }
 
 impl Default for DatabaseViewSettings {
@@ -373,6 +544,8 @@ impl Default for DatabaseViewSettings {
             table_height: None,
             board_show_description: false,
             board_visible_properties: None,
+            new_record_open_mode: NewRecordOpenMode::FocusName,
+            table_column_calculations: std::collections::HashMap::new(),
         }
     }
 }
@@ -599,4 +772,3 @@ mod tests {
         assert_eq!(prop.option_color("Unknown"), None);
     }
 }
-

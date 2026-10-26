@@ -5,12 +5,12 @@ use crate::error::{Error, Result};
 
 pub fn migrate(connection: &Connection) -> Result<()> {
     let version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 13 {
+    if version > 14 {
         return Err(Error::Invalid(
             "This database was created with a newer version of Noteon.".into(),
         ));
     }
-    if version == 13 {
+    if version == 14 {
         return Ok(());
     }
     if version == 0 {
@@ -180,6 +180,21 @@ pub fn migrate(connection: &Connection) -> Result<()> {
         }
         connection.pragma_update(None, "user_version", 13)?;
     }
+    if version <= 13 {
+        connection.execute_batch(
+            "BEGIN IMMEDIATE;
+             WITH ranked_blocks AS (
+                 SELECT id, ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY position, id) - 1 AS position
+                 FROM blocks
+             )
+             UPDATE blocks
+             SET position=(SELECT position FROM ranked_blocks WHERE ranked_blocks.id=blocks.id);
+             UPDATE pages
+             SET block_count=(SELECT COUNT(*) FROM blocks WHERE blocks.page_id=pages.id);
+             PRAGMA user_version=14;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -239,8 +254,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE pages(id INTEGER PRIMARY KEY);\
-                 CREATE TABLE blocks(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,content TEXT NOT NULL);\
+                "CREATE TABLE pages(id INTEGER PRIMARY KEY,block_count INTEGER NOT NULL DEFAULT 0);\
+                 INSERT INTO pages(id) VALUES(1);\
+                 CREATE TABLE blocks(id INTEGER PRIMARY KEY,page_id INTEGER NOT NULL DEFAULT 1,position INTEGER NOT NULL DEFAULT 0,kind TEXT NOT NULL,content TEXT NOT NULL);\
                  PRAGMA user_version=6;",
             )
             .unwrap();

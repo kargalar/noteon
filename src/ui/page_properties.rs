@@ -2,7 +2,8 @@ use chrono::{Datelike, Duration, Local, NaiveDate};
 use eframe::egui::{self, Color32, FontId, RichText, Sense, Stroke, Ui, vec2};
 
 use crate::domain::model::{
-    DEFAULT_DATABASE_STATUS_OPTIONS, PROPERTY_TYPES, PageId, PageProperty, PropertyOption,
+    DEFAULT_DATABASE_STATUS_OPTIONS, PROPERTY_TYPE_GROUPS, PROPERTY_TYPES, PageId, PageProperty,
+    PropertyOption,
 };
 use crate::ui::{Intent, palette::Palette};
 use crate::worker::Action;
@@ -37,15 +38,548 @@ pub struct PagePropertyTarget {
 
 pub fn property_icon(kind: &str) -> &'static str {
     match kind {
-        "text" => "Aa",
+        "text" => "≡",
         "number" => "#",
-        "date" => "📅",
-        "status" => "○",
-        "select" => "🏷",
+        "select" => "◉",
         "multi-select" => "☰",
+        "status" => "◌",
+        "date" => "📅",
+        "person" => "👥",
+        "files" => "📎",
         "checkbox" => "☑",
+        "url" => "🔗",
+        "phone" => "📞",
+        "email" => "@",
+        "relation" => "↗",
+        "rollup" => "🔍",
+        "formula" => "Σ",
+        "button" => "⇪",
+        "id" => "№",
+        "place" => "📍",
+        "created_time" => "🕒",
+        "last_edited_time" => "🕒",
+        "created_by" => "👤",
+        "last_edited_by" => "👤",
         _ => "•",
     }
+}
+
+pub fn paint_property_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    kind: &str,
+    color: Color32,
+    bg_color: Color32,
+) {
+    let c = rect.center();
+    let stroke = Stroke::new(1.35, color);
+    match kind {
+        "text" => {
+            let l = rect.left() + 2.0;
+            let r = rect.right() - 2.0;
+            painter.line_segment([egui::pos2(l, c.y - 4.0), egui::pos2(r, c.y - 4.0)], stroke);
+            painter.line_segment([egui::pos2(l, c.y), egui::pos2(r, c.y)], stroke);
+            painter.line_segment(
+                [
+                    egui::pos2(l, c.y + 4.0),
+                    egui::pos2(l + (r - l) * 0.6, c.y + 4.0),
+                ],
+                stroke,
+            );
+        }
+        "number" => {
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 1.5, c.y - 5.5),
+                    egui::pos2(c.x - 3.0, c.y + 5.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + 3.0, c.y - 5.5),
+                    egui::pos2(c.x + 1.5, c.y + 5.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 5.5, c.y - 2.0),
+                    egui::pos2(c.x + 5.5, c.y - 2.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 5.5, c.y + 2.0),
+                    egui::pos2(c.x + 5.5, c.y + 2.0),
+                ],
+                stroke,
+            );
+        }
+        "select" => {
+            painter.circle_stroke(c, 6.0, stroke);
+            let pts = vec![
+                egui::pos2(c.x - 2.6, c.y - 1.2),
+                egui::pos2(c.x + 2.6, c.y - 1.2),
+                egui::pos2(c.x, c.y + 2.2),
+            ];
+            painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+        }
+        "multi-select" => {
+            let l = rect.left() + 2.5;
+            let r = rect.right() - 2.0;
+            for dy in [-4.0, 0.0, 4.0] {
+                painter.circle_filled(egui::pos2(l + 1.0, c.y + dy), 1.15, color);
+                painter.line_segment(
+                    [egui::pos2(l + 4.5, c.y + dy), egui::pos2(r, c.y + dy)],
+                    stroke,
+                );
+            }
+        }
+        "status" => {
+            for i in 0..8 {
+                let angle = (i as f32) * std::f32::consts::FRAC_PI_4;
+                let (sin, cos) = angle.sin_cos();
+                let p1 = egui::pos2(c.x + cos * 3.0, c.y + sin * 3.0);
+                let p2 = egui::pos2(c.x + cos * 6.0, c.y + sin * 6.0);
+                painter.line_segment([p1, p2], stroke);
+            }
+        }
+        "date" => {
+            let box_rect =
+                egui::Rect::from_center_size(egui::pos2(c.x, c.y + 0.8), vec2(11.5, 10.0));
+            painter.rect_stroke(box_rect, 1.8, stroke, egui::StrokeKind::Inside);
+            painter.line_segment(
+                [
+                    egui::pos2(box_rect.left(), box_rect.top() + 3.2),
+                    egui::pos2(box_rect.right(), box_rect.top() + 3.2),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 3.0, box_rect.top() - 1.8),
+                    egui::pos2(c.x - 3.0, box_rect.top() + 1.2),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + 3.0, box_rect.top() - 1.8),
+                    egui::pos2(c.x + 3.0, box_rect.top() + 1.2),
+                ],
+                stroke,
+            );
+        }
+        "person" => {
+            painter.circle_filled(egui::pos2(c.x - 2.0, c.y - 2.2), 2.1, color);
+            let left_body =
+                egui::Rect::from_center_size(egui::pos2(c.x - 2.0, c.y + 3.2), vec2(6.8, 4.2));
+            painter.rect_filled(left_body, 2.2, color);
+            let muted = color.gamma_multiply(0.75);
+            painter.circle_filled(egui::pos2(c.x + 3.0, c.y - 2.6), 1.7, muted);
+            let right_body =
+                egui::Rect::from_center_size(egui::pos2(c.x + 3.2, c.y + 2.4), vec2(5.2, 3.6));
+            painter.rect_filled(right_body, 1.8, muted);
+        }
+        "files" => {
+            let p1 = egui::pos2(c.x - 1.5, c.y + 3.5);
+            let p2 = egui::pos2(c.x + 3.5, c.y - 1.5);
+            let p3 = egui::pos2(c.x + 1.0, c.y - 4.5);
+            let p4 = egui::pos2(c.x - 4.5, c.y + 1.0);
+            let p5 = egui::pos2(c.x - 1.5, c.y + 4.5);
+            let p6 = egui::pos2(c.x + 4.5, c.y - 1.5);
+            painter.line_segment([p1, p2], stroke);
+            painter.line_segment([p2, p3], stroke);
+            painter.line_segment([p3, p4], stroke);
+            painter.line_segment([p4, p5], stroke);
+            painter.line_segment([p5, p6], stroke);
+        }
+        "checkbox" => {
+            let box_rect = egui::Rect::from_center_size(c, vec2(11.5, 11.5));
+            painter.rect_filled(box_rect, 2.2, color);
+            let check_stroke = Stroke::new(1.6, bg_color);
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 3.0, c.y + 0.2),
+                    egui::pos2(c.x - 0.8, c.y + 2.6),
+                ],
+                check_stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 0.8, c.y + 2.6),
+                    egui::pos2(c.x + 3.4, c.y - 2.2),
+                ],
+                check_stroke,
+            );
+        }
+        "url" => {
+            let r1 = egui::Rect::from_center_size(egui::pos2(c.x - 2.0, c.y + 2.0), vec2(6.5, 4.5));
+            let r2 = egui::Rect::from_center_size(egui::pos2(c.x + 2.0, c.y - 2.0), vec2(6.5, 4.5));
+            painter.rect_stroke(r1, 2.2, stroke, egui::StrokeKind::Inside);
+            painter.rect_stroke(r2, 2.2, stroke, egui::StrokeKind::Inside);
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 2.0, c.y + 2.0),
+                    egui::pos2(c.x + 2.0, c.y - 2.0),
+                ],
+                stroke,
+            );
+        }
+        "phone" => {
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 4.2, c.y - 4.5),
+                    egui::pos2(c.x - 2.0, c.y - 4.5),
+                ],
+                Stroke::new(2.0, color),
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 3.5, c.y - 4.0),
+                    egui::pos2(c.x - 1.5, c.y + 1.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 1.5, c.y + 1.0),
+                    egui::pos2(c.x + 3.5, c.y + 3.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + 2.5, c.y + 4.2),
+                    egui::pos2(c.x + 4.5, c.y + 2.5),
+                ],
+                Stroke::new(2.0, color),
+            );
+        }
+        "email" => {
+            painter.text(
+                c,
+                egui::Align2::CENTER_CENTER,
+                "@",
+                FontId::proportional(13.5),
+                color,
+            );
+        }
+        "relation" => {
+            let start = egui::pos2(c.x - 4.2, c.y + 4.2);
+            let end = egui::pos2(c.x + 4.2, c.y - 4.2);
+            painter.line_segment([start, end], stroke);
+            painter.line_segment([egui::pos2(end.x - 4.5, end.y), end], stroke);
+            painter.line_segment([egui::pos2(end.x, end.y + 4.5), end], stroke);
+        }
+        "rollup" => {
+            let center = egui::pos2(c.x - 1.2, c.y - 1.2);
+            painter.circle_stroke(center, 4.0, stroke);
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + 1.8, c.y + 1.8),
+                    egui::pos2(c.x + 5.2, c.y + 5.2),
+                ],
+                stroke,
+            );
+        }
+        "formula" => {
+            let pts = [
+                egui::pos2(c.x + 3.8, c.y - 5.0),
+                egui::pos2(c.x - 3.8, c.y - 5.0),
+                egui::pos2(c.x + 0.8, c.y),
+                egui::pos2(c.x - 3.8, c.y + 5.0),
+                egui::pos2(c.x + 3.8, c.y + 5.0),
+            ];
+            for pair in pts.windows(2) {
+                painter.line_segment([pair[0], pair[1]], stroke);
+            }
+        }
+        "button" => {
+            let btn_rect =
+                egui::Rect::from_center_size(egui::pos2(c.x - 0.5, c.y - 2.0), vec2(11.0, 5.5));
+            painter.rect_filled(btn_rect, 2.0, color);
+            let tip = egui::pos2(c.x + 0.5, c.y + 0.5);
+            painter.line_segment([tip, egui::pos2(c.x + 2.5, c.y + 5.5)], stroke);
+            painter.line_segment([tip, egui::pos2(c.x + 4.5, c.y + 3.0)], stroke);
+        }
+        "id" => {
+            painter.text(
+                c,
+                egui::Align2::CENTER_CENTER,
+                "№",
+                FontId::proportional(12.5),
+                color,
+            );
+        }
+        "place" => {
+            let top_c = egui::pos2(c.x, c.y - 1.8);
+            painter.circle_stroke(top_c, 3.8, stroke);
+            painter.circle_filled(top_c, 1.2, color);
+            let bottom = egui::pos2(c.x, c.y + 5.8);
+            painter.line_segment([egui::pos2(c.x - 3.4, c.y - 0.2), bottom], stroke);
+            painter.line_segment([egui::pos2(c.x + 3.4, c.y - 0.2), bottom], stroke);
+        }
+        "created_time" | "last_edited_time" => {
+            painter.circle_stroke(c, 5.8, stroke);
+            painter.line_segment([c, egui::pos2(c.x, c.y - 3.4)], stroke);
+            painter.line_segment([c, egui::pos2(c.x + 2.8, c.y + 0.5)], stroke);
+        }
+        "created_by" | "last_edited_by" => {
+            painter.circle_stroke(c, 6.0, stroke);
+            painter.circle_stroke(egui::pos2(c.x, c.y - 1.5), 1.9, stroke);
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 3.4, c.y + 4.2),
+                    egui::pos2(c.x - 1.8, c.y + 2.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 1.8, c.y + 2.0),
+                    egui::pos2(c.x + 1.8, c.y + 2.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + 1.8, c.y + 2.0),
+                    egui::pos2(c.x + 3.4, c.y + 4.2),
+                ],
+                stroke,
+            );
+        }
+        _ => {
+            painter.circle_filled(c, 2.5, color);
+        }
+    }
+}
+
+pub fn show_property_type_picker(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + Copy,
+    current_kind: Option<&str>,
+    busy: bool,
+    palette: Palette,
+) -> Option<&'static str> {
+    let col_w = 148.0;
+    let col_gap = 6.0;
+    let total_w = col_w * 2.0 + col_gap;
+    ui.set_min_width(total_w);
+    ui.set_max_width(total_w);
+
+    let search_key = ("prop-type-picker-search", id_salt);
+    let mut query = read_draft(ui, search_key, "");
+
+    // "Select type 🔍" search/filter bar
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.add_space(4.0);
+        let edit_w = if query.is_empty() { 265.0 } else { 248.0 };
+        let resp = ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut query)
+                .hint_text("Select type")
+                .font(FontId::proportional(12.5))
+                .frame(false)
+                .margin(egui::Margin::symmetric(2, 4))
+                .desired_width(edit_w),
+        );
+        save_draft(ui, search_key, &query, resp.changed());
+
+        if query.is_empty() {
+            let mag_pos = egui::pos2(resp.rect.left() + 76.0, resp.rect.center().y);
+            let mag_rect = egui::Rect::from_center_size(mag_pos, vec2(13.0, 13.0));
+            paint_property_icon(
+                ui.painter(),
+                mag_rect,
+                "rollup",
+                palette.muted,
+                palette.background,
+            );
+        } else if ui
+            .add(
+                egui::Button::new(
+                    RichText::new("✕")
+                        .font(FontId::proportional(11.0))
+                        .color(palette.muted),
+                )
+                .frame(false),
+            )
+            .on_hover_text("Clear filter")
+            .clicked()
+        {
+            query.clear();
+            clear_draft(ui, search_key);
+        }
+    });
+
+    ui.add_space(2.0);
+
+    let query_lower = query.trim().to_ascii_lowercase();
+    let mut selected_kind: Option<&'static str> = None;
+
+    egui::ScrollArea::vertical()
+        .id_salt(("prop-type-picker-scroll", id_salt))
+        .max_height(380.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(col_gap, 2.0);
+
+            let render_pair =
+                |ui: &mut Ui,
+                 pair: &[(&'static str, &'static str)],
+                 selected_kind: &mut Option<&'static str>| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = col_gap;
+                        for &(kind, label) in pair {
+                            let is_selected = current_kind == Some(kind);
+                            let (rect, resp) =
+                                ui.allocate_exact_size(vec2(col_w, 28.0), Sense::click());
+                            let hovered = !busy && resp.hovered();
+                            if hovered {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            let row_bg = if is_selected {
+                                palette.accent_soft
+                            } else if hovered {
+                                palette.hover
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+                            if row_bg != Color32::TRANSPARENT {
+                                ui.painter().rect_filled(rect, 5.0, row_bg);
+                            }
+                            let icon_bg = if row_bg != Color32::TRANSPARENT {
+                                row_bg
+                            } else {
+                                palette.background
+                            };
+                            let icon_color = if is_selected {
+                                palette.accent
+                            } else if hovered {
+                                palette.text
+                            } else {
+                                palette.muted
+                            };
+                            let text_color = if is_selected || hovered {
+                                palette.text
+                            } else {
+                                blend_color(palette.text, palette.muted, 0.15)
+                            };
+                            let icon_rect = egui::Rect::from_center_size(
+                                egui::pos2(rect.left() + 14.0, rect.center().y),
+                                vec2(15.0, 15.0),
+                            );
+                            paint_property_icon(ui.painter(), icon_rect, kind, icon_color, icon_bg);
+                            ui.painter().text(
+                                egui::pos2(rect.left() + 28.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                FontId::proportional(13.0),
+                                text_color,
+                            );
+                            if is_selected {
+                                ui.painter().text(
+                                    egui::pos2(rect.right() - 10.0, rect.center().y),
+                                    egui::Align2::CENTER_CENTER,
+                                    "✓",
+                                    FontId::proportional(12.0),
+                                    palette.accent,
+                                );
+                            }
+                            if !busy && resp.clicked() {
+                                *selected_kind = Some(kind);
+                            }
+                        }
+                    });
+                };
+
+            if query_lower.is_empty() {
+                for (group_idx, group) in PROPERTY_TYPE_GROUPS.iter().enumerate() {
+                    if group_idx > 0 {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                    }
+                    for pair in group.chunks(2) {
+                        render_pair(ui, pair, &mut selected_kind);
+                    }
+                }
+            } else {
+                let matches: Vec<(&'static str, &'static str)> = PROPERTY_TYPES
+                    .into_iter()
+                    .filter(|(kind, label)| {
+                        label.to_ascii_lowercase().contains(&query_lower)
+                            || kind.to_ascii_lowercase().contains(&query_lower)
+                    })
+                    .collect();
+                if matches.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("No matching property type")
+                            .font(FontId::proportional(12.0))
+                            .color(palette.muted),
+                    );
+                } else {
+                    for pair in matches.chunks(2) {
+                        render_pair(ui, pair, &mut selected_kind);
+                    }
+                }
+            }
+        });
+
+    if selected_kind.is_some() {
+        clear_draft(ui, search_key);
+    }
+
+    selected_kind
+}
+
+pub fn show_property_type_selector_button(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + Copy,
+    current_kind: &str,
+    busy: bool,
+    palette: Palette,
+) -> Option<&'static str> {
+    let mut chosen = None;
+    ui.push_id(("prop-type-sel-btn", id_salt), |ui| {
+        let icon = property_icon(current_kind);
+        let label = type_label(current_kind);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("⇄  Type")
+                    .font(FontId::proportional(12.5))
+                    .color(palette.muted),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button(
+                    RichText::new(format!("{icon}  {label}  ▸"))
+                        .font(FontId::proportional(12.5))
+                        .color(palette.text),
+                    |ui| {
+                        if let Some(kind) = show_property_type_picker(
+                            ui,
+                            id_salt,
+                            Some(current_kind),
+                            busy,
+                            palette,
+                        ) {
+                            if kind != current_kind {
+                                chosen = Some(kind);
+                            }
+                            ui.close_menu();
+                        }
+                    },
+                );
+            });
+        });
+    });
+    chosen
 }
 
 pub fn type_label(kind: &str) -> &'static str {
@@ -101,9 +635,9 @@ pub fn option_base_color(
             Color32::from_rgb(184, 102, 144),
             Color32::from_rgb(122, 154, 78),
         ];
-        let hash = option
-            .bytes()
-            .fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(usize::from(b)));
+        let hash = option.bytes().fold(0usize, |acc, b| {
+            acc.wrapping_mul(31).wrapping_add(usize::from(b))
+        });
         palette_wheel[hash % palette_wheel.len()]
     }
 }
@@ -140,7 +674,6 @@ pub fn option_pill_colors(
     }
 }
 
-
 pub fn show_color_palette_grid<F>(
     ui: &mut Ui,
     palette: Palette,
@@ -165,11 +698,8 @@ pub fn show_color_palette_grid<F>(
                 let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
                 ui.painter().circle_filled(rect.center(), 8.5, *color);
                 if is_selected {
-                    ui.painter().circle_stroke(
-                        rect.center(),
-                        10.0,
-                        Stroke::new(2.0, palette.text),
-                    );
+                    ui.painter()
+                        .circle_stroke(rect.center(), 10.0, Stroke::new(2.0, palette.text));
                 } else if resp.hovered() {
                     ui.painter().circle_stroke(
                         rect.center(),
@@ -254,7 +784,10 @@ pub fn show(
     let collapse_id = egui::Id::new(("page-properties-collapsed", page));
     let mut collapsed = ui
         .ctx()
-        .data_mut(|d| d.get_persisted::<bool>(collapse_id).or_else(|| d.get_temp::<bool>(collapse_id)))
+        .data_mut(|d| {
+            d.get_persisted::<bool>(collapse_id)
+                .or_else(|| d.get_temp::<bool>(collapse_id))
+        })
         .unwrap_or(false);
 
     let section_hover_id = egui::Id::new(("page-properties-section-hover", page, scope_id));
@@ -385,6 +918,7 @@ pub fn show(
                         ui,
                         page,
                         scope_id,
+                        created_at,
                         property,
                         index,
                         total,
@@ -436,11 +970,14 @@ pub fn show(
                                     |ui| {
                                         if let Some(ref record_ctx) = record_context {
                                             crate::ui::database::add_property_menu(
-                                                ui, record_ctx.data, intents,
+                                                ui,
+                                                record_ctx.data,
+                                                intents,
                                             );
                                         } else {
                                             show_add_property_panel(
-                                                ui, page, scope_id, properties, busy, palette, intents,
+                                                ui, page, scope_id, properties, busy, palette,
+                                                intents,
                                             );
                                         }
                                     },
@@ -451,7 +988,9 @@ pub fn show(
                                 let ctx_resp = menu_resp.response.context_menu(|ui| {
                                     if let Some(ref record_ctx) = record_context {
                                         crate::ui::database::add_property_menu(
-                                            ui, record_ctx.data, intents,
+                                            ui,
+                                            record_ctx.data,
+                                            intents,
                                         );
                                     } else {
                                         show_add_property_panel(
@@ -548,7 +1087,12 @@ fn show_section_context_menu(
                 let icon = property_icon(&prop.kind);
                 ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
                     crate::ui::database::show_property_edit_menu(
-                        ui, prop, busy, palette, intents, &mut drafts,
+                        ui,
+                        prop,
+                        busy,
+                        palette,
+                        intents,
+                        &mut drafts,
                     );
                 });
             }
@@ -655,7 +1199,8 @@ fn show_created_row(ui: &mut Ui, created_at: i64, section_width: f32, palette: P
     if hovered_now != was_hovered {
         ui.ctx().request_repaint();
     }
-    ui.ctx().data_mut(|d| d.insert_temp(created_row_id, hovered_now));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(created_row_id, hovered_now));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -663,6 +1208,7 @@ fn show_property_row(
     ui: &mut Ui,
     page: PageId,
     scope_id: u64,
+    created_at: i64,
     property: &PageProperty,
     index: usize,
     total: usize,
@@ -726,6 +1272,7 @@ fn show_property_row(
                                     property_value_editor(
                                         ui,
                                         page,
+                                        created_at,
                                         property,
                                         value_width - 12.0,
                                         busy,
@@ -860,34 +1407,19 @@ pub fn show_property_edit_panel(
     ui.add_space(2.0);
 
     // 2. Property Type Selector
-    ui.label(
-        RichText::new("Property type")
-            .font(FontId::proportional(11.5))
-            .color(palette.muted),
-    );
-    egui::ComboBox::from_id_salt(("page-prop-kind-combo", page, property.id))
-        .width(240.0)
-        .selected_text(format!(
-            "{}   {}",
-            property_icon(&property.kind),
-            type_label(&property.kind)
-        ))
-        .show_ui(ui, |ui| {
-            for (kind, label) in PROPERTY_TYPES {
-                let item_label = format!("{}   {label}", property_icon(kind));
-                if ui
-                    .selectable_label(property.kind == kind, item_label)
-                    .clicked()
-                    && property.kind != kind
-                {
-                    intents.push(Intent::Action(Action::SetPagePropertyType {
-                        page,
-                        property: property.id,
-                        kind: kind.into(),
-                    }));
-                }
-            }
-        });
+    if let Some(new_kind) = show_property_type_selector_button(
+        ui,
+        ("page-prop-kind-picker", page, property.id),
+        &property.kind,
+        busy,
+        palette,
+    ) {
+        intents.push(Intent::Action(Action::SetPagePropertyType {
+            page,
+            property: property.id,
+            kind: new_kind.into(),
+        }));
+    }
 
     // 3. Options Manager for Select / Status / Multi-select
     if matches!(property.kind.as_str(), "select" | "status" | "multi-select") {
@@ -1108,9 +1640,11 @@ pub fn show_property_edit_panel(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn property_value_editor(
     ui: &mut Ui,
     page: PageId,
+    created_at: i64,
     property: &PageProperty,
     available_width: f32,
     busy: bool,
@@ -1138,16 +1672,20 @@ fn property_value_editor(
         "date" => {
             show_date_editor(ui, page, property, busy, palette, intents);
         }
-        _ => {
-            show_text_or_number_editor(
-                ui,
-                page,
-                property,
-                available_width,
-                busy,
-                palette,
-                intents,
+        "created_time" | "last_edited_time" => {
+            let display = if property.value.trim().is_empty() {
+                crate::ui::database::format_date(created_at)
+            } else {
+                property.value.clone()
+            };
+            ui.label(
+                RichText::new(display)
+                    .font(FontId::proportional(13.0))
+                    .color(palette.muted),
             );
+        }
+        _ => {
+            show_text_or_number_editor(ui, page, property, available_width, busy, palette, intents);
         }
     }
 }
@@ -1345,11 +1883,9 @@ fn show_multi_option_editor(
                 .stroke(Stroke::NONE)
                 .corner_radius(4);
 
-                let resp = ui
-                    .add_enabled(!busy, pill_btn)
-                    .on_hover_text(format!(
-                        "Click to remove '{item}' · Right-click to change color"
-                    ));
+                let resp = ui.add_enabled(!busy, pill_btn).on_hover_text(format!(
+                    "Click to remove '{item}' · Right-click to change color"
+                ));
                 if resp.clicked() {
                     let mut updated = selected.clone();
                     updated.retain(|candidate| candidate != item);
@@ -1407,12 +1943,8 @@ fn show_multi_option_editor(
                         ui.push_id(("multi-opt-item", idx), |ui| {
                             let mut checked = selected.contains(&option.name);
                             let opt_color = resolve_option_color(option.color.as_deref());
-                            let dot_color = option_base_color(
-                                palette,
-                                "multi-select",
-                                &option.name,
-                                opt_color,
-                            );
+                            let dot_color =
+                                option_base_color(palette, "multi-select", &option.name, opt_color);
                             ui.horizontal(|ui| {
                                 ui.menu_button(
                                     RichText::new("●")
@@ -1425,9 +1957,8 @@ fn show_multi_option_editor(
                                             opt_color,
                                             |new_color| {
                                                 let mut opts = property.options.clone();
-                                                if let Some(target) = opts
-                                                    .iter_mut()
-                                                    .find(|o| o.name == option.name)
+                                                if let Some(target) =
+                                                    opts.iter_mut().find(|o| o.name == option.name)
                                                 {
                                                     target.color = new_color;
                                                     intents.push(Intent::Action(
@@ -1630,10 +2161,18 @@ pub fn show_date_picker_popup(
 
     // Month / Year Navigation
     ui.horizontal(|ui| {
-        if ui.small_button("«").on_hover_text("Previous year").clicked() {
+        if ui
+            .small_button("«")
+            .on_hover_text("Previous year")
+            .clicked()
+        {
             year -= 1;
         }
-        if ui.small_button("‹").on_hover_text("Previous month").clicked() {
+        if ui
+            .small_button("‹")
+            .on_hover_text("Previous month")
+            .clicked()
+        {
             if month == 1 {
                 month = 12;
                 year -= 1;
@@ -1757,18 +2296,33 @@ fn show_text_or_number_editor(
         value = property.value.clone();
     }
 
-    let hint = if property.kind == "number" {
-        "Empty (number)"
-    } else {
-        "Empty"
+    let default_id_hint = format!("#{page}");
+    let hint: &str = match property.kind.as_str() {
+        "number" => "Empty (number)",
+        "url" => "https://…",
+        "email" => "name@example.com",
+        "phone" => "+90…",
+        "person" => "Empty (person)",
+        "files" => "File path or URL…",
+        "place" => "Empty (location)",
+        "relation" => "Empty (relation)",
+        "rollup" => "Empty (rollup)",
+        "formula" => "Empty (formula)",
+        "button" => "Button label…",
+        "id" => &default_id_hint,
+        _ => "Empty",
     };
 
     let is_invalid_number = property.kind == "number"
         && !value.trim().is_empty()
-        && value
-            .trim()
-            .parse::<f64>()
-            .map_or(true, |n| !n.is_finite());
+        && value.trim().parse::<f64>().map_or(true, |n| !n.is_finite());
+
+    let has_url_action = property.kind == "url" && !value.trim().is_empty();
+    let edit_w = if has_url_action {
+        (available_width - 42.0).max(60.0)
+    } else {
+        (available_width - 16.0).max(80.0)
+    };
 
     let response = ui.add_enabled(
         !busy,
@@ -1778,9 +2332,24 @@ fn show_text_or_number_editor(
             .font(FontId::proportional(13.0))
             .frame(false)
             .margin(egui::Margin::symmetric(4, 2))
-            .desired_width((available_width - 16.0).max(80.0)),
+            .desired_width(edit_w),
     );
     save_draft(ui, value_id, &value, response.changed());
+
+    if has_url_action
+        && ui
+            .small_button(RichText::new("↗").color(palette.accent))
+            .on_hover_text("Open URL")
+            .clicked()
+    {
+        let target_url = value.trim();
+        let full_url = if target_url.starts_with("http://") || target_url.starts_with("https://") {
+            target_url.to_owned()
+        } else {
+            format!("https://{target_url}")
+        };
+        intents.push(Intent::OpenUrl(full_url));
+    }
 
     if is_invalid_number {
         ui.label(
@@ -1796,7 +2365,7 @@ fn show_text_or_number_editor(
     }
 }
 
-fn show_add_property_panel(
+pub fn show_add_property_panel(
     ui: &mut Ui,
     page: PageId,
     scope_id: u64,
@@ -1805,23 +2374,15 @@ fn show_add_property_panel(
     palette: Palette,
     intents: &mut Vec<Intent>,
 ) {
-    ui.set_min_width(225.0);
     ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-
-    ui.label(
-        RichText::new("NEW PROPERTY")
-            .font(FontId::proportional(10.5))
-            .strong()
-            .color(palette.muted),
-    );
 
     let name_id = ("new-page-property-name", page, scope_id);
     let mut name = read_draft(ui, name_id, "");
     let name_resp = ui.add_enabled(
         !busy,
         egui::TextEdit::singleline(&mut name)
-            .hint_text("Property name (optional)…")
-            .desired_width(210.0),
+            .hint_text("Type a property name…")
+            .desired_width(296.0),
     );
     save_draft(ui, name_id, &name, name_resp.changed());
 
@@ -1840,56 +2401,63 @@ fn show_add_property_panel(
     }
 
     ui.separator();
-    ui.label(
-        RichText::new("Click a type to create")
-            .font(FontId::proportional(11.0))
-            .color(palette.muted),
-    );
 
-    for (kind, label) in PROPERTY_TYPES {
-        let icon = property_icon(kind);
-        let btn = egui::Button::new(
-            RichText::new(format!("{icon}   {label}")).font(FontId::proportional(13.0)),
-        )
-        .frame(false)
-        .min_size(vec2(210.0, 26.0));
-
-        if ui.add_enabled(!busy, btn).clicked() {
-            let base_name = if name.trim().is_empty() {
-                default_name_for_kind(kind)
-            } else {
-                name.trim()
-            };
-            let final_name = unique_property_name(existing_properties, base_name);
-            let options = if kind == "status" {
-                DEFAULT_DATABASE_STATUS_OPTIONS
-                    .iter()
-                    .map(|s| PropertyOption::new(*s))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            intents.push(Intent::Action(Action::AddPageProperty {
-                page,
-                name: final_name,
-                kind: kind.into(),
-                options,
-            }));
-            clear_draft(ui, name_id);
-            ui.close_menu();
-        }
+    if let Some(kind) = show_property_type_picker(
+        ui,
+        ("add-page-prop-type-picker", page, scope_id),
+        None,
+        busy,
+        palette,
+    ) {
+        let base_name = if name.trim().is_empty() {
+            default_name_for_kind(kind)
+        } else {
+            name.trim()
+        };
+        let final_name = unique_property_name(existing_properties, base_name);
+        let options = if kind == "status" {
+            DEFAULT_DATABASE_STATUS_OPTIONS
+                .iter()
+                .map(|s| PropertyOption::new(*s))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        intents.push(Intent::Action(Action::AddPageProperty {
+            page,
+            name: final_name,
+            kind: kind.into(),
+            options,
+        }));
+        clear_draft(ui, name_id);
+        ui.close_menu();
     }
 }
 
-fn default_name_for_kind(kind: &str) -> &'static str {
+pub fn default_name_for_kind(kind: &str) -> &'static str {
     match kind {
-        "text" => "Notes",
+        "text" => "Text",
         "number" => "Number",
-        "date" => "Date",
+        "select" => "Select",
+        "multi-select" => "Multi-select",
         "status" => "Status",
-        "select" => "Category",
-        "multi-select" => "Tags",
-        "checkbox" => "Done",
+        "date" => "Date",
+        "person" => "Person",
+        "files" => "Files & media",
+        "checkbox" => "Checkbox",
+        "url" => "URL",
+        "phone" => "Phone",
+        "email" => "Email",
+        "relation" => "Relation",
+        "rollup" => "Rollup",
+        "formula" => "Formula",
+        "button" => "Button",
+        "id" => "ID",
+        "place" => "Place",
+        "created_time" => "Created time",
+        "last_edited_time" => "Last edited time",
+        "created_by" => "Created by",
+        "last_edited_by" => "Last edited by",
         _ => "Property",
     }
 }
@@ -1924,7 +2492,12 @@ pub fn format_iso_date_pretty(value: &str) -> String {
     if date.year() == today.year() {
         format!("{} {}", date.day(), month_name(date.month()))
     } else {
-        format!("{} {} {}", date.day(), month_name(date.month()), date.year())
+        format!(
+            "{} {} {}",
+            date.day(),
+            month_name(date.month()),
+            date.year()
+        )
     }
 }
 

@@ -1,6 +1,6 @@
 use eframe::egui::{
-    self, Align2, Color32, FontFamily, FontId, Key, KeyboardShortcut, Modifiers, Rect, RichText, Sense,
-    Stroke, TextFormat, Ui, pos2, vec2,
+    self, Align2, Color32, FontFamily, FontId, Key, KeyboardShortcut, Modifiers, Rect, RichText,
+    Sense, Stroke, TextFormat, Ui, pos2, vec2,
 };
 use std::sync::Arc;
 
@@ -191,7 +191,10 @@ pub fn show(
         let is_file_link = file_link_data.is_some();
         let editing_id = block_widget_id("page-link-editing", block.id, widget_scope);
         let started_id = block_widget_id("page-link-editing-started", block.id, widget_scope);
-        let is_editing = ui.ctx().data(|d| d.get_temp::<bool>(editing_id)).unwrap_or(false);
+        let is_editing = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(editing_id))
+            .unwrap_or(false);
 
         if is_page_link && !is_editing {
             let target_title = block
@@ -247,19 +250,18 @@ pub fn show(
                     },
                 );
             }
-            job.append(
+            append_text_with_find(
+                &mut job,
                 display_title,
-                0.0,
-                egui::TextFormat {
-                    font_id: FontId::proportional(15.0),
-                    color: palette.text,
-                    underline: if link_resp.hovered() {
-                        Stroke::new(1.0, palette.muted)
-                    } else {
-                        Stroke::NONE
-                    },
-                    ..Default::default()
+                FontId::proportional(15.0),
+                palette.text,
+                if link_resp.hovered() {
+                    Stroke::new(1.0, palette.muted)
+                } else {
+                    Stroke::NONE
                 },
+                find_query,
+                find_active_match.is_some(),
             );
             let galley = ui.fonts(|f| f.layout_job(job));
             let y_offset = if galley.size().y < link_rect.height() - 4.0 {
@@ -310,7 +312,10 @@ pub fn show(
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button(RichText::new("🗑  Bloğu sil").color(palette.danger)).clicked() {
+                if ui
+                    .button(RichText::new("🗑  Bloğu sil").color(palette.danger))
+                    .clicked()
+                {
                     intents.push(Intent::Action(Action::DeleteBlock {
                         page: block.page_id,
                         block: block.id,
@@ -324,7 +329,8 @@ pub fn show(
                 body.max - vec2(4.0, 2.0),
             );
             let link_id = block_widget_id("file-link-surface", block.id, widget_scope);
-            let hover_tip = format!("📁 '{file_name}'\n{file_path}\n(Dosya Gezgini'nde açmak için tıkla)");
+            let hover_tip =
+                format!("📁 '{file_name}'\n{file_path}\n(Dosya Gezgini'nde açmak için tıkla)");
             let link_resp = ui
                 .interact(link_rect, link_id, Sense::click())
                 .on_hover_text(hover_tip);
@@ -345,19 +351,18 @@ pub fn show(
                     ..Default::default()
                 },
             );
-            job.append(
+            append_text_with_find(
+                &mut job,
                 &file_name,
-                0.0,
-                egui::TextFormat {
-                    font_id: FontId::proportional(15.0),
-                    color: palette.text,
-                    underline: if link_resp.hovered() {
-                        Stroke::new(1.0, palette.muted)
-                    } else {
-                        Stroke::NONE
-                    },
-                    ..Default::default()
+                FontId::proportional(15.0),
+                palette.text,
+                if link_resp.hovered() {
+                    Stroke::new(1.0, palette.muted)
+                } else {
+                    Stroke::NONE
                 },
+                find_query,
+                find_active_match.is_some(),
             );
             let galley = ui.fonts(|f| f.layout_job(job));
             let y_offset = if galley.size().y < link_rect.height() - 4.0 {
@@ -412,7 +417,10 @@ pub fn show(
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button(RichText::new("🗑  Bloğu sil").color(palette.danger)).clicked() {
+                if ui
+                    .button(RichText::new("🗑  Bloğu sil").color(palette.danger))
+                    .clicked()
+                {
                     intents.push(Intent::Action(Action::DeleteBlock {
                         page: block.page_id,
                         block: block.id,
@@ -453,9 +461,15 @@ pub fn show(
             if is_page_link || is_file_link {
                 let editor_id = block_widget_id("block", block.id, widget_scope);
                 if just_started {
-                    if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), editor_id) {
+                    if let Some(mut state) =
+                        egui::text_edit::TextEditState::load(ui.ctx(), editor_id)
+                    {
                         let count = block.content.chars().count();
-                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(count))));
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::one(
+                                egui::text::CCursor::new(count),
+                            )));
                         state.store(ui.ctx(), editor_id);
                     }
                 }
@@ -672,8 +686,7 @@ fn show_menu(
             }));
         }
     }
-    let is_page_link =
-        block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗');
+    let is_page_link = block.kind == BlockKind::Text && block.content.trim_start().starts_with('↗');
     let file_link_data = if block.kind == BlockKind::Text && !is_page_link {
         parse_file_link(&block.content)
     } else {
@@ -682,7 +695,10 @@ fn show_menu(
     let is_file_link = file_link_data.is_some();
     let editing_id = block_widget_id("page-link-editing", block.id, widget_scope);
     let started_id = block_widget_id("page-link-editing-started", block.id, widget_scope);
-    let is_editing = ui.ctx().data(|d| d.get_temp::<bool>(editing_id)).unwrap_or(false);
+    let is_editing = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(editing_id))
+        .unwrap_or(false);
 
     let right_clicked_on_row = !bulk_selection_active
         && !(is_page_link && !is_editing)
@@ -1481,27 +1497,22 @@ fn layout_styled_text(
 
     let query_clean = find_query.map(|q| q.trim()).unwrap_or("");
     let find_ranges: Vec<(std::ops::Range<usize>, bool)> = if !query_clean.is_empty() {
-        let text_lower = text.to_lowercase();
-        let q_lower = query_clean.to_lowercase();
-        let q_char_len = query_clean.chars().count();
-        let mut ranges = Vec::new();
-        let mut byte_idx = 0;
-        while let Some(pos) = text_lower[byte_idx..].find(&q_lower) {
-            let start_byte = byte_idx + pos;
-            let end_byte = start_byte + q_lower.len();
-            let char_start = text[..start_byte].chars().count();
-            let char_end = char_start + q_char_len;
-            let is_active = find_active_match == Some((char_start, char_end));
-            ranges.push((char_start..char_end, is_active));
-            byte_idx = end_byte;
-        }
-        ranges
+        super::find::find_char_ranges(text, query_clean)
+            .into_iter()
+            .map(|r| {
+                let is_active = find_active_match == Some((r.start, r.end));
+                (r, is_active)
+            })
+            .collect()
     } else {
         Vec::new()
     };
 
     let find_at = |i: usize| -> Option<bool> {
-        find_ranges.iter().find(|(r, _)| r.contains(&i)).map(|(_, active)| *active)
+        find_ranges
+            .iter()
+            .find(|(r, _)| r.contains(&i))
+            .map(|(_, active)| *active)
     };
 
     let mut start = 0;
@@ -1551,13 +1562,11 @@ fn layout_styled_text(
 
         if let Some(is_active) = find_state {
             if is_active {
-                background = Some(Color32::from_rgb(255, 140, 0));
-                color = Color32::from_rgb(255, 255, 255);
+                background = Some(Color32::from_rgb(255, 115, 0));
+                color = Color32::WHITE;
             } else {
-                background = Some(Color32::from_rgba_unmultiplied(245, 210, 50, 130));
-                if !is_dark && color == Color32::WHITE {
-                    color = Color32::from_rgb(20, 20, 20);
-                }
+                background = Some(Color32::from_rgb(250, 204, 21));
+                color = Color32::from_rgb(18, 18, 18);
             }
         }
 
@@ -1583,6 +1592,74 @@ fn layout_styled_text(
     ui.fonts(|fonts| fonts.layout_job(job))
 }
 
+fn append_text_with_find(
+    job: &mut egui::text::LayoutJob,
+    text: &str,
+    font_id: FontId,
+    base_color: Color32,
+    underline: Stroke,
+    find_query: Option<&str>,
+    is_active: bool,
+) {
+    let query_clean = find_query.map(|q| q.trim()).unwrap_or("");
+    let find_ranges = if !query_clean.is_empty() {
+        super::find::find_char_ranges(text, query_clean)
+    } else {
+        Vec::new()
+    };
+    if find_ranges.is_empty() {
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                font_id,
+                color: base_color,
+                underline,
+                ..Default::default()
+            },
+        );
+        return;
+    }
+    let characters: Vec<_> = text.char_indices().collect();
+    let find_at = |i: usize| -> bool { find_ranges.iter().any(|r| r.contains(&i)) };
+    let mut start = 0;
+    while start < characters.len() {
+        let matched = find_at(start);
+        let mut end = start + 1;
+        while end < characters.len() && find_at(end) == matched {
+            end += 1;
+        }
+        let byte_start = characters[start].0;
+        let byte_end = characters.get(end).map_or(text.len(), |(index, _)| *index);
+
+        let (color, background) = if matched {
+            if is_active {
+                (Color32::WHITE, Color32::from_rgb(255, 115, 0))
+            } else {
+                (
+                    Color32::from_rgb(18, 18, 18),
+                    Color32::from_rgb(250, 204, 21),
+                )
+            }
+        } else {
+            (base_color, Color32::TRANSPARENT)
+        };
+
+        job.append(
+            &text[byte_start..byte_end],
+            0.0,
+            egui::TextFormat {
+                font_id: font_id.clone(),
+                color,
+                background,
+                underline,
+                ..Default::default()
+            },
+        );
+        start = end;
+    }
+}
+
 pub fn layout_title_with_find(
     ui: &Ui,
     text: &str,
@@ -1597,28 +1674,13 @@ pub fn layout_title_with_find(
     job.wrap.max_width = wrap_width;
 
     let query_clean = find_query.trim();
-    let find_ranges: Vec<std::ops::Range<usize>> = if !query_clean.is_empty() {
-        let text_lower = text.to_lowercase();
-        let q_lower = query_clean.to_lowercase();
-        let q_char_len = query_clean.chars().count();
-        let mut ranges = Vec::new();
-        let mut byte_idx = 0;
-        while let Some(pos) = text_lower[byte_idx..].find(&q_lower) {
-            let start_byte = byte_idx + pos;
-            let end_byte = start_byte + q_lower.len();
-            let char_start = text[..start_byte].chars().count();
-            let char_end = char_start + q_char_len;
-            ranges.push(char_start..char_end);
-            byte_idx = end_byte;
-        }
-        ranges
+    let find_ranges = if !query_clean.is_empty() {
+        super::find::find_char_ranges(text, query_clean)
     } else {
         Vec::new()
     };
 
-    let find_at = |i: usize| -> bool {
-        find_ranges.iter().any(|r| r.contains(&i))
-    };
+    let find_at = |i: usize| -> bool { find_ranges.iter().any(|r| r.contains(&i)) };
 
     let mut start = 0;
     while start < characters.len() {
@@ -1636,10 +1698,11 @@ pub fn layout_title_with_find(
 
         if matched {
             if is_active {
-                background = Some(Color32::from_rgb(255, 140, 0));
-                color = Color32::from_rgb(255, 255, 255);
+                background = Some(Color32::from_rgb(255, 115, 0));
+                color = Color32::WHITE;
             } else {
-                background = Some(Color32::from_rgba_unmultiplied(245, 210, 50, 130));
+                background = Some(Color32::from_rgb(250, 204, 21));
+                color = Color32::from_rgb(18, 18, 18);
             }
         }
 
@@ -2305,7 +2368,8 @@ fn handle_enter(
         return false;
     }
     if block.kind == BlockKind::Text
-        && (block.content.trim_start().starts_with('↗') || parse_file_link(&block.content).is_some())
+        && (block.content.trim_start().starts_with('↗')
+            || parse_file_link(&block.content).is_some())
     {
         intents.push(Intent::Action(Action::InsertBlock {
             page: block.page_id,

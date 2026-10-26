@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use rusqlite::{OptionalExtension, params};
 
 use crate::domain::model::{
-    DEFAULT_DATABASE_STATUS_OPTIONS, BlockId, DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView,
-    DatabaseViewSettings, PROPERTY_TYPES, PageId, PropertyOption, parse_property_options,
-    serialize_property_options,
+    BlockId, DEFAULT_DATABASE_STATUS_OPTIONS, DatabaseData, DatabaseProperty, DatabaseRow,
+    DatabaseView, DatabaseViewSettings, PROPERTY_TYPES, PageId, PropertyOption,
+    parse_property_options, serialize_property_options,
 };
 use crate::error::{Error, Result};
 
@@ -151,10 +151,6 @@ impl Repository {
                 transaction.execute(
                     "INSERT INTO blocks(page_id,position,kind,content) VALUES(?1,?2,'text','↗ New database')",
                     params![parent_id, sql_index(block_count)?],
-                )?;
-                transaction.execute(
-                    "UPDATE pages SET block_count=block_count+1 WHERE id=?1",
-                    [parent_id],
                 )?;
             }
             transaction.execute(
@@ -381,17 +377,11 @@ impl Repository {
         kind: &str,
         options: &[PropertyOption],
     ) -> Result<()> {
-        const KINDS: &[&str] = &[
-            "text",
-            "number",
-            "date",
-            "status",
-            "select",
-            "multi-select",
-            "checkbox",
-        ];
         let name = name.trim();
-        if name.is_empty() || name.len() > 80 || !KINDS.contains(&kind) {
+        let valid_kind = PROPERTY_TYPES
+            .iter()
+            .any(|(supported, _)| *supported == kind);
+        if name.is_empty() || name.len() > 80 || !valid_kind {
             return Err(Error::Invalid("Invalid property name or type.".into()));
         }
         let options = serialize_property_options(options);
@@ -434,7 +424,11 @@ impl Repository {
         let mut normalized = Vec::new();
         for opt in options {
             let trimmed = opt.name.trim();
-            if !trimmed.is_empty() && !normalized.iter().any(|existing: &PropertyOption| existing.name == trimmed) {
+            if !trimmed.is_empty()
+                && !normalized
+                    .iter()
+                    .any(|existing: &PropertyOption| existing.name == trimmed)
+            {
                 normalized.push(PropertyOption {
                     name: trimmed.to_owned(),
                     color: opt.color.as_deref().map(|c| c.trim().to_ascii_uppercase()),
@@ -480,7 +474,10 @@ impl Repository {
         }
         let mut deduped = Vec::new();
         for opt in options {
-            if !deduped.iter().any(|existing: &PropertyOption| existing.name == opt.name) {
+            if !deduped
+                .iter()
+                .any(|existing: &PropertyOption| existing.name == opt.name)
+            {
                 deduped.push(opt);
             }
         }
@@ -526,7 +523,11 @@ impl Repository {
         Ok(())
     }
 
-    pub fn remove_database_property_option(&mut self, id: i64, option_to_remove: &str) -> Result<()> {
+    pub fn remove_database_property_option(
+        &mut self,
+        id: i64,
+        option_to_remove: &str,
+    ) -> Result<()> {
         let option_to_remove = option_to_remove.trim();
         let transaction = self.connection.transaction()?;
         let (kind, raw_options): (String, String) = transaction.query_row(
@@ -817,4 +818,3 @@ mod tests {
         assert_eq!(updated.icon, "📊");
     }
 }
-

@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
-use eframe::egui::{self, text::{CCursor, CCursorRange}, Color32, FontId, RichText, Ui};
+use eframe::egui::{
+    self, Color32, FontId, RichText, Ui,
+    text::{CCursor, CCursorRange},
+};
 
 use crate::domain::model::{
-    DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView, PROPERTY_TYPES, PropertyOption,
+    DatabaseData, DatabaseProperty, DatabaseRow, DatabaseView, NewRecordOpenMode,
+    NumberCalculation, PROPERTY_TYPES, PropertyOption,
 };
 use crate::ui::page_properties::{
     option_base_color, option_pill_colors, resolve_option_color, show_color_palette_grid,
@@ -21,6 +25,24 @@ const TABLE_ROW_HEIGHT: f32 = 36.0;
 const DEFAULT_TABLE_MAX_ROWS_HEIGHT: f32 = 648.0;
 const DEFAULT_GALLERY_MAX_HEIGHT: f32 = 760.0;
 const DEFAULT_BOARD_MAX_CARDS_HEIGHT: f32 = 648.0;
+
+fn new_record_button(ui: &Ui) -> egui::Button<'static> {
+    let (background, text) = if ui.visuals().dark_mode {
+        (Color32::WHITE, Color32::BLACK)
+    } else {
+        (Color32::BLACK, Color32::WHITE)
+    };
+
+    egui::Button::new(
+        RichText::new("+ New record")
+            .font(FontId::proportional(13.0))
+            .color(text)
+            .strong(),
+    )
+    .fill(background)
+    .stroke(egui::Stroke::NONE)
+    .corner_radius(5)
+}
 
 #[derive(Clone, Copy)]
 struct BoardDragPayload {
@@ -54,10 +76,8 @@ fn show_vertical_resize_handle(
 ) -> bool {
     let live_v_id = egui::Id::new(("table-v-resize-live", data.page_id));
     let handle_w = width.max(160.0);
-    let (v_handle_rect, v_handle_resp) = ui.allocate_exact_size(
-        egui::vec2(handle_w, 12.0),
-        egui::Sense::click_and_drag(),
-    );
+    let (v_handle_rect, v_handle_resp) =
+        ui.allocate_exact_size(egui::vec2(handle_w, 12.0), egui::Sense::click_and_drag());
     let v_handle_resp = v_handle_resp
         .on_hover_cursor(egui::CursorIcon::ResizeVertical)
         .on_hover_text("Drag to resize height · Double-click to auto-fit");
@@ -161,11 +181,9 @@ fn board_max_column_cards_height(data: &DatabaseData, status_id: i64) -> f32 {
     for row in &data.rows {
         let val = row.values.get(&status_id).map(String::as_str).unwrap_or("");
         let group = if val.is_empty() { "No selection" } else { val };
-        let show_desc =
-            data.view_settings.board_show_description && !row.preview.trim().is_empty();
-        let card_h = 36.0
-            + if has_other_props { 20.0 } else { 0.0 }
-            + if show_desc { 22.0 } else { 0.0 };
+        let show_desc = data.view_settings.board_show_description && !row.preview.trim().is_empty();
+        let card_h =
+            36.0 + if has_other_props { 20.0 } else { 0.0 } + if show_desc { 22.0 } else { 0.0 };
         *heights.entry(group.to_owned()).or_insert(0.0) += card_h;
         *counts.entry(group.to_owned()).or_insert(0) += 1;
     }
@@ -202,13 +220,8 @@ pub fn desired_embedded_height(ui: &Ui, data: &DatabaseData) -> f32 {
             } else {
                 row_count as f32 * card_h + row_count.saturating_sub(1) as f32 * row_gap
             };
-            let (active_h, _) = resolve_vertical_height(
-                ui,
-                data,
-                natural_h,
-                DEFAULT_GALLERY_MAX_HEIGHT,
-                card_h,
-            );
+            let (active_h, _) =
+                resolve_vertical_height(ui, data, natural_h, DEFAULT_GALLERY_MAX_HEIGHT, card_h);
             let gallery_total = active_h + 40.0 + 24.0;
             (chrome_height + gallery_total).clamp(200.0, 2600.0)
         }
@@ -251,16 +264,7 @@ pub fn desired_embedded_height(ui: &Ui, data: &DatabaseData) -> f32 {
 }
 
 fn property_icon(kind: &str) -> &'static str {
-    match kind {
-        "text" => "Aa",
-        "number" => "#",
-        "date" => "📅",
-        "status" => "○",
-        "select" => "🏷",
-        "multi-select" => "☰",
-        "checkbox" => "☑",
-        _ => "•",
-    }
+    crate::ui::page_properties::property_icon(kind)
 }
 
 pub struct Drafts<'a> {
@@ -437,152 +441,166 @@ fn show_inner(
             .show(ui, |ui| {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
-                    for view in [
-                        DatabaseView::Table,
-                        DatabaseView::Board,
-                        DatabaseView::Gallery,
-                    ] {
-                        let selected = data.view == view;
-                        let icon = match view {
-                            DatabaseView::Table => "⊞",
-                            DatabaseView::Board => "☷",
-                            DatabaseView::Gallery => "🗂",
-                        };
-                        let tab_text = format!("{icon}  {}", view.label());
-                        let fill = if selected {
-                            palette.accent_soft
-                        } else {
-                            Color32::TRANSPARENT
-                        };
-                        let stroke = if selected {
-                            egui::Stroke::new(1.0, palette.accent.linear_multiply(0.4))
-                        } else {
-                            egui::Stroke::NONE
-                        };
-                        let text_color = if selected {
-                            palette.text
-                        } else {
-                            palette.muted
-                        };
-                        let button = egui::Button::new(
-                            RichText::new(tab_text)
-                                .font(FontId::proportional(13.0))
-                                .color(text_color)
-                                .strong(),
-                        )
-                        .fill(fill)
-                        .stroke(stroke)
-                        .corner_radius(5);
-                        if ui.add(button).clicked() && !selected {
-                            intents.push(Intent::Action(Action::SetDatabaseView {
-                                page: data.page_id,
-                                view,
-                            }));
-                        }
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let new_btn = egui::Button::new(
-                            RichText::new("+ New record")
-                                .font(FontId::proportional(13.0))
-                                .color(Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(palette.accent)
-                        .corner_radius(5);
-                        if ui.add_enabled(!busy, new_btn).clicked() {
-                            intents.push(Intent::Action(Action::CreateDatabaseRecord(data.page_id)));
-                        }
-
-                        if data.view != DatabaseView::Table {
-                            ui.menu_button(
-                                RichText::new("+ Property")
+                        for view in [
+                            DatabaseView::Table,
+                            DatabaseView::Board,
+                            DatabaseView::Gallery,
+                        ] {
+                            let selected = data.view == view;
+                            let icon = match view {
+                                DatabaseView::Table => "⊞",
+                                DatabaseView::Board => "☷",
+                                DatabaseView::Gallery => "🗂",
+                            };
+                            let tab_text = format!("{icon}  {}", view.label());
+                            let fill = if selected {
+                                palette.accent_soft
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+                            let stroke = if selected {
+                                egui::Stroke::new(1.0, palette.accent.linear_multiply(0.4))
+                            } else {
+                                egui::Stroke::NONE
+                            };
+                            let text_color = if selected {
+                                palette.text
+                            } else {
+                                palette.muted
+                            };
+                            let button = egui::Button::new(
+                                RichText::new(tab_text)
                                     .font(FontId::proportional(13.0))
+                                    .color(text_color)
+                                    .strong(),
+                            )
+                            .fill(fill)
+                            .stroke(stroke)
+                            .corner_radius(5);
+                            if ui.add(button).clicked() && !selected {
+                                intents.push(Intent::Action(Action::SetDatabaseView {
+                                    page: data.page_id,
+                                    view,
+                                }));
+                            }
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let new_btn = new_record_button(ui);
+                            let new_clicked = ui.add_enabled(!busy, new_btn).clicked();
+                            if new_clicked {
+                                intents.push(Intent::Action(Action::CreateDatabaseRecord(
+                                    data.page_id,
+                                )));
+                            }
+
+                            if data.view != DatabaseView::Table {
+                                ui.menu_button(
+                                    RichText::new("+ Property")
+                                        .font(FontId::proportional(13.0))
+                                        .color(palette.muted),
+                                    |ui| {
+                                        add_property_menu(ui, data, intents);
+                                    },
+                                );
+                            }
+
+                            show_view_options(ui, data, intents);
+
+                            let sort_name = sort_key_label(data);
+                            let direction_arrow = if data.sort_key == "manual" {
+                                ""
+                            } else if data.sort_descending {
+                                " ▼"
+                            } else {
+                                " ▲"
+                            };
+                            ui.menu_button(
+                                RichText::new(format!("⇅ Sort: {sort_name}{direction_arrow}"))
+                                    .font(FontId::proportional(12.5))
                                     .color(palette.muted),
                                 |ui| {
-                                    add_property_menu(ui, data, intents);
-                                },
-                            );
-                        }
-
-                        show_view_options(ui, data, intents);
-
-                        let sort_name = sort_key_label(data);
-                        let direction_arrow = if data.sort_key == "manual" {
-                            ""
-                        } else if data.sort_descending {
-                            " ▼"
-                        } else {
-                            " ▲"
-                        };
-                        ui.menu_button(
-                            RichText::new(format!("⇅ Sort: {sort_name}{direction_arrow}"))
-                                .font(FontId::proportional(12.5))
-                                .color(palette.muted),
-                            |ui| {
-                                ui.label(RichText::new("Sort by").small().color(palette.muted));
-                                for (label, key) in [
-                                    ("Manual order", "manual"),
-                                    ("Name", "title"),
-                                    ("Created", "created_at"),
-                                ] {
-                                    let is_selected = data.sort_key == key;
-                                    if ui.selectable_label(is_selected, label).clicked() {
-                                        if key == "manual" {
-                                            intents.push(Intent::Action(Action::SetDatabaseSort {
-                                                page: data.page_id,
-                                                key: "manual".into(),
-                                                descending: false,
-                                            }));
-                                        } else {
-                                            toggle_sort(data, key, intents);
+                                    ui.label(RichText::new("Sort by").small().color(palette.muted));
+                                    for (label, key) in [
+                                        ("Manual order", "manual"),
+                                        ("Name", "title"),
+                                        ("Created", "created_at"),
+                                    ] {
+                                        let is_selected = data.sort_key == key;
+                                        if ui.selectable_label(is_selected, label).clicked() {
+                                            if key == "manual" {
+                                                intents.push(Intent::Action(
+                                                    Action::SetDatabaseSort {
+                                                        page: data.page_id,
+                                                        key: "manual".into(),
+                                                        descending: false,
+                                                    },
+                                                ));
+                                            } else {
+                                                toggle_sort(data, key, intents);
+                                            }
                                         }
                                     }
-                                }
-                                for property in &data.properties {
-                                    let key = property.id.to_string();
-                                    let is_selected = data.sort_key == key;
-                                    if ui.selectable_label(is_selected, &property.name).clicked() {
-                                        toggle_sort(data, &key, intents);
+                                    for property in &data.properties {
+                                        let key = property.id.to_string();
+                                        let is_selected = data.sort_key == key;
+                                        if ui
+                                            .selectable_label(is_selected, &property.name)
+                                            .clicked()
+                                        {
+                                            toggle_sort(data, &key, intents);
+                                        }
                                     }
-                                }
-                                if data.sort_key != "manual" {
-                                    ui.separator();
-                                    ui.label(RichText::new("Direction").small().color(palette.muted));
-                                    if ui
-                                        .selectable_label(!data.sort_descending, "Ascending (▲)")
-                                        .clicked()
-                                        && data.sort_descending
-                                    {
-                                        intents.push(Intent::Action(Action::SetDatabaseSort {
-                                            page: data.page_id,
-                                            key: data.sort_key.clone(),
-                                            descending: false,
-                                        }));
+                                    if data.sort_key != "manual" {
+                                        ui.separator();
+                                        ui.label(
+                                            RichText::new("Direction").small().color(palette.muted),
+                                        );
+                                        if ui
+                                            .selectable_label(
+                                                !data.sort_descending,
+                                                "Ascending (▲)",
+                                            )
+                                            .clicked()
+                                            && data.sort_descending
+                                        {
+                                            intents.push(Intent::Action(Action::SetDatabaseSort {
+                                                page: data.page_id,
+                                                key: data.sort_key.clone(),
+                                                descending: false,
+                                            }));
+                                        }
+                                        if ui
+                                            .selectable_label(
+                                                data.sort_descending,
+                                                "Descending (▼)",
+                                            )
+                                            .clicked()
+                                            && !data.sort_descending
+                                        {
+                                            intents.push(Intent::Action(Action::SetDatabaseSort {
+                                                page: data.page_id,
+                                                key: data.sort_key.clone(),
+                                                descending: true,
+                                            }));
+                                        }
                                     }
-                                    if ui
-                                        .selectable_label(data.sort_descending, "Descending (▼)")
-                                        .clicked()
-                                        && !data.sort_descending
-                                    {
-                                        intents.push(Intent::Action(Action::SetDatabaseSort {
-                                            page: data.page_id,
-                                            key: data.sort_key.clone(),
-                                            descending: true,
-                                        }));
-                                    }
-                                }
-                            },
-                        );
+                                },
+                            );
+                        });
                     });
-                });
 
-                ui.add_space(8.0);
-                let divider_stroke = egui::Stroke::new(1.0, palette.border.linear_multiply(0.4));
-                let avail_w = ui.available_width();
-                let (divider_rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, 1.0), egui::Sense::hover());
-                ui.painter().line_segment([divider_rect.left_top(), divider_rect.right_top()], divider_stroke);
-                ui.add_space(8.0);
+                    ui.add_space(8.0);
+                    let divider_stroke =
+                        egui::Stroke::new(1.0, palette.border.linear_multiply(0.4));
+                    let avail_w = ui.available_width();
+                    let (divider_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(avail_w, 1.0), egui::Sense::hover());
+                    ui.painter().line_segment(
+                        [divider_rect.left_top(), divider_rect.right_top()],
+                        divider_stroke,
+                    );
+                    ui.add_space(8.0);
 
                     match data.view {
                         DatabaseView::Table => show_table(ui, data, busy, palette, intents, drafts),
@@ -618,7 +636,30 @@ fn show_view_options(ui: &mut Ui, data: &mut DatabaseData, intents: &mut Vec<Int
     let view = data.view;
     let settings = &mut data.view_settings;
     ui.menu_button("View options", |ui| {
-        ui.set_min_width(220.0);
+        ui.set_min_width(240.0);
+        ui.horizontal(|ui| {
+            ui.label("Yeni öğe açılışı");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                egui::ComboBox::from_id_salt(("new-record-open-mode", data.page_id))
+                    .selected_text(settings.new_record_open_mode.label())
+                    .show_ui(ui, |ui| {
+                        for mode in NewRecordOpenMode::ALL {
+                            if ui
+                                .selectable_label(
+                                    settings.new_record_open_mode == mode,
+                                    mode.label(),
+                                )
+                                .clicked()
+                                && settings.new_record_open_mode != mode
+                            {
+                                settings.new_record_open_mode = mode;
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+        });
+        ui.separator();
         match view {
             DatabaseView::Table => {
                 changed |= ui
@@ -650,10 +691,12 @@ fn show_view_options(ui: &mut Ui, data: &mut DatabaseData, intents: &mut Vec<Int
                                         && data.gallery_columns != columns
                                     {
                                         data.gallery_columns = columns;
-                                        intents.push(Intent::Action(Action::SetDatabaseGalleryColumns {
-                                            page: data.page_id,
-                                            columns,
-                                        }));
+                                        intents.push(Intent::Action(
+                                            Action::SetDatabaseGalleryColumns {
+                                                page: data.page_id,
+                                                columns,
+                                            },
+                                        ));
                                     }
                                 }
                             });
@@ -799,11 +842,9 @@ fn render_record_multi_select_chips(
                 .stroke(egui::Stroke::NONE)
                 .corner_radius(4);
 
-                let resp = ui
-                    .add_enabled(!busy, pill_btn)
-                    .on_hover_text(format!(
-                        "Click to remove '{item}' · Right-click to change color"
-                    ));
+                let resp = ui.add_enabled(!busy, pill_btn).on_hover_text(format!(
+                    "Click to remove '{item}' · Right-click to change color"
+                ));
                 if resp.clicked() {
                     let mut updated = selected.clone();
                     updated.retain(|candidate| candidate != item);
@@ -868,12 +909,8 @@ fn render_record_multi_select_chips(
                         ui.push_id(("rec-multi-opt-item", idx), |ui| {
                             let mut checked = selected.contains(&option.name);
                             let opt_color = resolve_option_color(option.color.as_deref());
-                            let dot_color = option_base_color(
-                                palette,
-                                "multi-select",
-                                &option.name,
-                                opt_color,
-                            );
+                            let dot_color =
+                                option_base_color(palette, "multi-select", &option.name, opt_color);
                             ui.horizontal(|ui| {
                                 ui.menu_button(
                                     RichText::new("●")
@@ -886,9 +923,8 @@ fn render_record_multi_select_chips(
                                             opt_color,
                                             |new_color| {
                                                 let mut opts = property.options.clone();
-                                                if let Some(target) = opts
-                                                    .iter_mut()
-                                                    .find(|o| o.name == option.name)
+                                                if let Some(target) =
+                                                    opts.iter_mut().find(|o| o.name == option.name)
                                                 {
                                                     target.color = new_color;
                                                     intents.push(Intent::Action(
@@ -952,8 +988,7 @@ fn render_record_multi_select_chips(
                         });
                     }
                     ui.separator();
-                    let quick_id =
-                        egui::Id::new(("db-prop-multi-quick-opt", record_id, prop_id));
+                    let quick_id = egui::Id::new(("db-prop-multi-quick-opt", record_id, prop_id));
                     let mut new_opt = ui
                         .ctx()
                         .data(|d| d.get_temp::<String>(quick_id))
@@ -965,23 +1000,20 @@ fn render_record_multi_select_chips(
                                 .desired_width(145.0),
                         );
                         if resp.changed() {
-                            ui.ctx().data_mut(|d| d.insert_temp(quick_id, new_opt.clone()));
+                            ui.ctx()
+                                .data_mut(|d| d.insert_temp(quick_id, new_opt.clone()));
                         }
                         let enter =
                             resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (ui.small_button("+").clicked() || enter)
-                            && !new_opt.trim().is_empty()
-                        {
+                        if (ui.small_button("+").clicked() || enter) && !new_opt.trim().is_empty() {
                             let trimmed = new_opt.trim().to_owned();
                             let mut opts = property.options.clone();
                             if !opts.iter().any(|o| o.name == trimmed) {
                                 opts.push(PropertyOption::new(&trimmed));
-                                intents.push(Intent::Action(
-                                    Action::SetDatabasePropertyOptions {
-                                        property: prop_id,
-                                        options: opts,
-                                    },
-                                ));
+                                intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
+                                    property: prop_id,
+                                    options: opts,
+                                }));
                             }
                             let mut updated = selected.clone();
                             if !updated.contains(&trimmed) {
@@ -1226,11 +1258,7 @@ fn auto_fit_created_column(ui: &Ui, rows: &[&DatabaseRow]) -> f32 {
     header_w.max(max_row_w).clamp(80.0, 400.0)
 }
 
-fn auto_fit_property_column(
-    ui: &Ui,
-    property: &DatabaseProperty,
-    rows: &[&DatabaseRow],
-) -> f32 {
+fn auto_fit_property_column(ui: &Ui, property: &DatabaseProperty, rows: &[&DatabaseRow]) -> f32 {
     let icon = property_icon(&property.kind);
     let header_label = format!("{icon}  {} ▼", property.name);
     let header_w = measure_text_width(ui, &header_label, FontId::proportional(12.5)) + 44.0;
@@ -1318,10 +1346,7 @@ fn handle_column_resize(
 
     if response.hovered() || response.dragged() {
         ui.painter().line_segment(
-            [
-                egui::pos2(x, top_y),
-                egui::pos2(x, top_y + total_height),
-            ],
+            [egui::pos2(x, top_y), egui::pos2(x, top_y + total_height)],
             egui::Stroke::new(2.0, palette.accent),
         );
     }
@@ -1336,12 +1361,11 @@ fn handle_column_resize(
     None
 }
 
-fn live_column_width(
-    ui: &Ui,
-    id_salt: impl std::hash::Hash,
-    stored_width: f32,
-) -> f32 {
-    let id = ui.id().with(("table-col-resize", id_salt)).with("drag-width");
+fn live_column_width(ui: &Ui, id_salt: impl std::hash::Hash, stored_width: f32) -> f32 {
+    let id = ui
+        .id()
+        .with(("table-col-resize", id_salt))
+        .with("drag-width");
     ui.ctx()
         .data(|d| d.get_temp::<f32>(id))
         .unwrap_or(stored_width)
@@ -1429,7 +1453,11 @@ fn show_table(
                             ""
                         };
                         let header_label = format!("Aa  Name{sort_arrow}");
-                        let text_color = if is_active_sort { palette.text } else { palette.muted };
+                        let text_color = if is_active_sort {
+                            palette.text
+                        } else {
+                            palette.muted
+                        };
                         let resp = ui.add_sized(
                             [ui.available_width(), TABLE_HEADER_HEIGHT],
                             egui::Button::new(
@@ -1463,8 +1491,11 @@ fn show_table(
                                 ""
                             };
                             let header_label = format!("🕒  Created{sort_arrow}");
-                            let text_color =
-                                if is_active_sort { palette.text } else { palette.muted };
+                            let text_color = if is_active_sort {
+                                palette.text
+                            } else {
+                                palette.muted
+                            };
                             let resp = ui.add_sized(
                                 [ui.available_width(), TABLE_HEADER_HEIGHT],
                                 egui::Button::new(
@@ -1530,13 +1561,10 @@ fn show_table(
                     ui.painter()
                         .line_segment([add_rect.right_top(), add_rect.right_bottom()], stroke);
 
-                    let mut child_ui = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(add_rect)
-                            .layout(egui::Layout::centered_and_justified(
-                                egui::Direction::LeftToRight,
-                            )),
-                    );
+                    let mut child_ui =
+                        ui.new_child(egui::UiBuilder::new().max_rect(add_rect).layout(
+                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        ));
                     let menu_resp = child_ui.menu_button(
                         RichText::new("+").size(16.0).color(palette.muted).strong(),
                         |ui| {
@@ -1559,10 +1587,8 @@ fn show_table(
                 .ctx()
                 .data(|d| d.get_temp(selection_id))
                 .unwrap_or_default();
-            let mut anchor_row: Option<crate::domain::model::PageId> = ui
-                .ctx()
-                .data(|d| d.get_temp(anchor_id))
-                .flatten();
+            let mut anchor_row: Option<crate::domain::model::PageId> =
+                ui.ctx().data(|d| d.get_temp(anchor_id)).flatten();
 
             let valid_ids: std::collections::HashSet<_> = rows.iter().map(|r| r.page.id).collect();
             selected_rows.retain(|id| valid_ids.contains(id));
@@ -1574,19 +1600,26 @@ fn show_table(
 
             let (is_ctrl, is_shift) =
                 ui.input(|i| (i.modifiers.ctrl || i.modifiers.command, i.modifiers.shift));
-            let primary_clicked = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
-            let secondary_clicked = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
+            let primary_clicked =
+                ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+            let secondary_clicked =
+                ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
             let primary_down = ui.input(|i| i.pointer.primary_down());
             let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
-            let primary_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+            let primary_released =
+                ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
             let pointer_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
 
             let marquee_anchor_id = egui::Id::new(("database-table-marquee-anchor", data.page_id));
             let marquee_active_id = egui::Id::new(("database-table-marquee-active", data.page_id));
             let marquee_base_id = egui::Id::new(("database-table-marquee-base", data.page_id));
 
-            let mut marquee_anchor: Option<egui::Pos2> = ui.ctx().data(|d| d.get_temp(marquee_anchor_id)).flatten();
-            let mut marquee_active: bool = ui.ctx().data(|d| d.get_temp(marquee_active_id)).unwrap_or(false);
+            let mut marquee_anchor: Option<egui::Pos2> =
+                ui.ctx().data(|d| d.get_temp(marquee_anchor_id)).flatten();
+            let mut marquee_active: bool = ui
+                .ctx()
+                .data(|d| d.get_temp(marquee_active_id))
+                .unwrap_or(false);
             let mut marquee_base: std::collections::HashSet<crate::domain::model::PageId> = ui
                 .ctx()
                 .data(|d| d.get_temp(marquee_base_id))
@@ -1625,10 +1658,17 @@ fn show_table(
                 egui::vec2(table_width.max(ui.available_width()), active_rows_h),
             );
 
-            if primary_pressed && let Some(pos) = pointer_pos && rows_area.contains(pos) {
+            if primary_pressed
+                && let Some(pos) = pointer_pos
+                && rows_area.contains(pos)
+            {
                 marquee_anchor = Some(pos);
                 marquee_active = false;
-                marquee_base = if is_ctrl { selected_rows.clone() } else { std::collections::HashSet::new() };
+                marquee_base = if is_ctrl {
+                    selected_rows.clone()
+                } else {
+                    std::collections::HashSet::new()
+                };
             }
 
             if primary_down && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
@@ -1641,7 +1681,9 @@ fn show_table(
                 }
             }
 
-            let selection_rect = if marquee_active && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
+            let selection_rect = if marquee_active
+                && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos)
+            {
                 let rect = egui::Rect::from_two_pos(anchor, pos);
                 let painter = ui.ctx().layer_painter(egui::LayerId::new(
                     egui::Order::Foreground,
@@ -1668,7 +1710,8 @@ fn show_table(
                     let speed = ((rows_area.top() + edge_zone - pos.y) * 0.45).clamp(2.0, 18.0);
                     ui.scroll_with_delta(egui::vec2(0.0, speed));
                 } else if pos.y > rows_area.bottom() - edge_zone {
-                    let speed = ((pos.y - (rows_area.bottom() - edge_zone)) * 0.45).clamp(2.0, 18.0);
+                    let speed =
+                        ((pos.y - (rows_area.bottom() - edge_zone)) * 0.45).clamp(2.0, 18.0);
                     ui.scroll_with_delta(egui::vec2(0.0, -speed));
                 }
                 ui.ctx().request_repaint();
@@ -1677,324 +1720,441 @@ fn show_table(
                 None
             };
 
-            egui::ScrollArea::vertical()
+            let focus_record_key = egui::Id::new(("pending-table-focus-record", data.page_id));
+            let pending_focus_record: Option<crate::domain::model::PageId> =
+                ui.ctx().data(|d| d.get_temp(focus_record_key));
+            let pending_focus_row_idx = pending_focus_record
+                .and_then(|target_id| rows.iter().position(|r| r.page.id == target_id));
+
+            let mut vscroll = egui::ScrollArea::vertical()
                 .id_salt(("table-rows-vscroll", data.page_id))
                 .max_height(active_rows_h)
                 .min_scrolled_height(active_rows_h)
-                .auto_shrink([false, !has_custom_height])
-                .show_rows(ui, TABLE_ROW_HEIGHT, rows.len(), |ui, visible| {
-                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                    for row in &rows[visible] {
-                        let row_id = row.page.id;
-                        let row_cursor = ui.cursor().min;
-                        let row_rect = egui::Rect::from_min_size(
-                            row_cursor,
-                            egui::vec2(table_width, TABLE_ROW_HEIGHT),
-                        );
-                        if let Some(sel_rect) = selection_rect {
-                            if sel_rect.intersects(row_rect) {
-                                selected_rows.insert(row_id);
-                            } else if !marquee_base.contains(&row_id) {
-                                selected_rows.remove(&row_id);
-                            }
+                .auto_shrink([false, !has_custom_height]);
+            if let Some(focus_idx) = pending_focus_row_idx {
+                let target_bottom = (focus_idx + 1) as f32 * TABLE_ROW_HEIGHT;
+                let offset = (target_bottom - active_rows_h).max(0.0);
+                vscroll = vscroll.vertical_scroll_offset(offset);
+            }
+            vscroll.show_rows(ui, TABLE_ROW_HEIGHT, rows.len(), |ui, visible| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                for row in &rows[visible] {
+                    let row_id = row.page.id;
+                    let row_cursor = ui.cursor().min;
+                    let row_rect = egui::Rect::from_min_size(
+                        row_cursor,
+                        egui::vec2(table_width, TABLE_ROW_HEIGHT),
+                    );
+                    if let Some(sel_rect) = selection_rect {
+                        if sel_rect.intersects(row_rect) {
+                            selected_rows.insert(row_id);
+                        } else if !marquee_base.contains(&row_id) {
+                            selected_rows.remove(&row_id);
                         }
-                        let is_row_selected = selected_rows.contains(&row_id);
-                        let row_hovered = ui.rect_contains_pointer(row_rect);
+                    }
+                    let is_row_selected = selected_rows.contains(&row_id);
+                    let row_hovered = ui.rect_contains_pointer(row_rect);
 
-                        if primary_clicked && !marquee_active && let Some(pos) = pointer_pos && row_rect.contains(pos) {
-                            if is_ctrl {
-                                if selected_rows.contains(&row_id) {
-                                    selected_rows.remove(&row_id);
-                                } else {
-                                    selected_rows.insert(row_id);
-                                    anchor_row = Some(row_id);
-                                }
-                                if let Some(f) = ui.ctx().memory(|m| m.focused()) {
-                                    ui.ctx().memory_mut(|m| m.surrender_focus(f));
-                                }
-                            } else if is_shift {
-                                let anchor = anchor_row.unwrap_or(row_id);
-                                let p1 = rows.iter().position(|r| r.page.id == anchor).unwrap_or(0);
-                                let p2 = rows.iter().position(|r| r.page.id == row_id).unwrap_or(0);
-                                let start = p1.min(p2);
-                                let end = p1.max(p2);
-                                selected_rows.clear();
-                                for r in &rows[start..=end] {
-                                    selected_rows.insert(r.page.id);
-                                }
-                                if let Some(f) = ui.ctx().memory(|m| m.focused()) {
-                                    ui.ctx().memory_mut(|m| m.surrender_focus(f));
-                                }
-                            }
-                        }
-                        if secondary_clicked && !marquee_active && let Some(pos) = pointer_pos && row_rect.contains(pos) {
-                            if !selected_rows.contains(&row_id) {
-                                selected_rows.clear();
+                    if primary_clicked
+                        && !marquee_active
+                        && let Some(pos) = pointer_pos
+                        && row_rect.contains(pos)
+                    {
+                        if is_ctrl {
+                            if selected_rows.contains(&row_id) {
+                                selected_rows.remove(&row_id);
+                            } else {
                                 selected_rows.insert(row_id);
                                 anchor_row = Some(row_id);
                             }
+                            if let Some(f) = ui.ctx().memory(|m| m.focused()) {
+                                ui.ctx().memory_mut(|m| m.surrender_focus(f));
+                            }
+                        } else if is_shift {
+                            let anchor = anchor_row.unwrap_or(row_id);
+                            let p1 = rows.iter().position(|r| r.page.id == anchor).unwrap_or(0);
+                            let p2 = rows.iter().position(|r| r.page.id == row_id).unwrap_or(0);
+                            let start = p1.min(p2);
+                            let end = p1.max(p2);
+                            selected_rows.clear();
+                            for r in &rows[start..=end] {
+                                selected_rows.insert(r.page.id);
+                            }
+                            if let Some(f) = ui.ctx().memory(|m| m.focused()) {
+                                ui.ctx().memory_mut(|m| m.surrender_focus(f));
+                            }
                         }
+                    }
+                    if secondary_clicked
+                        && !marquee_active
+                        && let Some(pos) = pointer_pos
+                        && row_rect.contains(pos)
+                    {
+                        if !selected_rows.contains(&row_id) {
+                            selected_rows.clear();
+                            selected_rows.insert(row_id);
+                            anchor_row = Some(row_id);
+                        }
+                    }
 
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                            table_cell(
-                                ui,
-                                name_w,
-                                TABLE_ROW_HEIGHT,
-                                palette,
-                                false,
-                                true,
-                                is_row_selected,
-                                |ui, cell_hovered| {
-                                    let hovered = row_hovered || cell_hovered;
-                                    let name_cell_rect = egui::Rect::from_min_size(
-                                        row_cursor,
-                                        egui::vec2(name_w, TABLE_ROW_HEIGHT),
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                        table_cell(
+                            ui,
+                            name_w,
+                            TABLE_ROW_HEIGHT,
+                            palette,
+                            false,
+                            true,
+                            is_row_selected,
+                            |ui, cell_hovered| {
+                                let hovered = row_hovered || cell_hovered;
+                                let name_cell_rect = egui::Rect::from_min_size(
+                                    row_cursor,
+                                    egui::vec2(name_w, TABLE_ROW_HEIGHT),
+                                );
+
+                                let mut sel_box_hit: Option<egui::Rect> = None;
+                                if hovered || is_row_selected {
+                                    let sel_box_rect = egui::Rect::from_center_size(
+                                        ui.cursor().min + egui::vec2(8.0, 10.0),
+                                        egui::vec2(14.0, 14.0),
                                     );
-
-                                    let mut sel_box_hit: Option<egui::Rect> = None;
-                                    if hovered || is_row_selected {
-                                        let sel_box_rect = egui::Rect::from_center_size(
-                                            ui.cursor().min + egui::vec2(8.0, 10.0),
-                                            egui::vec2(14.0, 14.0),
-                                        );
-                                        sel_box_hit = Some(sel_box_rect.expand(2.0));
-                                        let sel_resp = ui.interact(
-                                            sel_box_rect,
-                                            ui.id().with(("row-sel", row.page.id)),
-                                            egui::Sense::click(),
-                                        );
-                                        let check_stroke = egui::Stroke::new(
-                                            1.0,
-                                            if is_row_selected { palette.accent } else { palette.muted },
-                                        );
-                                        ui.painter().rect_stroke(sel_box_rect, 3.0, check_stroke, egui::StrokeKind::Inside);
+                                    sel_box_hit = Some(sel_box_rect.expand(2.0));
+                                    let sel_resp = ui.interact(
+                                        sel_box_rect,
+                                        ui.id().with(("row-sel", row.page.id)),
+                                        egui::Sense::click(),
+                                    );
+                                    let check_stroke = egui::Stroke::new(
+                                        1.0,
                                         if is_row_selected {
-                                            ui.painter().rect_filled(sel_box_rect.shrink(2.5), 2.0, palette.accent);
+                                            palette.accent
+                                        } else {
+                                            palette.muted
+                                        },
+                                    );
+                                    ui.painter().rect_stroke(
+                                        sel_box_rect,
+                                        3.0,
+                                        check_stroke,
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    if is_row_selected {
+                                        ui.painter().rect_filled(
+                                            sel_box_rect.shrink(2.5),
+                                            2.0,
+                                            palette.accent,
+                                        );
+                                    }
+                                    if sel_resp.clicked() && !marquee_active {
+                                        if let Some(f) = ui.ctx().memory(|m| m.focused()) {
+                                            ui.ctx().memory_mut(|m| m.surrender_focus(f));
                                         }
-                                        if sel_resp.clicked() && !marquee_active {
-                                            if is_ctrl {
-                                                if selected_rows.contains(&row_id) {
-                                                    selected_rows.remove(&row_id);
-                                                } else {
-                                                    selected_rows.insert(row_id);
-                                                    anchor_row = Some(row_id);
-                                                }
-                                            } else if is_shift {
-                                                let anchor = anchor_row.unwrap_or(row_id);
-                                                let p1 = rows.iter().position(|r| r.page.id == anchor).unwrap_or(0);
-                                                let p2 = rows.iter().position(|r| r.page.id == row_id).unwrap_or(0);
-                                                let start = p1.min(p2);
-                                                let end = p1.max(p2);
-                                                selected_rows.clear();
-                                                for r in &rows[start..=end] {
-                                                    selected_rows.insert(r.page.id);
-                                                }
-                                            } else if is_row_selected && selected_rows.len() == 1 {
-                                                selected_rows.clear();
-                                                anchor_row = None;
+                                        if is_ctrl {
+                                            if selected_rows.contains(&row_id) {
+                                                selected_rows.remove(&row_id);
                                             } else {
-                                                selected_rows.clear();
                                                 selected_rows.insert(row_id);
                                                 anchor_row = Some(row_id);
                                             }
-                                        }
-                                        ui.add_space(18.0);
-                                    }
-
-                                    let icon_start_x = ui.cursor().min.x;
-                                    let icon = if row.page.icon.is_empty() {
-                                        "📄"
-                                    } else {
-                                        &row.page.icon
-                                    };
-                                    if let Some(new_icon) = crate::ui::icon_picker_button(
-                                        ui,
-                                        ("table-row-icon", row.page.id),
-                                        icon,
-                                        13.0,
-                                        None,
-                                    ) {
-                                        intents.push(Intent::Action(Action::SetDatabaseRecordIcon {
-                                            page: row.page.id,
-                                            icon: new_icon,
-                                        }));
-                                    }
-                                    let icon_hit_rect = egui::Rect::from_min_max(
-                                        egui::pos2(icon_start_x, name_cell_rect.top()),
-                                        egui::pos2(ui.cursor().min.x + 2.0, name_cell_rect.bottom()),
-                                    );
-
-                                    let title = drafts
-                                        .titles
-                                        .entry(row.page.id)
-                                        .or_insert_with(|| row.page.title.clone());
-                                    let width_avail = (if hovered {
-                                        name_w - 82.0
-                                    } else {
-                                        name_w - 42.0
-                                    })
-                                    .max(24.0);
-
-                                    let display_text = if title.is_empty() { "Untitled" } else { title.as_str() };
-                                    let text_width = ui.fonts(|f| {
-                                        f.layout_no_wrap(
-                                            display_text.to_string(),
-                                            FontId::proportional(13.0),
-                                            Color32::WHITE,
-                                        )
-                                        .rect
-                                        .width()
-                                    });
-                                    let title_edit_w = (text_width + 8.0).clamp(24.0, width_avail);
-
-                                    let response = ui.add_enabled(
-                                        !busy,
-                                        egui::TextEdit::singleline(title)
-                                            .hint_text("Untitled")
-                                            .desired_width(title_edit_w)
-                                            .font(FontId::proportional(13.0))
-                                            .frame(false)
-                                            .margin(egui::Margin::ZERO),
-                                    );
-
-                                    if response.gained_focus() {
-                                        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), response.id).unwrap_or_default();
-                                        let char_count = title.chars().count();
-                                        let range = CCursorRange::two(
-                                            CCursor::new(0),
-                                            CCursor::new(char_count),
-                                        );
-                                        state.cursor.set_char_range(Some(range));
-                                        state.store(ui.ctx(), response.id);
-                                        ui.ctx().request_repaint();
-                                    }
-
-                                    if response.lost_focus() && title != &row.page.title {
-                                        intents.push(Intent::Action(Action::RenameDatabaseRecord {
-                                            page: row.page.id,
-                                            title: title.clone(),
-                                        }));
-                                    }
-
-                                    response.context_menu(|ui| {
-                                        if selected_rows.contains(&row.page.id) && selected_rows.len() > 1 {
-                                            let count = selected_rows.len();
-                                            ui.label(RichText::new(format!("{count} records selected")).small().color(palette.muted));
-                                            ui.separator();
-                                            if ui.button(format!("Duplicate {count} records")).clicked() {
-                                                for id in &selected_rows {
-                                                    intents.push(Intent::Action(Action::Duplicate(*id)));
-                                                }
-                                                ui.close_menu();
+                                        } else if is_shift {
+                                            let anchor = anchor_row.unwrap_or(row_id);
+                                            let p1 = rows
+                                                .iter()
+                                                .position(|r| r.page.id == anchor)
+                                                .unwrap_or(0);
+                                            let p2 = rows
+                                                .iter()
+                                                .position(|r| r.page.id == row_id)
+                                                .unwrap_or(0);
+                                            let start = p1.min(p2);
+                                            let end = p1.max(p2);
+                                            selected_rows.clear();
+                                            for r in &rows[start..=end] {
+                                                selected_rows.insert(r.page.id);
                                             }
-                                            ui.separator();
-                                            if ui.button(RichText::new(format!("Move {count} records to trash")).color(palette.danger)).clicked() {
-                                                for id in &selected_rows {
-                                                    intents.push(Intent::Action(Action::Trash(*id)));
-                                                }
-                                                ui.close_menu();
-                                            }
+                                        } else if is_row_selected && selected_rows.len() == 1 {
+                                            selected_rows.clear();
+                                            anchor_row = None;
                                         } else {
-                                            if ui.button("↗  Open page").clicked() {
-                                                intents.push(Intent::Open(row.page.id, None));
-                                                ui.close_menu();
-                                            }
-                                            if ui.button("🗖  Diyalog olarak aç").clicked() {
-                                                intents.push(Intent::OpenInDialog(row.page.id));
-                                                ui.close_menu();
-                                            }
-                                            if ui.button("Duplicate").clicked() {
-                                                intents.push(Intent::Action(Action::Duplicate(row.page.id)));
-                                                ui.close_menu();
-                                            }
-                                            ui.separator();
-                                            if ui.button(RichText::new("Move to trash").color(palette.danger)).clicked() {
-                                                intents.push(Intent::Action(Action::Trash(row.page.id)));
-                                                ui.close_menu();
-                                            }
-                                        }
-                                        ui.separator();
-                                        if ui.button("🎨 Temayı düzenle").clicked() {
-                                            intents.push(Intent::OpenSettingsTheme(ThemeSection::Table));
-                                            ui.close_menu();
-                                        }
-                                    });
-
-                                    let mut open_btn_hit: Option<egui::Rect> = None;
-                                    if hovered {
-                                        let btn_rect = egui::Rect::from_center_size(
-                                            egui::pos2(name_cell_rect.right() - 14.0, name_cell_rect.center().y),
-                                            egui::vec2(20.0, 20.0),
-                                        );
-                                        open_btn_hit = Some(btn_rect.expand(2.0));
-                                        let open_resp = ui.put(
-                                            btn_rect,
-                                            egui::Button::new(
-                                                RichText::new("↗")
-                                                    .color(palette.text)
-                                                    .font(FontId::proportional(12.5)),
-                                            )
-                                            .frame(false),
-                                        );
-                                        if open_resp.on_hover_text("Open page").clicked() {
-                                            intents.push(Intent::Open(row.page.id, None));
+                                            selected_rows.clear();
+                                            selected_rows.insert(row_id);
+                                            anchor_row = Some(row_id);
                                         }
                                     }
+                                    ui.add_space(18.0);
+                                }
 
-                                    let is_interactive = pointer_pos.map_or(false, |pos| {
-                                        sel_box_hit.map_or(false, |r| r.contains(pos))
-                                            || icon_hit_rect.contains(pos)
-                                            || response.rect.contains(pos)
-                                            || open_btn_hit.map_or(false, |r| r.contains(pos))
-                                    });
-
-                                    let in_empty_space = pointer_pos.map_or(false, |pos| name_cell_rect.contains(pos)) && !is_interactive;
-
-                                    if in_empty_space && !marquee_active {
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                        if primary_clicked
-                                            && !is_ctrl
-                                            && !is_shift
-                                            && ui.ctx().dragged_id().is_none()
-                                        {
-                                            intents.push(Intent::Open(row.page.id, None));
-                                        }
-                                    }
-                                },
-                            );
-
-                            if show_created_at {
-                                table_cell(
+                                let icon_start_x = ui.cursor().min.x;
+                                let icon = if row.page.icon.is_empty() {
+                                    "📄"
+                                } else {
+                                    &row.page.icon
+                                };
+                                if let Some(new_icon) = crate::ui::icon_picker_button(
                                     ui,
-                                    created_w,
-                                    TABLE_ROW_HEIGHT,
-                                    palette,
-                                    false,
-                                    false,
-                                    is_row_selected,
-                                    |ui, _| {
+                                    ("table-row-icon", row.page.id),
+                                    icon,
+                                    13.0,
+                                    None,
+                                ) {
+                                    intents.push(Intent::Action(Action::SetDatabaseRecordIcon {
+                                        page: row.page.id,
+                                        icon: new_icon,
+                                    }));
+                                }
+                                let icon_hit_rect = egui::Rect::from_min_max(
+                                    egui::pos2(icon_start_x, name_cell_rect.top()),
+                                    egui::pos2(ui.cursor().min.x + 2.0, name_cell_rect.bottom()),
+                                );
+
+                                let title = drafts
+                                    .titles
+                                    .entry(row.page.id)
+                                    .or_insert_with(|| row.page.title.clone());
+                                let width_avail = (if hovered {
+                                    name_w - 82.0
+                                } else {
+                                    name_w - 42.0
+                                })
+                                .max(24.0);
+
+                                let display_text = if title.is_empty() {
+                                    "Untitled"
+                                } else {
+                                    title.as_str()
+                                };
+                                let text_width = ui.fonts(|f| {
+                                    f.layout_no_wrap(
+                                        display_text.to_string(),
+                                        FontId::proportional(13.0),
+                                        Color32::WHITE,
+                                    )
+                                    .rect
+                                    .width()
+                                });
+                                let title_edit_w = (text_width + 8.0).clamp(24.0, width_avail);
+
+                                let title_edit_id =
+                                    ui.id().with(("table-row-title-edit", row.page.id));
+                                if pending_focus_record == Some(row.page.id) && !busy {
+                                    ui.ctx().memory_mut(|mem| mem.request_focus(title_edit_id));
+                                    let mut state = egui::text_edit::TextEditState::load(
+                                        ui.ctx(),
+                                        title_edit_id,
+                                    )
+                                    .unwrap_or_default();
+                                    let char_count = title.chars().count();
+                                    let range = CCursorRange::two(
+                                        CCursor::new(0),
+                                        CCursor::new(char_count),
+                                    );
+                                    state.cursor.set_char_range(Some(range));
+                                    state.store(ui.ctx(), title_edit_id);
+                                }
+
+                                let response = ui.add_enabled(
+                                    !busy,
+                                    egui::TextEdit::singleline(title)
+                                        .id(title_edit_id)
+                                        .hint_text("Untitled")
+                                        .desired_width(title_edit_w)
+                                        .font(FontId::proportional(13.0))
+                                        .frame(false)
+                                        .margin(egui::Margin::ZERO),
+                                );
+
+                                if pending_focus_record == Some(row.page.id) && !busy {
+                                    response.request_focus();
+                                    let mut state =
+                                        egui::text_edit::TextEditState::load(ui.ctx(), response.id)
+                                            .unwrap_or_default();
+                                    let char_count = title.chars().count();
+                                    let range = CCursorRange::two(
+                                        CCursor::new(0),
+                                        CCursor::new(char_count),
+                                    );
+                                    state.cursor.set_char_range(Some(range));
+                                    state.store(ui.ctx(), response.id);
+                                    ui.ctx().data_mut(|d| {
+                                        d.remove::<crate::domain::model::PageId>(focus_record_key);
+                                    });
+                                    ui.ctx().request_repaint();
+                                }
+
+                                if response.gained_focus() {
+                                    let mut state =
+                                        egui::text_edit::TextEditState::load(ui.ctx(), response.id)
+                                            .unwrap_or_default();
+                                    let char_count = title.chars().count();
+                                    let range = CCursorRange::two(
+                                        CCursor::new(0),
+                                        CCursor::new(char_count),
+                                    );
+                                    state.cursor.set_char_range(Some(range));
+                                    state.store(ui.ctx(), response.id);
+                                    ui.ctx().request_repaint();
+                                }
+
+                                if response.lost_focus() && title != &row.page.title {
+                                    intents.push(Intent::Action(Action::RenameDatabaseRecord {
+                                        page: row.page.id,
+                                        title: title.clone(),
+                                    }));
+                                }
+
+                                response.context_menu(|ui| {
+                                    if selected_rows.contains(&row.page.id)
+                                        && selected_rows.len() > 1
+                                    {
+                                        let count = selected_rows.len();
                                         ui.label(
-                                            RichText::new(format_date(row.page.created_at))
-                                                .font(FontId::proportional(12.0))
+                                            RichText::new(format!("{count} records selected"))
+                                                .small()
                                                 .color(palette.muted),
                                         );
-                                    },
-                                );
-                            }
+                                        ui.separator();
+                                        if ui.button(format!("Duplicate {count} records")).clicked()
+                                        {
+                                            for id in &selected_rows {
+                                                intents
+                                                    .push(Intent::Action(Action::Duplicate(*id)));
+                                            }
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        if ui
+                                            .button(
+                                                RichText::new(format!(
+                                                    "Move {count} records to trash"
+                                                ))
+                                                .color(palette.danger),
+                                            )
+                                            .clicked()
+                                        {
+                                            for id in &selected_rows {
+                                                intents.push(Intent::Action(Action::Trash(*id)));
+                                            }
+                                            ui.close_menu();
+                                        }
+                                    } else {
+                                        if ui.button("↗  Open page").clicked() {
+                                            intents.push(Intent::Open(row.page.id, None));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("🗖  Diyalog olarak aç").clicked() {
+                                            intents.push(Intent::OpenInDialog(row.page.id));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Duplicate").clicked() {
+                                            intents.push(Intent::Action(Action::Duplicate(
+                                                row.page.id,
+                                            )));
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        if ui
+                                            .button(
+                                                RichText::new("Move to trash")
+                                                    .color(palette.danger),
+                                            )
+                                            .clicked()
+                                        {
+                                            intents
+                                                .push(Intent::Action(Action::Trash(row.page.id)));
+                                            ui.close_menu();
+                                        }
+                                    }
+                                    ui.separator();
+                                    if ui.button("🎨 Temayı düzenle").clicked() {
+                                        intents
+                                            .push(Intent::OpenSettingsTheme(ThemeSection::Table));
+                                        ui.close_menu();
+                                    }
+                                });
 
-                            for (idx, property) in visible_properties.iter().enumerate() {
-                                let col_w = prop_widths[idx];
-                                table_cell(
-                                    ui,
-                                    col_w,
-                                    TABLE_ROW_HEIGHT,
-                                    palette,
-                                    false,
-                                    false,
-                                    is_row_selected,
-                                    |ui, _| {
-                                        ui.push_id(("table-prop-cell", row.page.id, property.id), |ui| {
+                                let mut open_btn_hit: Option<egui::Rect> = None;
+                                if hovered {
+                                    let btn_rect = egui::Rect::from_center_size(
+                                        egui::pos2(
+                                            name_cell_rect.right() - 14.0,
+                                            name_cell_rect.center().y,
+                                        ),
+                                        egui::vec2(20.0, 20.0),
+                                    );
+                                    open_btn_hit = Some(btn_rect.expand(2.0));
+                                    let open_resp = ui.put(
+                                        btn_rect,
+                                        egui::Button::new(
+                                            RichText::new("↗")
+                                                .color(palette.text)
+                                                .font(FontId::proportional(12.5)),
+                                        )
+                                        .frame(false),
+                                    );
+                                    if open_resp.on_hover_text("Open page").clicked() {
+                                        intents.push(Intent::Open(row.page.id, None));
+                                    }
+                                }
+
+                                let is_interactive = pointer_pos.map_or(false, |pos| {
+                                    sel_box_hit.map_or(false, |r| r.contains(pos))
+                                        || icon_hit_rect.contains(pos)
+                                        || response.rect.contains(pos)
+                                        || open_btn_hit.map_or(false, |r| r.contains(pos))
+                                });
+
+                                let in_empty_space = pointer_pos
+                                    .map_or(false, |pos| name_cell_rect.contains(pos))
+                                    && !is_interactive;
+
+                                if in_empty_space && !marquee_active {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    if primary_clicked
+                                        && !is_ctrl
+                                        && !is_shift
+                                        && ui.ctx().dragged_id().is_none()
+                                    {
+                                        intents.push(Intent::Open(row.page.id, None));
+                                    }
+                                }
+                            },
+                        );
+
+                        if show_created_at {
+                            table_cell(
+                                ui,
+                                created_w,
+                                TABLE_ROW_HEIGHT,
+                                palette,
+                                false,
+                                false,
+                                is_row_selected,
+                                |ui, _| {
+                                    ui.label(
+                                        RichText::new(format_date(row.page.created_at))
+                                            .font(FontId::proportional(12.0))
+                                            .color(palette.muted),
+                                    );
+                                },
+                            );
+                        }
+
+                        for (idx, property) in visible_properties.iter().enumerate() {
+                            let col_w = prop_widths[idx];
+                            table_cell(
+                                ui,
+                                col_w,
+                                TABLE_ROW_HEIGHT,
+                                palette,
+                                false,
+                                false,
+                                is_row_selected,
+                                |ui, _| {
+                                    ui.push_id(
+                                        ("table-prop-cell", row.page.id, property.id),
+                                        |ui| {
                                             property_editor(
                                                 ui,
                                                 row,
@@ -2005,13 +2165,14 @@ fn show_table(
                                                 intents,
                                                 drafts.values,
                                             );
-                                        });
-                                    },
-                                );
-                            }
-                        });
-                    }
-                });
+                                        },
+                                    );
+                                },
+                            );
+                        }
+                    });
+                }
+            });
 
             // 3. "+ New" Bottom Row
             ui.horizontal(|ui| {
@@ -2040,7 +2201,8 @@ fn show_table(
                             .frame(false),
                         );
                         if resp.clicked() && !busy {
-                            intents.push(Intent::Action(Action::CreateDatabaseRecord(data.page_id)));
+                            intents
+                                .push(Intent::Action(Action::CreateDatabaseRecord(data.page_id)));
                         }
                     },
                 );
@@ -2094,16 +2256,22 @@ fn show_table(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format!("{count} record{} selected", if count == 1 { "" } else { "s" }))
-                            .strong()
-                            .color(palette.accent),
+                        RichText::new(format!(
+                            "{count} record{} selected",
+                            if count == 1 { "" } else { "s" }
+                        ))
+                        .strong()
+                        .color(palette.accent),
                     );
                     if ui.button("Duplicate").clicked() {
                         for id in &selected_rows {
                             intents.push(Intent::Action(Action::Duplicate(*id)));
                         }
                     }
-                    if ui.button(RichText::new("Delete").color(palette.danger)).clicked() {
+                    if ui
+                        .button(RichText::new("Delete").color(palette.danger))
+                        .clicked()
+                    {
                         for id in &selected_rows {
                             intents.push(Intent::Action(Action::Trash(*id)));
                         }
@@ -2126,6 +2294,7 @@ fn show_table(
             });
 
             // 4. Table Calculation / Footer
+            let mut calc_settings_changed = false;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 table_footer_cell(ui, name_w, palette, true, |ui| {
@@ -2138,8 +2307,21 @@ fn show_table(
                 if show_created_at {
                     table_footer_cell(ui, created_w, palette, false, |_ui| {});
                 }
-                for col_w in &prop_widths {
-                    table_footer_cell(ui, *col_w, palette, false, |_ui| {});
+                for (idx, property) in visible_properties.iter().enumerate() {
+                    let col_w = prop_widths[idx];
+                    if property.kind == "number" {
+                        calc_settings_changed |= table_number_footer_cell(
+                            ui,
+                            data,
+                            property,
+                            &rows,
+                            drafts.values,
+                            col_w,
+                            palette,
+                        );
+                    } else {
+                        table_footer_cell(ui, col_w, palette, false, |_ui| {});
+                    }
                 }
             });
 
@@ -2148,14 +2330,15 @@ fn show_table(
             let data_columns_width = name_w
                 + if show_created_at { created_w } else { 0.0 }
                 + prop_widths.iter().sum::<f32>();
-            let mut settings_changed = show_vertical_resize_handle(
-                ui,
-                data,
-                data_columns_width,
-                active_rows_h,
-                TABLE_ROW_HEIGHT,
-                palette,
-            );
+            let mut settings_changed = calc_settings_changed
+                || show_vertical_resize_handle(
+                    ui,
+                    data,
+                    data_columns_width,
+                    active_rows_h,
+                    TABLE_ROW_HEIGHT,
+                    palette,
+                );
 
             let mut boundary_x = table_left + name_w;
 
@@ -2206,7 +2389,9 @@ fn show_table(
                     palette,
                     |ui| auto_fit_property_column(ui, prop, &row_refs),
                 ) {
-                    data.view_settings.table_column_widths.insert(prop.id, new_w);
+                    data.view_settings
+                        .table_column_widths
+                        .insert(prop.id, new_w);
                     settings_changed = true;
                 }
             }
@@ -2253,10 +2438,14 @@ fn table_cell(
     ui.painter().rect_filled(rect, 0.0, fill);
 
     let stroke = egui::Stroke::new(1.0, table_border_color(palette));
-    ui.painter().line_segment([rect.left_top(), rect.right_top()], stroke);
-    ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
-    ui.painter().line_segment([rect.left_top(), rect.left_bottom()], stroke);
-    ui.painter().line_segment([rect.right_top(), rect.right_bottom()], stroke);
+    ui.painter()
+        .line_segment([rect.left_top(), rect.right_top()], stroke);
+    ui.painter()
+        .line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
+    ui.painter()
+        .line_segment([rect.left_top(), rect.left_bottom()], stroke);
+    ui.painter()
+        .line_segment([rect.right_top(), rect.right_bottom()], stroke);
 
     if is_selected && _is_first_col {
         ui.painter().line_segment(
@@ -2295,10 +2484,14 @@ fn table_footer_cell(
     ui.painter().rect_filled(rect, 0.0, fill);
 
     let stroke = egui::Stroke::new(1.0, table_border_color(palette));
-    ui.painter().line_segment([rect.left_top(), rect.right_top()], stroke);
-    ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
-    ui.painter().line_segment([rect.left_top(), rect.left_bottom()], stroke);
-    ui.painter().line_segment([rect.right_top(), rect.right_bottom()], stroke);
+    ui.painter()
+        .line_segment([rect.left_top(), rect.right_top()], stroke);
+    ui.painter()
+        .line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
+    ui.painter()
+        .line_segment([rect.left_top(), rect.left_bottom()], stroke);
+    ui.painter()
+        .line_segment([rect.right_top(), rect.right_bottom()], stroke);
 
     let content_rect = egui::Rect::from_min_max(
         egui::pos2(rect.left() + 8.0, rect.top()),
@@ -2311,6 +2504,136 @@ fn table_footer_cell(
     );
     child_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
     add_contents(&mut child_ui);
+}
+
+fn table_number_footer_cell(
+    ui: &mut Ui,
+    data: &mut DatabaseData,
+    property: &DatabaseProperty,
+    rows: &[DatabaseRow],
+    value_drafts: &HashMap<(i64, i64), String>,
+    width: f32,
+    palette: Palette,
+) -> bool {
+    let mut changed = false;
+    let current_calc = data
+        .view_settings
+        .table_column_calculations
+        .get(&property.id)
+        .copied()
+        .unwrap_or_default();
+
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::click());
+    let popup_id = ui
+        .id()
+        .with(("table-num-calc-popup", data.page_id, property.id));
+    let popup_open = ui.memory(|mem| mem.is_popup_open(popup_id));
+    let hovered = response.hovered() || ui.rect_contains_pointer(rect) || popup_open;
+
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if response.clicked() {
+        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+    }
+
+    let fill = if hovered {
+        palette.hover
+    } else {
+        palette.background
+    };
+    ui.painter().rect_filled(rect, 0.0, fill);
+
+    let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+    ui.painter()
+        .line_segment([rect.left_top(), rect.right_top()], stroke);
+    ui.painter()
+        .line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
+    ui.painter()
+        .line_segment([rect.left_top(), rect.left_bottom()], stroke);
+    ui.painter()
+        .line_segment([rect.right_top(), rect.right_bottom()], stroke);
+
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 8.0, rect.top()),
+        egui::pos2(rect.right() - 4.0, rect.bottom()),
+    );
+    let mut child_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+
+    if current_calc != NumberCalculation::None {
+        let numbers: Vec<f64> = rows
+            .iter()
+            .filter_map(|row| {
+                let raw = value_drafts
+                    .get(&(row.page.id, property.id))
+                    .or_else(|| row.values.get(&property.id))?;
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                trimmed
+                    .replace(',', ".")
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|n| n.is_finite())
+            })
+            .collect();
+        let result_text = current_calc.format_result(&numbers);
+        child_ui.label(
+            RichText::new(result_text)
+                .font(FontId::proportional(11.5))
+                .color(palette.text)
+                .strong(),
+        );
+    } else if hovered {
+        child_ui.label(
+            RichText::new("Hesapla ▾")
+                .font(FontId::proportional(11.0))
+                .color(palette.muted),
+        );
+    }
+
+    egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &response,
+        egui::popup::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(160.0);
+            for calc in NumberCalculation::ALL {
+                if ui
+                    .selectable_label(current_calc == calc, calc.menu_label())
+                    .clicked()
+                {
+                    if calc == NumberCalculation::None {
+                        if data
+                            .view_settings
+                            .table_column_calculations
+                            .remove(&property.id)
+                            .is_some()
+                        {
+                            changed = true;
+                        }
+                    } else if data
+                        .view_settings
+                        .table_column_calculations
+                        .insert(property.id, calc)
+                        != Some(calc)
+                    {
+                        changed = true;
+                    }
+                    ui.memory_mut(|mem| mem.close_popup());
+                }
+            }
+        },
+    );
+
+    changed
 }
 
 pub fn show_property_edit_menu(
@@ -2359,28 +2682,19 @@ pub fn show_property_edit_menu(
         }
     });
 
-    ui.add_space(6.0);
-    ui.label(RichText::new("Property type").small().color(palette.muted));
-    egui::ComboBox::from_id_salt(("property-kind", property.id))
-        .width(230.0)
-        .selected_text(format!(
-            "{}   {}",
-            property_icon(&property.kind),
-            property_types_label(&property.kind)
-        ))
-        .show_ui(ui, |ui| {
-            for (kind, label) in PROPERTY_TYPES {
-                let item_label = format!("{}   {label}", property_icon(kind));
-                if ui.selectable_label(property.kind == kind, item_label).clicked()
-                    && property.kind != kind
-                {
-                    intents.push(Intent::Action(Action::SetDatabasePropertyType {
-                        property: property.id,
-                        kind: kind.into(),
-                    }));
-                }
-            }
-        });
+    ui.add_space(4.0);
+    if let Some(new_kind) = crate::ui::page_properties::show_property_type_selector_button(
+        ui,
+        ("db-prop-kind-picker", property.id),
+        &property.kind,
+        busy,
+        palette,
+    ) {
+        intents.push(Intent::Action(Action::SetDatabasePropertyType {
+            property: property.id,
+            kind: new_kind.into(),
+        }));
+    }
 
     if matches!(property.kind.as_str(), "select" | "status" | "multi-select") {
         ui.add_space(6.0);
@@ -2400,97 +2714,120 @@ pub fn show_property_edit_menu(
                 .max_height(180.0)
                 .show(ui, |ui| {
                     for (opt_idx, option) in property.options.iter().enumerate() {
-                        ui.push_id(("prop-edit-opt-row", property.id, opt_idx, &option.name), |ui| {
-                            let opt_draft_id =
-                                egui::Id::new(("prop-option-edit", property.id, opt_idx, &option.name));
-                            let mut opt_text = ui
-                                .ctx()
-                                .data(|d| d.get_temp::<String>(opt_draft_id))
-                                .unwrap_or_else(|| option.name.clone());
-                            let opt_color = resolve_option_color(option.color.as_deref());
-                            let dot_color = option_base_color(palette, &property.kind, &option.name, opt_color);
-                            ui.horizontal(|ui| {
-                                ui.menu_button(
-                                    RichText::new("●")
-                                        .font(FontId::proportional(14.0))
-                                        .color(dot_color),
-                                    |ui| {
-                                        show_color_palette_grid(ui, palette, opt_color, |new_color| {
-                                            let mut reordered = property.options.clone();
-                                            if let Some(target) = reordered.get_mut(opt_idx) {
-                                                target.color = new_color;
-                                                intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
-                                                    property: property.id,
-                                                    options: reordered,
-                                                }));
-                                            }
-                                        });
-                                    },
-                                )
-                                .response
-                                .on_hover_text("Change color");
-
-                                let resp = ui.add_enabled(
-                                    !busy,
-                                    egui::TextEdit::singleline(&mut opt_text).desired_width(145.0),
+                        ui.push_id(
+                            ("prop-edit-opt-row", property.id, opt_idx, &option.name),
+                            |ui| {
+                                let opt_draft_id = egui::Id::new((
+                                    "prop-option-edit",
+                                    property.id,
+                                    opt_idx,
+                                    &option.name,
+                                ));
+                                let mut opt_text = ui
+                                    .ctx()
+                                    .data(|d| d.get_temp::<String>(opt_draft_id))
+                                    .unwrap_or_else(|| option.name.clone());
+                                let opt_color = resolve_option_color(option.color.as_deref());
+                                let dot_color = option_base_color(
+                                    palette,
+                                    &property.kind,
+                                    &option.name,
+                                    opt_color,
                                 );
-                                if resp.changed() {
-                                    ui.ctx()
-                                        .data_mut(|d| d.insert_temp(opt_draft_id, opt_text.clone()));
-                                }
-                                let commit = resp.lost_focus()
-                                    || (resp.has_focus()
-                                        && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                                if commit && !opt_text.trim().is_empty() && opt_text.trim() != option.name {
-                                    intents.push(Intent::Action(
-                                        Action::RenameDatabasePropertyOption {
-                                            property: property.id,
-                                            old_option: option.name.clone(),
-                                            new_option: opt_text.trim().to_owned(),
+                                ui.horizontal(|ui| {
+                                    ui.menu_button(
+                                        RichText::new("●")
+                                            .font(FontId::proportional(14.0))
+                                            .color(dot_color),
+                                        |ui| {
+                                            show_color_palette_grid(
+                                                ui,
+                                                palette,
+                                                opt_color,
+                                                |new_color| {
+                                                    let mut reordered = property.options.clone();
+                                                    if let Some(target) = reordered.get_mut(opt_idx)
+                                                    {
+                                                        target.color = new_color;
+                                                        intents.push(Intent::Action(
+                                                            Action::SetDatabasePropertyOptions {
+                                                                property: property.id,
+                                                                options: reordered,
+                                                            },
+                                                        ));
+                                                    }
+                                                },
+                                            );
                                         },
-                                    ));
-                                    ui.ctx().data_mut(|d| d.remove::<String>(opt_draft_id));
-                                }
-                                if opt_idx > 0
-                                    && ui
-                                        .small_button("↑")
-                                        .on_hover_text("Move up")
+                                    )
+                                    .response
+                                    .on_hover_text("Change color");
+
+                                    let resp = ui.add_enabled(
+                                        !busy,
+                                        egui::TextEdit::singleline(&mut opt_text)
+                                            .desired_width(145.0),
+                                    );
+                                    if resp.changed() {
+                                        ui.ctx().data_mut(|d| {
+                                            d.insert_temp(opt_draft_id, opt_text.clone())
+                                        });
+                                    }
+                                    let commit = resp.lost_focus()
+                                        || (resp.has_focus()
+                                            && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                                    if commit
+                                        && !opt_text.trim().is_empty()
+                                        && opt_text.trim() != option.name
+                                    {
+                                        intents.push(Intent::Action(
+                                            Action::RenameDatabasePropertyOption {
+                                                property: property.id,
+                                                old_option: option.name.clone(),
+                                                new_option: opt_text.trim().to_owned(),
+                                            },
+                                        ));
+                                        ui.ctx().data_mut(|d| d.remove::<String>(opt_draft_id));
+                                    }
+                                    if opt_idx > 0
+                                        && ui.small_button("↑").on_hover_text("Move up").clicked()
+                                    {
+                                        let mut reordered = property.options.clone();
+                                        reordered.swap(opt_idx, opt_idx - 1);
+                                        intents.push(Intent::Action(
+                                            Action::SetDatabasePropertyOptions {
+                                                property: property.id,
+                                                options: reordered,
+                                            },
+                                        ));
+                                    }
+                                    if opt_idx + 1 < property.options.len()
+                                        && ui.small_button("↓").on_hover_text("Move down").clicked()
+                                    {
+                                        let mut reordered = property.options.clone();
+                                        reordered.swap(opt_idx, opt_idx + 1);
+                                        intents.push(Intent::Action(
+                                            Action::SetDatabasePropertyOptions {
+                                                property: property.id,
+                                                options: reordered,
+                                            },
+                                        ));
+                                    }
+                                    if ui
+                                        .small_button(RichText::new("✕").color(palette.danger))
+                                        .on_hover_text("Remove option")
                                         .clicked()
-                                {
-                                    let mut reordered = property.options.clone();
-                                    reordered.swap(opt_idx, opt_idx - 1);
-                                    intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
-                                        property: property.id,
-                                        options: reordered,
-                                    }));
-                                }
-                                if opt_idx + 1 < property.options.len()
-                                    && ui
-                                        .small_button("↓")
-                                        .on_hover_text("Move down")
-                                        .clicked()
-                                {
-                                    let mut reordered = property.options.clone();
-                                    reordered.swap(opt_idx, opt_idx + 1);
-                                    intents.push(Intent::Action(Action::SetDatabasePropertyOptions {
-                                        property: property.id,
-                                        options: reordered,
-                                    }));
-                                }
-                                if ui
-                                    .small_button(RichText::new("✕").color(palette.danger))
-                                    .on_hover_text("Remove option")
-                                    .clicked()
-                                {
-                                    intents.push(Intent::Action(
-                                        Action::RemoveDatabasePropertyOption {
-                                            property: property.id,
-                                            option: option.name.clone(),
-                                        },
-                                    ));
-                                }
-                            });
-                        });
+                                    {
+                                        intents.push(Intent::Action(
+                                            Action::RemoveDatabasePropertyOption {
+                                                property: property.id,
+                                                option: option.name.clone(),
+                                            },
+                                        ));
+                                    }
+                                });
+                            },
+                        );
                     }
                 });
         }
@@ -2512,10 +2849,12 @@ pub fn show_property_edit_menu(
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(new_opt_id, new_opt.clone()));
             }
-            let enter_add =
-                new_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let enter_add = new_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let add_clicked = ui
-                .add_enabled(!busy && !new_opt.trim().is_empty(), egui::Button::new("+ Add"))
+                .add_enabled(
+                    !busy && !new_opt.trim().is_empty(),
+                    egui::Button::new("+ Add"),
+                )
                 .clicked();
             if (enter_add || add_clicked) && !new_opt.trim().is_empty() {
                 let mut updated = property.options.clone();
@@ -2583,7 +2922,11 @@ fn show_property_header(
     };
     let icon = property_icon(&property.kind);
     let label = format!("{icon}  {}{sort_arrow}", property.name);
-    let text_color = if is_active_sort { palette.text } else { palette.muted };
+    let text_color = if is_active_sort {
+        palette.text
+    } else {
+        palette.muted
+    };
 
     let text_width = if hovered {
         (column_width - 38.0).max(24.0)
@@ -2602,7 +2945,10 @@ fn show_property_header(
             )
             .frame(false),
         )
-        .on_hover_text(format!("{} (Left click: sort · Right click: edit)", property.name));
+        .on_hover_text(format!(
+            "{} (Left click: sort · Right click: edit)",
+            property.name
+        ));
 
     if resp.clicked() {
         toggle_sort(data, &sort_key, intents);
@@ -2674,64 +3020,93 @@ fn property_editor(
                         .color(text_color),
                     |ui| {
                         ui.set_min_width(190.0);
-                        if ui
-                            .selectable_label(value.is_empty(), "None")
-                            .clicked()
+                        if ui.selectable_label(value.is_empty(), "None").clicked()
                             && !value.is_empty()
                         {
                             intents.push(action(String::new()));
                             ui.close_menu();
                         }
                         for (opt_idx, option) in property.options.iter().enumerate() {
-                            ui.push_id(("cell-sel-opt", row.page.id, property.id, opt_idx, &option.name), |ui| {
-                                let opt_color = resolve_option_color(option.color.as_deref());
-                                let dot_color = option_base_color(palette, &property.kind, &option.name, opt_color);
-                                ui.horizontal(|ui| {
-                                    ui.menu_button(
-                                        RichText::new("●")
-                                            .font(FontId::proportional(13.0))
-                                            .color(dot_color),
-                                        |ui| {
-                                            show_color_palette_grid(ui, palette, opt_color, |new_color| {
-                                                let mut opts = property.options.clone();
-                                                if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
-                                                    target.color = new_color;
-                                                    intents.push(Intent::Action(
+                            ui.push_id(
+                                (
+                                    "cell-sel-opt",
+                                    row.page.id,
+                                    property.id,
+                                    opt_idx,
+                                    &option.name,
+                                ),
+                                |ui| {
+                                    let opt_color = resolve_option_color(option.color.as_deref());
+                                    let dot_color = option_base_color(
+                                        palette,
+                                        &property.kind,
+                                        &option.name,
+                                        opt_color,
+                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.menu_button(
+                                            RichText::new("●")
+                                                .font(FontId::proportional(13.0))
+                                                .color(dot_color),
+                                            |ui| {
+                                                show_color_palette_grid(
+                                                    ui,
+                                                    palette,
+                                                    opt_color,
+                                                    |new_color| {
+                                                        let mut opts = property.options.clone();
+                                                        if let Some(target) = opts
+                                                            .iter_mut()
+                                                            .find(|o| o.name == option.name)
+                                                        {
+                                                            target.color = new_color;
+                                                            intents.push(Intent::Action(
                                                         Action::SetDatabasePropertyOptions {
                                                             property: property.id,
                                                             options: opts,
                                                         },
                                                     ));
-                                                }
-                                            });
-                                        },
-                                    )
-                                    .response
-                                    .on_hover_text("Change color");
+                                                        }
+                                                    },
+                                                );
+                                            },
+                                        )
+                                        .response
+                                        .on_hover_text("Change color");
 
-                                    if ui.selectable_label(value == option.name, &option.name).clicked()
-                                        && value != option.name
-                                    {
-                                        intents.push(action(option.name.clone()));
-                                        ui.close_menu();
-                                    }
-
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if ui
-                                            .small_button(RichText::new("✕").size(10.5).color(palette.muted))
-                                            .on_hover_text("Delete option from property")
+                                            .selectable_label(value == option.name, &option.name)
                                             .clicked()
+                                            && value != option.name
                                         {
-                                            intents.push(Intent::Action(
-                                                Action::RemoveDatabasePropertyOption {
-                                                    property: property.id,
-                                                    option: option.name.clone(),
-                                                },
-                                            ));
+                                            intents.push(action(option.name.clone()));
+                                            ui.close_menu();
                                         }
+
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .small_button(
+                                                        RichText::new("✕")
+                                                            .size(10.5)
+                                                            .color(palette.muted),
+                                                    )
+                                                    .on_hover_text("Delete option from property")
+                                                    .clicked()
+                                                {
+                                                    intents.push(Intent::Action(
+                                                        Action::RemoveDatabasePropertyOption {
+                                                            property: property.id,
+                                                            option: option.name.clone(),
+                                                        },
+                                                    ));
+                                                }
+                                            },
+                                        );
                                     });
-                                });
-                            });
+                                },
+                            );
                         }
                         ui.separator();
                         let quick_opt_id =
@@ -2777,10 +3152,7 @@ fn property_editor(
         }
         "checkbox" => {
             let mut checked = value == "true";
-            if ui
-                .add(egui::Checkbox::without_text(&mut checked))
-                .changed()
-            {
+            if ui.add(egui::Checkbox::without_text(&mut checked)).changed() {
                 intents.push(action(checked.to_string()));
             }
         }
@@ -2817,7 +3189,11 @@ fn property_editor(
             } else {
                 (
                     palette.accent_soft,
-                    if palette.is_dark() { Color32::WHITE } else { palette.text },
+                    if palette.is_dark() {
+                        Color32::WHITE
+                    } else {
+                        palette.text
+                    },
                     egui::Stroke::NONE,
                 )
             };
@@ -2841,59 +3217,88 @@ fn property_editor(
                             );
                         }
                         for (opt_idx, option) in property.options.iter().enumerate() {
-                            ui.push_id(("cell-multi-opt", row.page.id, property.id, opt_idx, &option.name), |ui| {
-                                let mut enabled = selected.contains(&option.name);
-                                let opt_color = resolve_option_color(option.color.as_deref());
-                                let dot_color = option_base_color(palette, "multi-select", &option.name, opt_color);
-                                ui.horizontal(|ui| {
-                                    ui.menu_button(
-                                        RichText::new("●")
-                                            .font(FontId::proportional(13.0))
-                                            .color(dot_color),
-                                        |ui| {
-                                            show_color_palette_grid(ui, palette, opt_color, |new_color| {
-                                                let mut opts = property.options.clone();
-                                                if let Some(target) = opts.iter_mut().find(|o| o.name == option.name) {
-                                                    target.color = new_color;
-                                                    intents.push(Intent::Action(
+                            ui.push_id(
+                                (
+                                    "cell-multi-opt",
+                                    row.page.id,
+                                    property.id,
+                                    opt_idx,
+                                    &option.name,
+                                ),
+                                |ui| {
+                                    let mut enabled = selected.contains(&option.name);
+                                    let opt_color = resolve_option_color(option.color.as_deref());
+                                    let dot_color = option_base_color(
+                                        palette,
+                                        "multi-select",
+                                        &option.name,
+                                        opt_color,
+                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.menu_button(
+                                            RichText::new("●")
+                                                .font(FontId::proportional(13.0))
+                                                .color(dot_color),
+                                            |ui| {
+                                                show_color_palette_grid(
+                                                    ui,
+                                                    palette,
+                                                    opt_color,
+                                                    |new_color| {
+                                                        let mut opts = property.options.clone();
+                                                        if let Some(target) = opts
+                                                            .iter_mut()
+                                                            .find(|o| o.name == option.name)
+                                                        {
+                                                            target.color = new_color;
+                                                            intents.push(Intent::Action(
                                                         Action::SetDatabasePropertyOptions {
                                                             property: property.id,
                                                             options: opts,
                                                         },
                                                     ));
+                                                        }
+                                                    },
+                                                );
+                                            },
+                                        )
+                                        .response
+                                        .on_hover_text("Change color");
+
+                                        if ui.checkbox(&mut enabled, &option.name).changed() {
+                                            let mut next = selected.clone();
+                                            if enabled && !next.contains(&option.name) {
+                                                next.push(option.name.clone());
+                                            } else if !enabled {
+                                                next.retain(|item| item != &option.name);
+                                            }
+                                            intents.push(action(next.join("|")));
+                                        }
+
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .small_button(
+                                                        RichText::new("✕")
+                                                            .size(10.5)
+                                                            .color(palette.muted),
+                                                    )
+                                                    .on_hover_text("Delete option from property")
+                                                    .clicked()
+                                                {
+                                                    intents.push(Intent::Action(
+                                                        Action::RemoveDatabasePropertyOption {
+                                                            property: property.id,
+                                                            option: option.name.clone(),
+                                                        },
+                                                    ));
                                                 }
-                                            });
-                                        },
-                                    )
-                                    .response
-                                    .on_hover_text("Change color");
-
-                                    if ui.checkbox(&mut enabled, &option.name).changed() {
-                                        let mut next = selected.clone();
-                                        if enabled && !next.contains(&option.name) {
-                                            next.push(option.name.clone());
-                                        } else if !enabled {
-                                            next.retain(|item| item != &option.name);
-                                        }
-                                        intents.push(action(next.join("|")));
-                                    }
-
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui
-                                            .small_button(RichText::new("✕").size(10.5).color(palette.muted))
-                                            .on_hover_text("Delete option from property")
-                                            .clicked()
-                                        {
-                                            intents.push(Intent::Action(
-                                                Action::RemoveDatabasePropertyOption {
-                                                    property: property.id,
-                                                    option: option.name.clone(),
-                                                },
-                                            ));
-                                        }
+                                            },
+                                        );
                                     });
-                                });
-                            });
+                                },
+                            );
                         }
                         ui.separator();
                         let quick_opt_id =
@@ -2965,14 +3370,12 @@ fn property_editor(
                         .font(FontId::proportional(12.5))
                         .color(label_color),
                     |ui| {
-                        if let Some(chosen) =
-                            crate::ui::page_properties::show_date_picker_popup(
-                                ui,
-                                ("db-cell-cal", row.page.id, property.id),
-                                &value,
-                                palette,
-                            )
-                        {
+                        if let Some(chosen) = crate::ui::page_properties::show_date_picker_popup(
+                            ui,
+                            ("db-cell-cal", row.page.id, property.id),
+                            &value,
+                            palette,
+                        ) {
                             value_drafts.remove(&(row.page.id, property.id));
                             intents.push(action(chosen));
                             ui.close_menu();
@@ -2983,23 +3386,73 @@ fn property_editor(
                 .on_hover_text("Select date from calendar");
             });
         }
+        "created_time" => {
+            let display = if value.trim().is_empty() {
+                format_date(row.page.created_at)
+            } else {
+                value
+            };
+            ui.label(
+                RichText::new(display)
+                    .font(FontId::proportional(12.5))
+                    .color(palette.muted),
+            );
+        }
+        "last_edited_time" => {
+            let ts = row.page.updated_at.max(row.page.created_at);
+            let display = if value.trim().is_empty() {
+                format_date(ts)
+            } else {
+                value
+            };
+            ui.label(
+                RichText::new(display)
+                    .font(FontId::proportional(12.5))
+                    .color(palette.muted),
+            );
+        }
         _ => {
             let edited = value_drafts
                 .entry((row.page.id, property.id))
                 .or_insert_with(|| value.clone());
+            let default_id_hint = format!("#{}", row.page.id);
+            let hint_text: &str = match property.kind.as_str() {
+                "url" => "https://…",
+                "email" => "name@example.com",
+                "phone" => "+90…",
+                "id" => &default_id_hint,
+                _ => "Empty",
+            };
+            let has_url_action = property.kind == "url" && !edited.trim().is_empty();
+            let edit_w = if has_url_action {
+                (column_width - 36.0).max(24.0)
+            } else {
+                (column_width - 16.0).max(24.0)
+            };
             let text = ui.add_enabled(
                 !busy,
                 egui::TextEdit::singleline(edited)
-                    .desired_width((column_width - 16.0).max(24.0))
+                    .desired_width(edit_w)
                     .font(FontId::proportional(13.0))
                     .frame(false)
                     .margin(egui::Margin::ZERO)
-                    .hint_text(if property.kind == "number" {
-                        "Empty"
-                    } else {
-                        "Empty"
-                    }),
+                    .hint_text(hint_text),
             );
+            if has_url_action
+                && ui
+                    .small_button(RichText::new("↗").color(palette.accent))
+                    .on_hover_text("Open URL")
+                    .clicked()
+            {
+                let target_url = edited.trim();
+                let full_url =
+                    if target_url.starts_with("http://") || target_url.starts_with("https://") {
+                        target_url.to_owned()
+                    } else {
+                        format!("https://{target_url}")
+                    };
+                intents.push(Intent::OpenUrl(full_url));
+            }
             let enter = text.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if (text.lost_focus() || enter) && edited != &value {
                 intents.push(action(edited.clone()));
@@ -3009,34 +3462,94 @@ fn property_editor(
 }
 
 pub fn add_property_menu(ui: &mut Ui, data: &DatabaseData, intents: &mut Vec<Intent>) {
+    let mut palette = Palette::new(ui.visuals().dark_mode);
+    palette.background = ui.visuals().window_fill;
+    palette.text = ui.visuals().text_color();
+    palette.hover = ui.visuals().widgets.hovered.bg_fill;
+    palette.accent_soft = ui.visuals().selection.bg_fill;
+    palette.accent = ui.visuals().selection.stroke.color;
+
     let name_id = egui::Id::new(("new-database-property-name", data.page_id));
     let mut name = ui
         .ctx()
-        .data(|data| data.get_temp::<String>(name_id))
-        .unwrap_or_else(|| format!("Property {}", data.properties.len() + 1));
-    ui.label(RichText::new("Property name").small());
-    if ui.text_edit_singleline(&mut name).changed() {
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(name_id, name.clone()));
+        .data(|d| d.get_temp::<String>(name_id))
+        .unwrap_or_default();
+
+    let name_resp = ui.add(
+        egui::TextEdit::singleline(&mut name)
+            .hint_text("Type a property name…")
+            .desired_width(296.0),
+    );
+    if name_resp.changed() {
+        ui.ctx().data_mut(|d| d.insert_temp(name_id, name.clone()));
     }
+
+    let enter_pressed = name_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if enter_pressed && !name.trim().is_empty() {
+        let final_name = unique_db_property_name(&data.properties, name.trim());
+        intents.push(Intent::Action(Action::AddDatabaseProperty {
+            database: data.page_id,
+            name: final_name,
+            kind: "text".into(),
+            options: Vec::new(),
+        }));
+        ui.ctx().data_mut(|d| d.remove::<String>(name_id));
+        ui.close_menu();
+        return;
+    }
+
     ui.separator();
-    ui.label(RichText::new("Type").small());
-    for (kind, label) in PROPERTY_TYPES {
-        let icon = property_icon(kind);
-        if ui.button(format!("{icon}  {label}")).clicked() {
-            intents.push(Intent::Action(Action::AddDatabaseProperty {
-                database: data.page_id,
-                name: if name.trim().is_empty() {
-                    format!("Property {}", data.properties.len() + 1)
-                } else {
-                    name.trim().to_owned()
-                },
-                kind: kind.into(),
-                options: Vec::new(),
-            }));
-            ui.ctx().data_mut(|data| data.remove::<String>(name_id));
-            ui.close_menu();
+
+    if let Some(kind) = crate::ui::page_properties::show_property_type_picker(
+        ui,
+        ("add-db-prop-type-picker", data.page_id),
+        None,
+        false,
+        palette,
+    ) {
+        let base_name = if name.trim().is_empty() {
+            crate::ui::page_properties::default_name_for_kind(kind)
+        } else {
+            name.trim()
+        };
+        let final_name = unique_db_property_name(&data.properties, base_name);
+        let options = if kind == "status" {
+            crate::domain::model::DEFAULT_DATABASE_STATUS_OPTIONS
+                .iter()
+                .map(|s| PropertyOption::new(*s))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        intents.push(Intent::Action(Action::AddDatabaseProperty {
+            database: data.page_id,
+            name: final_name,
+            kind: kind.into(),
+            options,
+        }));
+        ui.ctx().data_mut(|d| d.remove::<String>(name_id));
+        ui.close_menu();
+    }
+}
+
+fn unique_db_property_name(existing: &[DatabaseProperty], desired: &str) -> String {
+    let desired = desired.trim();
+    if !existing
+        .iter()
+        .any(|p| p.name.eq_ignore_ascii_case(desired))
+    {
+        return desired.to_owned();
+    }
+    let mut counter = 2usize;
+    loop {
+        let candidate = format!("{desired} {counter}");
+        if !existing
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
         }
+        counter += 1;
     }
 }
 
@@ -3066,10 +3579,8 @@ fn show_cards(
         .ctx()
         .data(|d| d.get_temp(selection_id))
         .unwrap_or_default();
-    let mut anchor_row: Option<crate::domain::model::PageId> = ui
-        .ctx()
-        .data(|d| d.get_temp(anchor_id))
-        .flatten();
+    let mut anchor_row: Option<crate::domain::model::PageId> =
+        ui.ctx().data(|d| d.get_temp(anchor_id)).flatten();
     let valid_ids: std::collections::HashSet<_> = rows.iter().map(|r| r.page.id).collect();
     selected_rows.retain(|id| valid_ids.contains(id));
     if let Some(anchor) = anchor_row
@@ -3090,8 +3601,12 @@ fn show_cards(
     let marquee_active_id = egui::Id::new(("database-cards-marquee-active", data.page_id));
     let marquee_base_id = egui::Id::new(("database-cards-marquee-base", data.page_id));
 
-    let mut marquee_anchor: Option<egui::Pos2> = ui.ctx().data(|d| d.get_temp(marquee_anchor_id)).flatten();
-    let mut marquee_active: bool = ui.ctx().data(|d| d.get_temp(marquee_active_id)).unwrap_or(false);
+    let mut marquee_anchor: Option<egui::Pos2> =
+        ui.ctx().data(|d| d.get_temp(marquee_anchor_id)).flatten();
+    let mut marquee_active: bool = ui
+        .ctx()
+        .data(|d| d.get_temp(marquee_active_id))
+        .unwrap_or(false);
     let mut marquee_base: std::collections::HashSet<crate::domain::model::PageId> = ui
         .ctx()
         .data(|d| d.get_temp(marquee_base_id))
@@ -3143,24 +3658,24 @@ fn show_cards(
     } else {
         row_count as f32 * card_height + row_count.saturating_sub(1) as f32 * row_gap
     };
-    let (active_h, has_custom_height) = resolve_vertical_height(
-        ui,
-        data,
-        natural_h,
-        DEFAULT_GALLERY_MAX_HEIGHT,
-        card_height,
-    );
+    let (active_h, has_custom_height) =
+        resolve_vertical_height(ui, data, natural_h, DEFAULT_GALLERY_MAX_HEIGHT, card_height);
 
     let cards_start_cursor = ui.cursor().min;
-    let cards_area = egui::Rect::from_min_size(
-        cards_start_cursor,
-        egui::vec2(total_width, active_h),
-    );
+    let cards_area =
+        egui::Rect::from_min_size(cards_start_cursor, egui::vec2(total_width, active_h));
 
-    if primary_pressed && let Some(pos) = pointer_pos && cards_area.contains(pos) {
+    if primary_pressed
+        && let Some(pos) = pointer_pos
+        && cards_area.contains(pos)
+    {
         marquee_anchor = Some(pos);
         marquee_active = false;
-        marquee_base = if is_ctrl { selected_rows.clone() } else { std::collections::HashSet::new() };
+        marquee_base = if is_ctrl {
+            selected_rows.clone()
+        } else {
+            std::collections::HashSet::new()
+        };
     }
 
     if primary_down && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
@@ -3173,41 +3688,42 @@ fn show_cards(
         }
     }
 
-    let selection_rect = if marquee_active && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
-        let rect = egui::Rect::from_two_pos(anchor, pos);
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
-            egui::Id::new(("cards-marquee-painter", data.page_id)),
-        ));
-        painter.rect_filled(
-            rect,
-            2.0,
-            Color32::from_rgba_unmultiplied(
-                palette.accent.r(),
-                palette.accent.g(),
-                palette.accent.b(),
-                30,
-            ),
-        );
-        painter.rect_stroke(
-            rect,
-            2.0,
-            egui::Stroke::new(1.2, palette.accent),
-            egui::StrokeKind::Inside,
-        );
-        let edge_zone = 28.0;
-        if pos.y < cards_area.top() + edge_zone {
-            let speed = ((cards_area.top() + edge_zone - pos.y) * 0.45).clamp(2.0, 18.0);
-            ui.scroll_with_delta(egui::vec2(0.0, speed));
-        } else if pos.y > cards_area.bottom() - edge_zone {
-            let speed = ((pos.y - (cards_area.bottom() - edge_zone)) * 0.45).clamp(2.0, 18.0);
-            ui.scroll_with_delta(egui::vec2(0.0, -speed));
-        }
-        ui.ctx().request_repaint();
-        Some(rect)
-    } else {
-        None
-    };
+    let selection_rect =
+        if marquee_active && let (Some(anchor), Some(pos)) = (marquee_anchor, pointer_pos) {
+            let rect = egui::Rect::from_two_pos(anchor, pos);
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new(("cards-marquee-painter", data.page_id)),
+            ));
+            painter.rect_filled(
+                rect,
+                2.0,
+                Color32::from_rgba_unmultiplied(
+                    palette.accent.r(),
+                    palette.accent.g(),
+                    palette.accent.b(),
+                    30,
+                ),
+            );
+            painter.rect_stroke(
+                rect,
+                2.0,
+                egui::Stroke::new(1.2, palette.accent),
+                egui::StrokeKind::Inside,
+            );
+            let edge_zone = 28.0;
+            if pos.y < cards_area.top() + edge_zone {
+                let speed = ((cards_area.top() + edge_zone - pos.y) * 0.45).clamp(2.0, 18.0);
+                ui.scroll_with_delta(egui::vec2(0.0, speed));
+            } else if pos.y > cards_area.bottom() - edge_zone {
+                let speed = ((pos.y - (cards_area.bottom() - edge_zone)) * 0.45).clamp(2.0, 18.0);
+                ui.scroll_with_delta(egui::vec2(0.0, -speed));
+            }
+            ui.ctx().request_repaint();
+            Some(rect)
+        } else {
+            None
+        };
 
     if row_count == 0 {
         let (empty_rect, _) =
@@ -3268,7 +3784,10 @@ fn show_cards(
                             ui.painter().rect_stroke(
                                 card_rect,
                                 8.0,
-                                egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color),
+                                egui::Stroke::new(
+                                    if is_selected { 2.0 } else { 1.0 },
+                                    border_color,
+                                ),
                                 egui::StrokeKind::Inside,
                             );
 
@@ -3282,7 +3801,10 @@ fn show_cards(
                                     ui.close_menu();
                                 }
                                 ui.separator();
-                                if ui.button(RichText::new("🗑  Sil").color(palette.danger)).clicked() {
+                                if ui
+                                    .button(RichText::new("🗑  Sil").color(palette.danger))
+                                    .clicked()
+                                {
                                     intents.push(Intent::Action(Action::Trash(row.page.id)));
                                     ui.close_menu();
                                 }
@@ -3293,7 +3815,11 @@ fn show_cards(
                                 }
                             });
 
-                            if secondary_clicked && !marquee_active && let Some(pos) = pointer_pos && card_rect.contains(pos) {
+                            if secondary_clicked
+                                && !marquee_active
+                                && let Some(pos) = pointer_pos
+                                && card_rect.contains(pos)
+                            {
                                 if !selected_rows.contains(&row.page.id) {
                                     selected_rows.clear();
                                     selected_rows.insert(row.page.id);
@@ -3313,8 +3839,12 @@ fn show_cards(
                                     }
                                 } else if is_shift {
                                     let anchor = anchor_row.unwrap_or(row.page.id);
-                                    let p1 = rows.iter().position(|r| r.page.id == anchor).unwrap_or(0);
-                                    let p2 = rows.iter().position(|r| r.page.id == row.page.id).unwrap_or(0);
+                                    let p1 =
+                                        rows.iter().position(|r| r.page.id == anchor).unwrap_or(0);
+                                    let p2 = rows
+                                        .iter()
+                                        .position(|r| r.page.id == row.page.id)
+                                        .unwrap_or(0);
                                     let start = p1.min(p2);
                                     let end = p1.max(p2);
                                     selected_rows.clear();
@@ -3341,12 +3871,25 @@ fn show_cards(
                                 );
                                 let check_stroke = egui::Stroke::new(
                                     1.0,
-                                    if is_selected { palette.accent } else { palette.muted },
+                                    if is_selected {
+                                        palette.accent
+                                    } else {
+                                        palette.muted
+                                    },
                                 );
                                 ui.painter().rect_filled(sel_box_rect, 3.0, palette.sidebar);
-                                ui.painter().rect_stroke(sel_box_rect, 3.0, check_stroke, egui::StrokeKind::Inside);
+                                ui.painter().rect_stroke(
+                                    sel_box_rect,
+                                    3.0,
+                                    check_stroke,
+                                    egui::StrokeKind::Inside,
+                                );
                                 if is_selected {
-                                    ui.painter().rect_filled(sel_box_rect.shrink(3.0), 2.0, palette.accent);
+                                    ui.painter().rect_filled(
+                                        sel_box_rect.shrink(3.0),
+                                        2.0,
+                                        palette.accent,
+                                    );
                                 }
                                 if sel_resp.clicked() && !marquee_active {
                                     if is_ctrl {
@@ -3358,8 +3901,14 @@ fn show_cards(
                                         }
                                     } else if is_shift {
                                         let anchor = anchor_row.unwrap_or(row.page.id);
-                                        let p1 = rows.iter().position(|r| r.page.id == anchor).unwrap_or(0);
-                                        let p2 = rows.iter().position(|r| r.page.id == row.page.id).unwrap_or(0);
+                                        let p1 = rows
+                                            .iter()
+                                            .position(|r| r.page.id == anchor)
+                                            .unwrap_or(0);
+                                        let p2 = rows
+                                            .iter()
+                                            .position(|r| r.page.id == row.page.id)
+                                            .unwrap_or(0);
                                         let start = p1.min(p2);
                                         let end = p1.max(p2);
                                         selected_rows.clear();
@@ -3387,10 +3936,23 @@ fn show_cards(
                                     ui.id().with(("card-open", row.page.id)),
                                     egui::Sense::click(),
                                 );
-                                let bg = if open_resp.hovered() { palette.accent } else { palette.sidebar };
-                                let fg = if open_resp.hovered() { Color32::WHITE } else { palette.muted };
+                                let bg = if open_resp.hovered() {
+                                    palette.accent
+                                } else {
+                                    palette.sidebar
+                                };
+                                let fg = if open_resp.hovered() {
+                                    Color32::WHITE
+                                } else {
+                                    palette.muted
+                                };
                                 ui.painter().rect_filled(open_box_rect, 3.0, bg);
-                                ui.painter().rect_stroke(open_box_rect, 3.0, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+                                ui.painter().rect_stroke(
+                                    open_box_rect,
+                                    3.0,
+                                    egui::Stroke::new(1.0, palette.border),
+                                    egui::StrokeKind::Inside,
+                                );
                                 ui.painter().text(
                                     open_box_rect.center(),
                                     egui::Align2::CENTER_CENTER,
@@ -3457,7 +4019,6 @@ fn show_cards(
                                 }
                             }
 
-
                             if show_title {
                                 let icon = if row.page.icon.is_empty() {
                                     "📄"
@@ -3467,9 +4028,16 @@ fn show_cards(
                                 let title = row.page.display_title();
                                 card_ui.horizontal(|ui| {
                                     if let Some(source) = crate::ui::emoji_image_source(icon) {
-                                        ui.add(egui::Image::new(source).fit_to_exact_size(egui::vec2(14.0, 14.0)));
+                                        ui.add(
+                                            egui::Image::new(source)
+                                                .fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                                        );
                                     } else {
-                                        ui.label(RichText::new(icon).font(FontId::proportional(14.0)).color(palette.text));
+                                        ui.label(
+                                            RichText::new(icon)
+                                                .font(FontId::proportional(14.0))
+                                                .color(palette.text),
+                                        );
                                     }
                                     ui.add(
                                         egui::Label::new(
@@ -3576,16 +4144,22 @@ fn show_cards(
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new(format!("{count} record{} selected", if count == 1 { "" } else { "s" }))
-                    .strong()
-                    .color(palette.accent),
+                RichText::new(format!(
+                    "{count} record{} selected",
+                    if count == 1 { "" } else { "s" }
+                ))
+                .strong()
+                .color(palette.accent),
             );
             if ui.button("Duplicate").clicked() {
                 for id in &selected_rows {
                     intents.push(Intent::Action(Action::Duplicate(*id)));
                 }
             }
-            if ui.button(RichText::new("Delete").color(palette.danger)).clicked() {
+            if ui
+                .button(RichText::new("Delete").color(palette.danger))
+                .clicked()
+            {
                 for id in &selected_rows {
                     intents.push(Intent::Action(Action::Trash(*id)));
                 }
@@ -3600,14 +4174,7 @@ fn show_cards(
     }
 
     ui.add_space(6.0);
-    let new_btn = egui::Button::new(
-        RichText::new("+ New record")
-            .font(FontId::proportional(13.0))
-            .color(palette.muted),
-    )
-    .fill(palette.sidebar)
-    .stroke(egui::Stroke::new(1.0, palette.border.linear_multiply(0.5)))
-    .corner_radius(6);
+    let new_btn = new_record_button(ui).corner_radius(6);
     if ui.add_sized([total_width, 34.0], new_btn).clicked() && !busy {
         intents.push(Intent::Action(Action::CreateDatabaseRecord(data.page_id)));
     }
@@ -3680,10 +4247,8 @@ fn show_board(
         .ctx()
         .data(|d| d.get_temp(selection_id))
         .unwrap_or_default();
-    let mut anchor_row: Option<crate::domain::model::PageId> = ui
-        .ctx()
-        .data(|d| d.get_temp(anchor_id))
-        .flatten();
+    let mut anchor_row: Option<crate::domain::model::PageId> =
+        ui.ctx().data(|d| d.get_temp(anchor_id)).flatten();
     let valid_ids: std::collections::HashSet<_> = data.rows.iter().map(|r| r.page.id).collect();
     selected_rows.retain(|id| valid_ids.contains(id));
     if let Some(anchor) = anchor_row
@@ -3743,8 +4308,8 @@ fn show_board(
     );
 
     let board_col_width = 250.0;
-    let total_board_w = ((groups.len() + 1) as f32 * (board_col_width + 12.0))
-        .min(ui.available_width().max(320.0));
+    let total_board_w =
+        ((groups.len() + 1) as f32 * (board_col_width + 12.0)).min(ui.available_width().max(320.0));
 
     egui::ScrollArea::horizontal()
         .id_salt(("database-board-hscroll", data.page_id))
@@ -3917,7 +4482,10 @@ fn show_board(
                                         ui.painter().rect_stroke(
                                             card_rect,
                                             6.0,
-                                            egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, stroke_col),
+                                            egui::Stroke::new(
+                                                if is_selected { 2.0 } else { 1.0 },
+                                                stroke_col,
+                                            ),
                                             egui::StrokeKind::Inside,
                                         );
 
@@ -3958,8 +4526,14 @@ fn show_board(
                                                 }
                                             } else if is_shift {
                                                 let anchor = anchor_row.unwrap_or(row.page.id);
-                                                let p1 = sorted.iter().position(|r| r.page.id == anchor).unwrap_or(0);
-                                                let p2 = sorted.iter().position(|r| r.page.id == row.page.id).unwrap_or(0);
+                                                let p1 = sorted
+                                                    .iter()
+                                                    .position(|r| r.page.id == anchor)
+                                                    .unwrap_or(0);
+                                                let p2 = sorted
+                                                    .iter()
+                                                    .position(|r| r.page.id == row.page.id)
+                                                    .unwrap_or(0);
                                                 let start = p1.min(p2);
                                                 let end = p1.max(p2);
                                                 selected_rows.clear();
@@ -4024,7 +4598,9 @@ fn show_board(
                                             }
                                             ui.separator();
                                             if ui.button("🎨 Temayı düzenle").clicked() {
-                                                intents.push(Intent::OpenSettingsTheme(ThemeSection::Board));
+                                                intents.push(Intent::OpenSettingsTheme(
+                                                    ThemeSection::Board,
+                                                ));
                                                 ui.close_menu();
                                             }
                                             ui.separator();
@@ -4057,7 +4633,10 @@ fn show_board(
                                             }
                                             for option in &status.options {
                                                 if ui
-                                                    .selectable_label(current == option.name, &option.name)
+                                                    .selectable_label(
+                                                        current == option.name,
+                                                        &option.name,
+                                                    )
                                                     .clicked()
                                                     && current != option.name
                                                 {
@@ -4088,10 +4667,19 @@ fn show_board(
                                             &row.page.icon
                                         };
                                         card_ui.horizontal(|ui| {
-                                            if let Some(source) = crate::ui::emoji_image_source(icon) {
-                                                ui.add(egui::Image::new(source).fit_to_exact_size(egui::vec2(13.0, 13.0)));
+                                            if let Some(source) =
+                                                crate::ui::emoji_image_source(icon)
+                                            {
+                                                ui.add(
+                                                    egui::Image::new(source)
+                                                        .fit_to_exact_size(egui::vec2(13.0, 13.0)),
+                                                );
                                             } else {
-                                                ui.label(RichText::new(icon).font(FontId::proportional(13.0)).color(palette.text));
+                                                ui.label(
+                                                    RichText::new(icon)
+                                                        .font(FontId::proportional(13.0))
+                                                        .color(palette.text),
+                                                );
                                             }
                                             ui.add(
                                                 egui::Label::new(
@@ -4189,7 +4777,8 @@ fn show_board(
                         .font(FontId::proportional(12.5))
                         .color(palette.muted),
                     |ui| {
-                        let new_grp_id = egui::Id::new(("board-new-group", data.page_id, status.id));
+                        let new_grp_id =
+                            egui::Id::new(("board-new-group", data.page_id, status.id));
                         let mut grp_name = ui
                             .ctx()
                             .data(|d| d.get_temp::<String>(new_grp_id))

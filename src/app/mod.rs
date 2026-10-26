@@ -219,7 +219,7 @@ impl NoteonApp {
             return;
         }
         if let Some(editor) = self.editors.get_mut(&id) {
-            editor.title_focus = false;
+            editor.title_focus = true;
             self.page_dialog = Some(id);
             self.touch_editor(id);
             return;
@@ -261,7 +261,6 @@ impl NoteonApp {
             self.loading = false;
             self.trash = false;
             self.sidebar.reveal(id);
-            self.sidebar.select_single(id);
             self.record_navigation(id, add_history);
             return;
         }
@@ -270,9 +269,10 @@ impl NoteonApp {
             self.loading = false;
             if jump.is_some() {
                 editor.jump_to = jump;
+            } else {
+                editor.title_focus = true;
             }
             self.sidebar.reveal(id);
-            self.sidebar.select_single(id);
             self.record_navigation(id, add_history);
             self.touch_editor(id);
             return;
@@ -300,7 +300,6 @@ impl NoteonApp {
             self.pending_documents.remove(&self.generation);
         }
         self.sidebar.reveal(id);
-        self.sidebar.select_single(id);
         self.record_navigation(id, add_history);
     }
 
@@ -469,7 +468,9 @@ impl NoteonApp {
                 self.trashed_pages_redo.clear();
             }
             Action::TrashPages(ids) => {
-                if let Some(dialog_id) = self.page_dialog && ids.contains(&dialog_id) {
+                if let Some(dialog_id) = self.page_dialog
+                    && ids.contains(&dialog_id)
+                {
                     self.page_dialog = None;
                 }
                 if !ids.is_empty() {
@@ -516,7 +517,13 @@ impl NoteonApp {
                 self.trashed_pages_redo.retain(|group| !group.is_empty());
             }
             Action::EmptyTrash => {
-                let trashed: Vec<PageId> = self.sidebar.pages.iter().filter(|p| p.trashed_by.is_some()).map(|p| p.id).collect();
+                let trashed: Vec<PageId> = self
+                    .sidebar
+                    .pages
+                    .iter()
+                    .filter(|p| p.trashed_by.is_some())
+                    .map(|p| p.id)
+                    .collect();
                 for id in &trashed {
                     if self.selected == Some(*id) {
                         self.selected = None;
@@ -559,39 +566,36 @@ impl NoteonApp {
     }
 
     fn page_changed(&mut self, page: PageEdit) {
+        let previous_page = self
+            .sidebar
+            .page(page.id)
+            .map(|previous| (previous.parent_id, previous.title.clone()));
         self.sidebar.update_page(&page);
-        if let Some(database) = self.databases.get_mut(&page.id) {
-            database.title.clone_from(&page.title);
-            database.icon.clone_from(&page.icon);
-        }
-        for database in self.databases.values_mut() {
-            if let Some(row) = database.rows.iter_mut().find(|row| row.page.id == page.id) {
-                row.page.title.clone_from(&page.title);
-                row.page.icon.clone_from(&page.icon);
-                row.page.cover = page.cover;
-                row.page.cover_image.clone_from(&page.cover_image);
-                row.page.cover_x = page.cover_x;
-                row.page.cover_y = page.cover_y;
-                row.page.full_width = page.full_width;
-            }
-        }
-        if let Some(parent_id) = self.sidebar.page(page.id).and_then(|p| p.parent_id) {
-            if let Some(parent_editor) = self.editors.get_mut(&parent_id) {
-                let clean_title = page.title.trim();
-                let display_title = if clean_title.is_empty() {
-                    "Untitled"
-                } else {
-                    clean_title
-                };
-                let new_content = format!("↗ {display_title}");
-                for block in parent_editor.cache.blocks.values_mut() {
-                    if block.kind == crate::domain::model::BlockKind::Text
-                        && block.content.trim_start().starts_with('↗')
-                    {
-                        block.content.clone_from(&new_content);
-                        self.saves.edit_block(block.clone());
-                        break;
-                    }
+        sync_database_page(&mut self.databases, &mut self.database_title_drafts, &page);
+        if let Some((Some(parent_id), old_title)) = previous_page
+            && old_title != page.title
+            && let Some(parent_editor) = self.editors.get_mut(&parent_id)
+        {
+            let old_target = if old_title.trim().is_empty() {
+                config::UNTITLED
+            } else {
+                old_title.trim()
+            };
+            let new_target = if page.title.trim().is_empty() {
+                config::UNTITLED
+            } else {
+                page.title.trim()
+            };
+            for block in parent_editor.cache.blocks.values_mut() {
+                let target = block.content.trim().strip_prefix('\u{2197}').map(str::trim);
+                if block.kind == crate::domain::model::BlockKind::Text
+                    && target.is_some_and(|target| {
+                        target == old_target || (old_title.trim().is_empty() && target.is_empty())
+                    })
+                {
+                    block.content = format!("\u{2197} {new_target}");
+                    parent_editor.cache.needs_measure.insert(block.position);
+                    self.saves.edit_block(block.clone());
                 }
             }
         }
@@ -701,7 +705,9 @@ impl NoteonApp {
                             database.icon = icon.clone();
                         }
                         for database in self.databases.values_mut() {
-                            if let Some(row) = database.rows.iter_mut().find(|row| row.page.id == page) {
+                            if let Some(row) =
+                                database.rows.iter_mut().find(|row| row.page.id == page)
+                            {
                                 row.page.icon = icon.clone();
                             }
                         }
@@ -710,9 +716,7 @@ impl NoteonApp {
                     dispatched_action_in_batch = true;
                 }
                 Intent::BlockChanged(block) => {
-                    if block.position == 0
-                        && block.kind == crate::domain::model::BlockKind::Text
-                    {
+                    if block.position == 0 && block.kind == crate::domain::model::BlockKind::Text {
                         for database in self.databases.values_mut() {
                             if let Some(row) = database
                                 .rows
@@ -983,12 +987,19 @@ impl NoteonApp {
             .editors
             .values()
             .any(|editor| !editor.selected_blocks.is_empty());
+        let has_selected_database_rows = self.selected.is_some_and(|page_id| {
+            let selection_id = egui::Id::new(("database-selected-rows", page_id));
+            context
+                .data(|d| d.get_temp::<std::collections::HashSet<PageId>>(selection_id))
+                .is_some_and(|rows| !rows.is_empty())
+        });
         let wants_keyboard = context.wants_keyboard_input();
         let deletable_pages: Vec<PageId> = if self.ready
             && !self.busy
             && !self.closing
             && !self.trash
             && !has_selected_blocks
+            && !has_selected_database_rows
             && !wants_keyboard
             && self.page_dialog.is_none()
             && !self.sidebar.selected_pages.is_empty()
@@ -1031,8 +1042,12 @@ impl NoteonApp {
                 intents.push(Intent::Forward);
             }
             if !wants_keyboard {
-                let redo = input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
-                    || input.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z)
+                let redo = input
+                    .consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+                    || input.consume_key(
+                        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                        egui::Key::Z,
+                    )
                     || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
                     || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y);
                 let undo = input.consume_key(egui::Modifiers::CTRL, egui::Key::Z)
@@ -1109,5 +1124,99 @@ impl eframe::App for NoteonApp {
         }
         // Low-frequency wakeups drive debounce timers; idle frames do no database work.
         context.request_repaint_after(Duration::from_millis(100));
+    }
+}
+
+fn sync_database_page(
+    databases: &mut HashMap<PageId, DatabaseData>,
+    title_drafts: &mut HashMap<PageId, String>,
+    page: &PageEdit,
+) {
+    title_drafts.remove(&page.id);
+    if let Some(database) = databases.get_mut(&page.id) {
+        database.title.clone_from(&page.title);
+        database.icon.clone_from(&page.icon);
+    }
+    for database in databases.values_mut() {
+        if let Some(row) = database.rows.iter_mut().find(|row| row.page.id == page.id) {
+            row.page.title.clone_from(&page.title);
+            row.page.icon.clone_from(&page.icon);
+            row.page.cover = page.cover;
+            row.page.cover_image.clone_from(&page.cover_image);
+            row.page.cover_x = page.cover_x;
+            row.page.cover_y = page.cover_y;
+            row.page.full_width = page.full_width;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Repository;
+    use crate::ui::database::{Drafts, show_embedded};
+
+    #[test]
+    fn record_page_rename_updates_the_cached_table_and_its_title_draft() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+        let database_id = repository.create_database(None).unwrap();
+        let record_id = repository.create_database_record(database_id).unwrap();
+        let sibling_id = repository.create_database_record(database_id).unwrap();
+        let data = repository.database(database_id).unwrap();
+        let mut title_drafts = HashMap::from([
+            (record_id, "Old table title".into()),
+            (sibling_id, "Unfinished sibling title".into()),
+        ]);
+        let mut databases = HashMap::from([(database_id, data)]);
+        let mut edit = PageEdit::from(&repository.page(record_id).unwrap());
+        edit.title = "Title changed on the record page".into();
+
+        sync_database_page(&mut databases, &mut title_drafts, &edit);
+
+        let context = egui::Context::default();
+        theme::configure(&context);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut property_drafts = HashMap::new();
+        let mut value_drafts = HashMap::new();
+        let mut intents = Vec::new();
+        let data = databases.get_mut(&database_id).unwrap();
+        let _ = context.run(input, |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                show_embedded(
+                    ui,
+                    data,
+                    Palette::new(false),
+                    &mut intents,
+                    &mut Drafts {
+                        properties: &mut property_drafts,
+                        titles: &mut title_drafts,
+                        values: &mut value_drafts,
+                    },
+                );
+            });
+        });
+
+        assert_eq!(
+            data.rows
+                .iter()
+                .find(|row| row.page.id == record_id)
+                .unwrap()
+                .page
+                .title,
+            edit.title
+        );
+        assert_eq!(title_drafts.get(&record_id), Some(&edit.title));
+        assert_eq!(
+            title_drafts.get(&sibling_id).map(String::as_str),
+            Some("Unfinished sibling title")
+        );
+        assert!(intents.iter().all(|intent| !matches!(intent, Intent::Action(Action::RenameDatabaseRecord { page, .. }) if *page == record_id)));
     }
 }

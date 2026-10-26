@@ -1,7 +1,13 @@
-use std::collections::{HashMap, HashSet};
 use eframe::egui::{self, Event, Key, Modifiers};
-use noteon::domain::model::{DatabaseData, DatabaseRow, DatabaseView, DatabaseViewSettings, Page, PageId};
-use noteon::ui::{Intent, database::{Drafts, show_embedded}, palette::Palette};
+use noteon::domain::model::{
+    DatabaseData, DatabaseRow, DatabaseView, DatabaseViewSettings, Page, PageId,
+};
+use noteon::ui::{
+    Intent,
+    database::{Drafts, show_embedded},
+    palette::Palette,
+};
+use std::collections::{HashMap, HashSet};
 
 fn test_database() -> DatabaseData {
     let rows = (1..=4)
@@ -247,7 +253,12 @@ fn table_marquee_drag_selects_rows() {
     );
 
     let anchor: Option<egui::Pos2> = context
-        .data(|d| d.get_temp(egui::Id::new(("database-table-marquee-anchor", database.page_id))))
+        .data(|d| {
+            d.get_temp(egui::Id::new((
+                "database-table-marquee-anchor",
+                database.page_id,
+            )))
+        })
         .flatten();
     assert_eq!(anchor, Some(start_pos));
 
@@ -259,7 +270,12 @@ fn table_marquee_drag_selects_rows() {
     );
 
     let active: bool = context
-        .data(|d| d.get_temp(egui::Id::new(("database-table-marquee-active", database.page_id))))
+        .data(|d| {
+            d.get_temp(egui::Id::new((
+                "database-table-marquee-active",
+                database.page_id,
+            )))
+        })
         .unwrap_or(false);
     assert!(active);
 
@@ -281,3 +297,92 @@ fn table_marquee_drag_selects_rows() {
     );
 }
 
+#[test]
+fn new_record_open_mode_and_number_calculations_default_and_persist() {
+    use noteon::domain::model::{DatabaseProperty, NewRecordOpenMode, NumberCalculation};
+
+    let mut database = test_database();
+    assert_eq!(
+        database.view_settings.new_record_open_mode,
+        NewRecordOpenMode::FocusName
+    );
+    assert!(database.view_settings.table_column_calculations.is_empty());
+
+    let numbers = [10.0, 20.0, 30.0];
+    assert_eq!(NumberCalculation::None.format_result(&numbers), "");
+    assert_eq!(NumberCalculation::Sum.format_result(&numbers), "Toplam 60");
+    assert_eq!(
+        NumberCalculation::Average.format_result(&numbers),
+        "Ortalama 20"
+    );
+    assert_eq!(NumberCalculation::Min.format_result(&numbers), "Min 10");
+    assert_eq!(NumberCalculation::Max.format_result(&numbers), "Max 30");
+    assert_eq!(
+        NumberCalculation::Median.format_result(&numbers),
+        "Medyan 20"
+    );
+    assert_eq!(NumberCalculation::Count.format_result(&numbers), "Adet 3");
+
+    database.view_settings.new_record_open_mode = NewRecordOpenMode::Dialog;
+    database
+        .view_settings
+        .table_column_calculations
+        .insert(42, NumberCalculation::Sum);
+    database.properties.push(DatabaseProperty {
+        id: 42,
+        name: "Price".into(),
+        kind: "number".into(),
+        options: Vec::new(),
+    });
+    database.rows[0].values.insert(42, "15.5".into());
+    database.rows[1].values.insert(42, "24.5".into());
+
+    let json = serde_json::to_string(&database.view_settings).unwrap();
+    let restored: DatabaseViewSettings = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.new_record_open_mode, NewRecordOpenMode::Dialog);
+    assert_eq!(
+        restored.table_column_calculations.get(&42),
+        Some(&NumberCalculation::Sum)
+    );
+
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let focus_key = egui::Id::new(("pending-table-focus-record", database.page_id));
+    context.data_mut(|d| d.insert_temp(focus_key, 4_i64));
+    frame_database(&context, &mut database, Vec::new(), Modifiers::NONE);
+    let after_focus: Option<PageId> = context.data(|d| d.get_temp(focus_key));
+    assert!(after_focus.is_none());
+}
+
+#[test]
+fn property_type_picker_renders_two_column_groups_and_supports_all_types() {
+    use noteon::domain::model::{PROPERTY_TYPE_GROUPS, PROPERTY_TYPES};
+    use noteon::ui::page_properties::{
+        default_name_for_kind, property_icon, show_property_type_picker, type_label,
+    };
+
+    let grouped_total: usize = PROPERTY_TYPE_GROUPS.iter().map(|g| g.len()).sum();
+    assert_eq!(grouped_total, PROPERTY_TYPES.len());
+    assert_eq!(PROPERTY_TYPES.len(), 22);
+
+    for (kind, label) in PROPERTY_TYPES {
+        assert_eq!(type_label(kind), label);
+        assert_eq!(default_name_for_kind(kind), label);
+        assert!(!property_icon(kind).is_empty());
+    }
+
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let _ = context.run(egui::RawInput::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let picked = show_property_type_picker(
+                ui,
+                "test-picker",
+                Some("status"),
+                false,
+                Palette::new(true),
+            );
+            assert!(picked.is_none());
+        });
+    });
+}

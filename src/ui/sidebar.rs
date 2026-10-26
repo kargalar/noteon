@@ -108,17 +108,17 @@ impl Sidebar {
                 }
             }
         }
-        if let Some(page) = self
-            .pages
-            .iter()
-            .find(|p| p.trashed_by.is_none() && p.display_title().trim().eq_ignore_ascii_case(clean))
-        {
+        if let Some(page) = self.pages.iter().find(|p| {
+            p.trashed_by.is_none() && p.display_title().trim().eq_ignore_ascii_case(clean)
+        }) {
             return Some(page.id);
         }
         let clean_lower = clean.to_lowercase();
         self.pages
             .iter()
-            .find(|p| p.trashed_by.is_none() && p.display_title().to_lowercase().contains(&clean_lower))
+            .find(|p| {
+                p.trashed_by.is_none() && p.display_title().to_lowercase().contains(&clean_lower)
+            })
             .map(|p| p.id)
     }
 
@@ -231,11 +231,17 @@ impl Sidebar {
     ) {
         let footer = 128.0;
         let mut toggle = None;
-        if !trash
-            && !self.selected_pages.is_empty()
-            && !ui.ctx().wants_keyboard_input()
-        {
-            if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+        let pointer_pressed =
+            ui.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed());
+        let press_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()));
+        let mut page_hit = false;
+
+        if !trash && !self.selected_pages.is_empty() && !ui.ctx().wants_keyboard_input() {
+            let delete_pressed = ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+            });
+            if delete_pressed {
                 let ids: Vec<_> = self.selected_pages.iter().copied().collect();
                 if ids.len() == 1 {
                     intents.push(Intent::Action(Action::Trash(ids[0])));
@@ -246,7 +252,7 @@ impl Sidebar {
                 self.anchor_page = None;
                 self.anchor_row_index = None;
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.selected_pages.clear();
                 self.anchor_page = None;
                 self.anchor_row_index = None;
@@ -318,6 +324,14 @@ impl Sidebar {
                                     is_multi_selected,
                                     &self.selected_pages,
                                 );
+                                if let Some(pos) = press_pos {
+                                    if res.rect.contains(pos) {
+                                        page_hit = true;
+                                    }
+                                }
+                                if res.clicked || res.middle_clicked || res.toggled {
+                                    page_hit = true;
+                                }
                                 if res.toggled {
                                     toggle = Some(*id);
                                 } else if res.middle_clicked {
@@ -367,6 +381,11 @@ impl Sidebar {
                     }
                 }
             });
+        if pointer_pressed && !page_hit && !ui.ctx().memory(|m| m.any_popup_open()) {
+            self.selected_pages.clear();
+            self.anchor_page = None;
+            self.anchor_row_index = None;
+        }
         if let Some(id) = toggle {
             if !self.expanded.remove(&id) {
                 self.expanded.insert(id);
@@ -468,6 +487,7 @@ struct PageRowResult {
     pub middle_clicked: bool,
     pub is_ctrl: bool,
     pub is_shift: bool,
+    pub rect: egui::Rect,
 }
 
 impl PageRow<'_> {
@@ -533,7 +553,8 @@ impl PageRow<'_> {
         let x = rect.left() + 9.0 + self.depth.min(7) as f32 * 13.0;
         let toggled = self.expansion_arrow(ui, rect, x, palette);
         self.paint_title(ui, rect, x, palette);
-        let (is_ctrl, is_shift) = ui.input(|i| (i.modifiers.ctrl || i.modifiers.command, i.modifiers.shift));
+        let (is_ctrl, is_shift) =
+            ui.input(|i| (i.modifiers.ctrl || i.modifiers.command, i.modifiers.shift));
         let middle_clicked = response.middle_clicked() && !toggled;
         let clicked = response.clicked() && !toggled;
         response
@@ -551,6 +572,7 @@ impl PageRow<'_> {
             middle_clicked,
             is_ctrl,
             is_shift,
+            rect,
         }
     }
 
@@ -659,7 +681,11 @@ fn show_bulk_page_menu(
     intents: &mut Vec<Intent>,
 ) {
     let count = selected_pages.len();
-    ui.label(RichText::new(format!("{count} pages selected")).small().color(palette.muted));
+    ui.label(
+        RichText::new(format!("{count} pages selected"))
+            .small()
+            .color(palette.muted),
+    );
     ui.separator();
     if ui.button(format!("Duplicate {count} pages")).clicked() {
         for id in selected_pages {
@@ -667,7 +693,10 @@ fn show_bulk_page_menu(
         }
         ui.close_menu();
     }
-    if ui.button(format!("Add {count} pages to favorites")).clicked() {
+    if ui
+        .button(format!("Add {count} pages to favorites"))
+        .clicked()
+    {
         for id in selected_pages {
             intents.push(Intent::Action(Action::Favorite(*id)));
         }

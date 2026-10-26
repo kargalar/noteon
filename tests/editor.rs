@@ -645,8 +645,14 @@ fn add_property_button_visible_only_on_hover() {
     let section_hover_id = egui::Id::new(("page-properties-section-hover", 1_i64, 0_u64));
 
     // When mouse is not over properties section, section is not hovered
-    assert_eq!(context.data(|d| d.get_temp::<bool>(section_hover_id)), Some(false));
-    assert_eq!(context.data(|d| d.get_temp::<bool>(add_row_id)), Some(false));
+    assert_eq!(
+        context.data(|d| d.get_temp::<bool>(section_hover_id)),
+        Some(false)
+    );
+    assert_eq!(
+        context.data(|d| d.get_temp::<bool>(add_row_id)),
+        Some(false)
+    );
 
     // Hover over the properties section area (centered around x = 350, y = 200)
     let hover_pos = egui::pos2(350.0, 200.0);
@@ -658,7 +664,10 @@ fn add_property_button_visible_only_on_hover() {
     );
 
     // Section hover is now active
-    assert_eq!(context.data(|d| d.get_temp::<bool>(section_hover_id)), Some(true));
+    assert_eq!(
+        context.data(|d| d.get_temp::<bool>(section_hover_id)),
+        Some(true)
+    );
 
     // Move mouse away to the bottom of the editor
     let away_pos = egui::pos2(350.0, 700.0);
@@ -670,7 +679,10 @@ fn add_property_button_visible_only_on_hover() {
     );
 
     // Section hover is now inactive again
-    assert_eq!(context.data(|d| d.get_temp::<bool>(section_hover_id)), Some(false));
+    assert_eq!(
+        context.data(|d| d.get_temp::<bool>(section_hover_id)),
+        Some(false)
+    );
 }
 
 #[test]
@@ -764,9 +776,10 @@ fn clicking_cover_without_cover_triggers_choose_cover_image() {
     );
 
     assert!(
-        intents
-            .iter()
-            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::ChooseCoverImage(1)))),
+        intents.iter().any(|intent| matches!(
+            intent,
+            Intent::Action(noteon::worker::Action::ChooseCoverImage(1))
+        )),
         "Expected Intent::Action(Action::ChooseCoverImage(1)), got {} intents",
         intents.len()
     );
@@ -847,7 +860,12 @@ fn enter_creates_new_block_below() {
     let mut editor = editor("İlk satır", 1);
     frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
     context.memory_mut(|memory| memory.request_focus(egui::Id::new(("block", 1_i64))));
-    let intents = frame(&context, &mut editor, vec![enter(Modifiers::NONE)], Modifiers::NONE);
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![enter(Modifiers::NONE)],
+        Modifiers::NONE,
+    );
     assert!(
         intents
             .iter()
@@ -863,7 +881,12 @@ fn selected_block_enter_in_viewport() {
     frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
 
     editor.selected_blocks.insert(1);
-    let enter_intents = frame(&context, &mut editor, vec![enter(Modifiers::NONE)], Modifiers::NONE);
+    let enter_intents = frame(
+        &context,
+        &mut editor,
+        vec![enter(Modifiers::NONE)],
+        Modifiers::NONE,
+    );
     assert!(
         enter_intents
             .iter()
@@ -898,19 +921,32 @@ fn focused_block_ctrl_x_with_selection_cuts_only_selected_text() {
     context.memory_mut(|memory| memory.request_focus(editor_id));
 
     let mut state = egui::text_edit::TextEditState::default();
-    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-        egui::text::CCursor::new(0),
-        egui::text::CCursor::new(5),
-    )));
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(5),
+        )));
     state.store(&context, editor_id);
 
     let intents = frame(&context, &mut editor, vec![cut()], Modifiers::CTRL);
     assert!(
-        !intents
-            .iter()
-            .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::DeleteBlock { .. }))),
+        !intents.iter().any(|intent| matches!(
+            intent,
+            Intent::Action(noteon::worker::Action::DeleteBlock { .. })
+        )),
         "Block should not be deleted when cutting selected text"
     );
     assert_eq!(editor.cache.blocks[&0].content, " world");
 }
 
+#[test]
+fn test_find_char_ranges_and_case_insensitivity() {
+    use noteon::ui::editor::find::find_char_ranges;
+
+    let ranges = find_char_ranges("Noteon ile arama yaparken noteon bulunsun", "noteon");
+    assert_eq!(ranges, vec![0..6, 26..32]);
+
+    let ranges_tr = find_char_ranges("İstanbul ve istanbullular", "istanbul");
+    assert_eq!(ranges_tr, vec![0..8, 12..20]);
+}

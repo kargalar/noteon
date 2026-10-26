@@ -244,7 +244,7 @@ fn version_four_workspaces_migrate_custom_page_properties() {
     let version: i32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
 }
 
 #[test]
@@ -255,6 +255,7 @@ fn version_two_workspaces_migrate_page_metadata_and_database_tables() {
     connection
         .execute_batch(
             "CREATE TABLE pages (id INTEGER PRIMARY KEY, parent_id INTEGER, title TEXT NOT NULL, icon TEXT NOT NULL, favorite INTEGER NOT NULL, trashed_by INTEGER, cover INTEGER NOT NULL, updated_at INTEGER NOT NULL, block_count INTEGER NOT NULL);\
+             CREATE TABLE blocks (id INTEGER PRIMARY KEY,page_id INTEGER NOT NULL,position INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,column_group INTEGER,column_index INTEGER NOT NULL DEFAULT 0);\
              INSERT INTO pages VALUES (1,NULL,'Legacy','✎',0,NULL,0,1700000000,0);\
              PRAGMA user_version=2;",
         )
@@ -295,9 +296,7 @@ fn legacy_pages_with_zero_created_at_are_migrated_to_valid_timestamp() {
             [page_id],
         )
         .unwrap();
-    connection
-        .pragma_update(None, "user_version", 12)
-        .unwrap();
+    connection.pragma_update(None, "user_version", 12).unwrap();
     drop(connection);
 
     let repository = Repository::open(&path).unwrap();
@@ -446,7 +445,7 @@ fn insert_move_and_delete_keep_positions_contiguous_and_counts_correct() {
 }
 
 #[test]
-fn block_arrangement_persists_columns_and_moves_whole_rows() {
+fn block_arrangement_detaches_only_the_requested_block_from_columns() {
     let (_directory, mut repository) = database();
     let page = repository.create_page(None, "Düzen").unwrap();
     repository.insert_block(page, 1, BlockKind::Text).unwrap();
@@ -471,9 +470,123 @@ fn block_arrangement_persists_columns_and_moves_whole_rows() {
     let moved = repository.blocks(page, 0, 10).unwrap();
     assert_eq!(
         moved.iter().map(|block| block.id).collect::<Vec<_>>(),
-        [third, first, second]
+        [second, third, first]
     );
-    assert_eq!(moved[1].column_group, moved[2].column_group);
+    assert!(moved.iter().all(|block| block.column_group.is_none()));
+    assert!(
+        repository
+            .document(page)
+            .unwrap()
+            .outline
+            .iter()
+            .all(|block| block.column_width == 1.0)
+    );
+}
+
+#[test]
+fn a_column_block_can_be_dropped_before_or_after_its_neighbor() {
+    for placement in [DropPlacement::Before, DropPlacement::After] {
+        let (_directory, mut repository) = database();
+        let page = repository.create_page(None, "Columns").unwrap();
+        let first = repository.blocks(page, 0, 1).unwrap()[0].id;
+        let second = repository.insert_block(page, 1, BlockKind::Text).unwrap();
+        repository
+            .arrange_block(page, second, first, DropPlacement::Right)
+            .unwrap();
+
+        repository
+            .arrange_block(page, first, second, placement)
+            .unwrap();
+
+        let blocks = repository.blocks(page, 0, 10).unwrap();
+        let expected = if placement == DropPlacement::Before {
+            [first, second]
+        } else {
+            [second, first]
+        };
+        assert_eq!(
+            blocks.iter().map(|block| block.id).collect::<Vec<_>>(),
+            expected
+        );
+        assert!(blocks.iter().all(|block| block.column_group.is_none()));
+    }
+}
+
+#[test]
+fn dragging_one_of_three_columns_keeps_the_other_columns_in_place() {
+    let (directory, mut repository) = database();
+    let page = repository.create_page(None, "Columns").unwrap();
+    for position in 1..4 {
+        repository
+            .insert_block(page, position, BlockKind::Text)
+            .unwrap();
+    }
+    let ids: Vec<_> = repository
+        .blocks(page, 0, 10)
+        .unwrap()
+        .iter()
+        .map(|block| block.id)
+        .collect();
+    repository
+        .arrange_block(page, ids[1], ids[0], DropPlacement::Right)
+        .unwrap();
+    repository
+        .arrange_block(page, ids[2], ids[1], DropPlacement::Right)
+        .unwrap();
+    repository
+        .arrange_block(page, ids[1], ids[3], DropPlacement::After)
+        .unwrap();
+    drop(repository);
+
+    let repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+    let blocks = repository.blocks(page, 0, 10).unwrap();
+    assert_eq!(
+        blocks.iter().map(|block| block.id).collect::<Vec<_>>(),
+        [ids[0], ids[2], ids[3], ids[1]]
+    );
+    assert_eq!(blocks[0].column_group, Some(ids[0]));
+    assert_eq!(blocks[1].column_group, Some(ids[0]));
+    assert_eq!((blocks[0].column_index, blocks[1].column_index), (0, 1));
+    assert!(blocks[2..].iter().all(|block| block.column_group.is_none()));
+    let widths: Vec<_> = repository
+        .document(page)
+        .unwrap()
+        .outline
+        .iter()
+        .map(|block| block.column_width)
+        .collect();
+    assert_eq!(widths, [0.5, 0.5, 1.0, 1.0]);
+}
+
+#[test]
+fn renaming_a_page_does_not_rename_another_untitled_subpage_link() {
+    let (_directory, mut repository) = database();
+    let parent = repository.create_page(None, "Parent").unwrap();
+    let sibling = repository.create_page(Some(parent), "").unwrap();
+    let record = repository.create_page(Some(parent), "Original").unwrap();
+    let mut edit = PageEdit::from(&repository.page(record).unwrap());
+    edit.title = "Updated".into();
+
+    repository
+        .save(&SaveBatch {
+            pages: vec![edit],
+            blocks: Vec::new(),
+        })
+        .unwrap();
+
+    let links: Vec<_> = repository
+        .blocks(parent, 0, 10)
+        .unwrap()
+        .into_iter()
+        .map(|block| block.content)
+        .collect();
+    assert!(links.contains(&"\u{2197} Updated".to_string()));
+    assert!(
+        links
+            .iter()
+            .any(|link| link.trim() == "\u{2197}" || link == "\u{2197} Untitled")
+    );
+    assert_eq!(repository.page(sibling).unwrap().title, "Untitled");
 }
 
 #[test]
@@ -833,9 +946,7 @@ fn bulk_block_operations_edit_move_duplicate_group_and_delete() {
     assert_eq!(grouped[1].column_group, Some(target_ids[0]));
     assert_eq!(grouped[2].column_group, Some(target_ids[0]));
 
-    repository
-        .ungroup_block_columns(page, &target_ids)
-        .unwrap();
+    repository.ungroup_block_columns(page, &target_ids).unwrap();
     let ungrouped = repository.blocks(page, 0, 10).unwrap();
     assert_eq!(ungrouped[1].column_group, None);
     assert_eq!(ungrouped[2].column_group, None);
@@ -895,9 +1006,7 @@ fn trash_pages_and_restore_pages_work_in_batch() {
 fn page_snapshot_and_restore_page_snapshot_round_trip() {
     let (_directory, mut repository) = database();
     let page = repository.create_page(None, "Initial Title").unwrap();
-    repository
-        .insert_block(page, 1, BlockKind::Todo)
-        .unwrap();
+    repository.insert_block(page, 1, BlockKind::Todo).unwrap();
 
     let snapshot = repository.page_snapshot(page).unwrap();
     assert_eq!(snapshot.title, "Initial Title");
@@ -990,7 +1099,9 @@ fn subpage_database_gets_link_block_in_parent_and_inline_is_not_duplicated() {
     assert!(parent_blocks.iter().any(|b| b.content == "↗ Suicide Notes"));
 
     // 2. If the block was removed, ensure_subpage_blocks recreates it
-    repository.delete_blocks(parent, &[parent_blocks[0].id]).unwrap();
+    repository
+        .delete_blocks(parent, &[parent_blocks[0].id])
+        .unwrap();
     // Wait, delete_blocks with ↗ might trash the child if it finds it, so let's verify ensure_subpage_blocks recreates it if child is active
     let _ = repository.restore_pages(&[sub_db]);
     repository.ensure_subpage_blocks(parent).unwrap();
@@ -1009,10 +1120,17 @@ fn subpage_database_gets_link_block_in_parent_and_inline_is_not_duplicated() {
         .unwrap();
     repository.ensure_subpage_blocks(parent).unwrap();
     let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
-    assert!(parent_blocks.iter().any(|b| b.kind == BlockKind::Database && b.content == inline_db.to_string()));
-    assert!(!parent_blocks.iter().any(|b| b.content == "↗ Tablo Görünümü"));
+    assert!(
+        parent_blocks
+            .iter()
+            .any(|b| b.kind == BlockKind::Database && b.content == inline_db.to_string())
+    );
+    assert!(
+        !parent_blocks
+            .iter()
+            .any(|b| b.content == "↗ Tablo Görünümü")
+    );
 }
-
 
 #[test]
 fn permanent_delete_and_empty_trash_remove_pages_completely() {
@@ -1078,5 +1196,3 @@ fn bulk_blocks_drag_and_drop_moves_all_selected_blocks_together() {
         vec![b1, b3, b0, b2, b4]
     );
 }
-
-

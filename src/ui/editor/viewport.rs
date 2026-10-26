@@ -3,7 +3,9 @@ use crate::domain::model::{BlockId, BlockKind, BulkBlockStyleOp, InlineFontFamil
 use crate::domain::virtual_layout::VirtualLayout;
 use crate::ui::{Intent, palette::Palette};
 use crate::worker::Action;
-use eframe::egui::{self, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{
+    self, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2,
+};
 
 struct RowDrawContext<'a, 'database> {
     viewport: Rect,
@@ -59,8 +61,7 @@ impl Editor {
                     || i.consume_key(Modifiers::CTRL, Key::Y)
             });
             let undo_pressed = ui.input_mut(|i| {
-                i.consume_key(Modifiers::COMMAND, Key::Z)
-                    || i.consume_key(Modifiers::CTRL, Key::Z)
+                i.consume_key(Modifiers::COMMAND, Key::Z) || i.consume_key(Modifiers::CTRL, Key::Z)
             });
             if redo_pressed {
                 intents.push(Intent::Redo);
@@ -562,7 +563,10 @@ impl Editor {
     ) {
         let screen_viewport = ui.clip_rect();
         let margin_bounds = Rect::from_min_max(
-            pos2(screen_viewport.min.x, (screen_viewport.min.y - 120.0).max(40.0)),
+            pos2(
+                screen_viewport.min.x,
+                (screen_viewport.min.y - 120.0).max(40.0),
+            ),
             screen_viewport.max,
         );
         let bulk_menu_id = egui::Id::new(("bulk-block-menu", page_id, widget_scope));
@@ -616,7 +620,8 @@ impl Editor {
                 .map(|(id, _, pos_idx)| (*id, *pos_idx));
 
             if is_ctrl {
-                if let Some(target_id) = clicked_handle.or_else(|| clicked_block.map(|(id, _)| id)) {
+                if let Some(target_id) = clicked_handle.or_else(|| clicked_block.map(|(id, _)| id))
+                {
                     if self.selected_blocks.contains(&target_id) {
                         self.selected_blocks.remove(&target_id);
                     } else {
@@ -628,14 +633,21 @@ impl Editor {
                     }
                 }
             } else if is_shift {
-                if let Some(target_id) = clicked_handle.or_else(|| clicked_block.map(|(id, _)| id)) {
+                if let Some(target_id) = clicked_handle.or_else(|| clicked_block.map(|(id, _)| id))
+                {
                     if let Some(document) = &self.document {
                         let anchor_id = self
                             .anchor_block
                             .or_else(|| self.selected_blocks.iter().copied().next())
                             .unwrap_or(target_id);
-                        let anchor_pos = document.outline.iter().position(|stub| stub.id == anchor_id);
-                        let target_pos = document.outline.iter().position(|stub| stub.id == target_id);
+                        let anchor_pos = document
+                            .outline
+                            .iter()
+                            .position(|stub| stub.id == anchor_id);
+                        let target_pos = document
+                            .outline
+                            .iter()
+                            .position(|stub| stub.id == target_id);
                         if let (Some(p1), Some(p2)) = (anchor_pos, target_pos) {
                             let start = p1.min(p2);
                             let end = p1.max(p2);
@@ -703,9 +715,7 @@ impl Editor {
             }
         }
 
-        if primary_down
-            && let (Some(anchor_rel), Some(pos)) = (self.marquee_anchor, pointer_pos)
-        {
+        if primary_down && let (Some(anchor_rel), Some(pos)) = (self.marquee_anchor, pointer_pos) {
             let anchor_screen = origin + anchor_rel.to_vec2();
             if !self.marquee_active && (pos - anchor_screen).length() > 4.0 {
                 self.marquee_active = true;
@@ -824,9 +834,11 @@ impl Editor {
             }
             if do_enter {
                 if let Some(last_id) = ordered_ids.last() {
-                    if let Some(pos) = self.document.as_ref().and_then(|doc| {
-                        doc.outline.iter().position(|stub| stub.id == *last_id)
-                    }) {
+                    if let Some(pos) = self
+                        .document
+                        .as_ref()
+                        .and_then(|doc| doc.outline.iter().position(|stub| stub.id == *last_id))
+                    {
                         intents.push(Intent::Action(Action::InsertBlock {
                             page: page_id,
                             position: pos + 1,
@@ -936,11 +948,7 @@ impl Editor {
         document
             .outline
             .iter()
-            .filter_map(|stub| {
-                self.selected_blocks
-                    .contains(&stub.id)
-                    .then_some(stub.id)
-            })
+            .filter_map(|stub| self.selected_blocks.contains(&stub.id).then_some(stub.id))
             .collect()
     }
 
@@ -997,8 +1005,12 @@ impl Editor {
 
         let screen = ui.ctx().screen_rect();
         let clamped_pos = pos2(
-            anchor_pos.x.clamp(screen.left() + 8.0, (screen.right() - 250.0).max(8.0)),
-            anchor_pos.y.clamp(screen.top() + 8.0, (screen.bottom() - 320.0).max(8.0)),
+            anchor_pos
+                .x
+                .clamp(screen.left() + 8.0, (screen.right() - 250.0).max(8.0)),
+            anchor_pos
+                .y
+                .clamp(screen.top() + 8.0, (screen.bottom() - 320.0).max(8.0)),
         );
         let mut close_menu = false;
         let mut clear_selection = false;
@@ -1027,7 +1039,11 @@ impl Editor {
                             ("U", "Underline", BulkBlockStyleOp::ToggleUnderline),
                             ("S", "Strikethrough", BulkBlockStyleOp::ToggleStrikethrough),
                         ] {
-                            if ui.button(RichText::new(label).strong()).on_hover_text(tooltip).clicked() {
+                            if ui
+                                .button(RichText::new(label).strong())
+                                .on_hover_text(tooltip)
+                                .clicked()
+                            {
                                 intents.push(Intent::Action(Action::FormatBlocks {
                                     page: page_id,
                                     blocks: ordered_ids.clone(),
@@ -1086,14 +1102,48 @@ impl Editor {
                             }
                         });
                         ui.menu_button("Highlight", |ui| {
-                            ui.label(RichText::new("Background highlight").small().color(palette.muted));
+                            ui.label(
+                                RichText::new("Background highlight")
+                                    .small()
+                                    .color(palette.muted),
+                            );
                             for (name, color) in [
                                 ("None", None),
-                                ("Yellow", Some(Color32::from_rgba_unmultiplied(255, 230, 120, 110).to_array())),
-                                ("Green", Some(Color32::from_rgba_unmultiplied(120, 220, 150, 100).to_array())),
-                                ("Blue", Some(Color32::from_rgba_unmultiplied(120, 190, 255, 100).to_array())),
-                                ("Pink", Some(Color32::from_rgba_unmultiplied(245, 145, 185, 100).to_array())),
-                                ("Purple", Some(Color32::from_rgba_unmultiplied(190, 150, 245, 100).to_array())),
+                                (
+                                    "Yellow",
+                                    Some(
+                                        Color32::from_rgba_unmultiplied(255, 230, 120, 110)
+                                            .to_array(),
+                                    ),
+                                ),
+                                (
+                                    "Green",
+                                    Some(
+                                        Color32::from_rgba_unmultiplied(120, 220, 150, 100)
+                                            .to_array(),
+                                    ),
+                                ),
+                                (
+                                    "Blue",
+                                    Some(
+                                        Color32::from_rgba_unmultiplied(120, 190, 255, 100)
+                                            .to_array(),
+                                    ),
+                                ),
+                                (
+                                    "Pink",
+                                    Some(
+                                        Color32::from_rgba_unmultiplied(245, 145, 185, 100)
+                                            .to_array(),
+                                    ),
+                                ),
+                                (
+                                    "Purple",
+                                    Some(
+                                        Color32::from_rgba_unmultiplied(190, 150, 245, 100)
+                                            .to_array(),
+                                    ),
+                                ),
                             ] {
                                 if ui.button(name).clicked() {
                                     intents.push(Intent::Action(Action::FormatBlocks {

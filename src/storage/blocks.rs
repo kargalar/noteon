@@ -164,34 +164,15 @@ impl Repository {
                 let target_group = rows[target_index].1;
                 let target_members: Vec<_> = if let Some(group) = target_group {
                     rows.iter()
-                        .filter(|row| row.1 == Some(group))
+                        .filter(|row| row.1 == Some(group) && !valid_sources.contains(&row.0))
                         .map(|row| row.0)
                         .collect()
                 } else {
                     vec![target]
                 };
 
-                let (source_blocks, preserve_source_columns) = if sources.len() == 1 {
-                    let source = sources[0];
-                    let source_index = ids.iter().position(|id| *id == source).unwrap();
-                    if let Some(group) = rows[source_index].1 {
-                        let members: Vec<_> = rows
-                            .iter()
-                            .filter(|row| row.1 == Some(group))
-                            .map(|row| row.0)
-                            .collect();
-                        (members, true)
-                    } else {
-                        (vec![source], false)
-                    }
-                } else {
-                    (valid_sources.clone(), false)
-                };
+                let source_blocks = valid_sources;
 
-                if source_blocks.iter().any(|id| target_members.contains(id)) {
-                    transaction.commit()?;
-                    return Ok(());
-                }
                 order.retain(|id| !source_blocks.contains(id));
                 let target_position = order
                     .iter()
@@ -204,34 +185,32 @@ impl Repository {
                 };
                 for (offset, id) in source_blocks.iter().enumerate() {
                     order.insert((insert_at + offset).min(order.len()), *id);
-                    if !preserve_source_columns {
-                        columns.insert(*id, (None, 0));
-                    }
+                    columns.insert(*id, (None, 0));
                 }
 
-                if !preserve_source_columns {
-                    let mut affected_groups = std::collections::HashSet::new();
-                    for id in &source_blocks {
-                        if let Some((Some(grp), _)) = rows.iter().find(|r| r.0 == *id).map(|r| (r.1, r.2)) {
-                            affected_groups.insert(grp);
-                        }
+                let mut affected_groups = std::collections::HashSet::new();
+                for id in &source_blocks {
+                    if let Some((Some(grp), _)) =
+                        rows.iter().find(|r| r.0 == *id).map(|r| (r.1, r.2))
+                    {
+                        affected_groups.insert(grp);
                     }
-                    for grp in affected_groups {
-                        let remaining: Vec<BlockId> = rows
-                            .iter()
-                            .filter(|row| row.1 == Some(grp) && !source_blocks.contains(&row.0))
-                            .map(|row| row.0)
-                            .collect();
-                        if remaining.len() <= 1 {
-                            for rem_id in remaining {
-                                columns.insert(rem_id, (None, 0));
-                            }
-                        } else {
-                            let equal_w = 1.0 / remaining.len() as f32;
-                            for (col_idx, rem_id) in remaining.iter().enumerate() {
-                                columns.insert(*rem_id, (Some(grp), col_idx));
-                                widths_to_set.push((*rem_id, equal_w));
-                            }
+                }
+                for grp in affected_groups {
+                    let remaining: Vec<BlockId> = rows
+                        .iter()
+                        .filter(|row| row.1 == Some(grp) && !source_blocks.contains(&row.0))
+                        .map(|row| row.0)
+                        .collect();
+                    if remaining.len() <= 1 {
+                        for rem_id in remaining {
+                            columns.insert(rem_id, (None, 0));
+                        }
+                    } else {
+                        let equal_w = 1.0 / remaining.len() as f32;
+                        for (col_idx, rem_id) in remaining.iter().enumerate() {
+                            columns.insert(*rem_id, (Some(grp), col_idx));
+                            widths_to_set.push((*rem_id, equal_w));
                         }
                     }
                 }
@@ -250,7 +229,9 @@ impl Repository {
 
                 let mut affected_groups = std::collections::HashSet::new();
                 for id in &valid_sources {
-                    if let Some((Some(grp), _)) = rows.iter().find(|r| r.0 == *id).map(|r| (r.1, r.2)) {
+                    if let Some((Some(grp), _)) =
+                        rows.iter().find(|r| r.0 == *id).map(|r| (r.1, r.2))
+                    {
                         if grp != target_group {
                             affected_groups.insert(grp);
                         }
@@ -332,6 +313,7 @@ impl Repository {
                 params![width, block, page],
             )?;
         }
+        normalize_page_blocks(&transaction, page)?;
         transaction.execute(
             "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
             [page],
@@ -495,22 +477,20 @@ impl Repository {
 
     pub fn block_position(&self, id: BlockId) -> Result<Option<usize>> {
         self.connection
-            .query_row(
-                "SELECT position FROM blocks WHERE id=?1",
-                [id],
-                |row| row.get::<_, i64>(0),
-            )
+            .query_row("SELECT position FROM blocks WHERE id=?1", [id], |row| {
+                row.get::<_, i64>(0)
+            })
             .optional()
             .map(|opt| opt.map(|p| p.max(0) as usize))
             .map_err(Into::into)
     }
 
     pub fn delete_block(&mut self, id: BlockId) -> Result<()> {
-        let page: PageId = self.connection.query_row(
-            "SELECT page_id FROM blocks WHERE id=?1",
-            [id],
-            |row| row.get(0),
-        )?;
+        let page: PageId =
+            self.connection
+                .query_row("SELECT page_id FROM blocks WHERE id=?1", [id], |row| {
+                    row.get(0)
+                })?;
         self.delete_blocks(page, &[id])
     }
 
@@ -661,10 +641,8 @@ impl Repository {
                             )
                             .ok();
                         if let Some(cid) = child_id {
-                            transaction.execute(
-                                "UPDATE pages SET trashed_by=?1 WHERE id=?1",
-                                [cid],
-                            )?;
+                            transaction
+                                .execute("UPDATE pages SET trashed_by=?1 WHERE id=?1", [cid])?;
                         }
                     }
                 }
@@ -812,9 +790,8 @@ impl Repository {
         };
 
         {
-            let mut update = transaction.prepare_cached(
-                "UPDATE blocks SET text_styles=?1 WHERE id=?2 AND page_id=?3",
-            )?;
+            let mut update = transaction
+                .prepare_cached("UPDATE blocks SET text_styles=?1 WHERE id=?2 AND page_id=?3")?;
             for (block_id, content, styles) in target_blocks {
                 let len = content.chars().count();
                 let next_styles = if matches!(op, BulkBlockStyleOp::ClearFormatting) || len == 0 {
@@ -924,10 +901,7 @@ impl Repository {
         if to_duplicate.is_empty() {
             return Ok(Vec::new());
         }
-        let insert_at = to_duplicate
-            .last()
-            .map(|row| row.1 + 1)
-            .unwrap_or(0);
+        let insert_at = to_duplicate.last().map(|row| row.1 + 1).unwrap_or(0);
         let dup_count = to_duplicate.len();
         transaction.execute(
             "UPDATE blocks SET position=position+?1 WHERE page_id=?2 AND position>=?3",
@@ -968,9 +942,8 @@ impl Repository {
         let selected: std::collections::HashSet<BlockId> = ids.iter().copied().collect();
         let transaction = self.connection.transaction()?;
         let rows = {
-            let mut stmt = transaction.prepare_cached(
-                "SELECT id,kind FROM blocks WHERE page_id=?1 ORDER BY position",
-            )?;
+            let mut stmt = transaction
+                .prepare_cached("SELECT id,kind FROM blocks WHERE page_id=?1 ORDER BY position")?;
             let mapped = stmt
                 .query_map([page], |row| {
                     Ok((row.get::<_, BlockId>(0)?, row.get::<_, String>(1)?))
@@ -987,10 +960,7 @@ impl Repository {
             return Ok(());
         }
         let group_id = target_ids[0];
-        let anchor_index = rows
-            .iter()
-            .position(|(id, _)| *id == group_id)
-            .unwrap_or(0);
+        let anchor_index = rows.iter().position(|(id, _)| *id == group_id).unwrap_or(0);
         let mut order: Vec<BlockId> = rows.iter().map(|(id, _)| *id).collect();
         order.retain(|id| !target_ids.contains(id));
         let insert_at = anchor_index.min(order.len());
@@ -1049,7 +1019,10 @@ impl Repository {
     }
 }
 
-fn normalize_page_blocks(transaction: &rusqlite::Transaction<'_>, page: PageId) -> Result<()> {
+pub(super) fn normalize_page_blocks(
+    transaction: &rusqlite::Transaction<'_>,
+    page: PageId,
+) -> Result<()> {
     let rows = {
         let mut stmt = transaction.prepare_cached(
             "SELECT id,column_group,column_width FROM blocks WHERE page_id=?1 ORDER BY position",
@@ -1134,4 +1107,3 @@ fn compress_styles(styles: &[InlineTextStyle]) -> Vec<TextStyleRange> {
     }
     ranges
 }
-

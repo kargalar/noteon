@@ -103,5 +103,5 @@ CREATE TRIGGER blocks_au AFTER UPDATE OF content ON blocks WHEN old.content != n
     INSERT INTO block_search(block_search,rowid,content) VALUES('delete',old.id,old.content);
     INSERT INTO block_search(rowid,content) VALUES(new.id,new.content);
 END;
-PRAGMA user_version=13;
+PRAGMA user_version=14;
 COMMIT;

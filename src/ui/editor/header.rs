@@ -35,16 +35,20 @@ pub(super) fn show(
     let mut intents = Vec::new();
     let page = &mut document.page;
     let mut page_changed = false;
-    breadcrumb(ui, page, palette, breadcrumbs, &mut intents, &mut page_changed, history);
+    breadcrumb(
+        ui,
+        page,
+        palette,
+        breadcrumbs,
+        &mut intents,
+        &mut page_changed,
+        history,
+    );
     ui.add_space(8.0);
     ui.separator();
     let width = ui.available_width();
     let has_cover = page.cover != 0 || page.cover_image.is_some();
-    let cover_height = if has_cover {
-        180.0
-    } else {
-        28.0
-    };
+    let cover_height = if has_cover { 180.0 } else { 28.0 };
     ui.add_space(10.0);
     let (cover_rect, mut cover_response) =
         ui.allocate_exact_size(vec2(width, cover_height), Sense::click_and_drag());
@@ -146,12 +150,7 @@ pub(super) fn show(
                 ui.close_menu();
             }
             ui.menu_button("🎨  Renk Seç", |ui| {
-                for (style, label) in [
-                    (1, "Sage"),
-                    (2, "Sand"),
-                    (3, "Sky"),
-                    (4, "Rose"),
-                ] {
+                for (style, label) in [(1, "Sage"), (2, "Sand"), (3, "Sky"), (4, "Rose")] {
                     if ui
                         .selectable_label(page.cover == style && page.cover_image.is_none(), label)
                         .clicked()
@@ -275,7 +274,10 @@ pub(super) fn show(
     let line_left = inset + block::HANDLE_WIDTH;
     let line_right = inset + document_width - 4.0;
     ui.painter().line_segment(
-        [egui::pos2(line_left, line_y), egui::pos2(line_right, line_y)],
+        [
+            egui::pos2(line_left, line_y),
+            egui::pos2(line_right, line_y),
+        ],
         Stroke::new(1.0, palette.border),
     );
     ui.add_space(4.0);
@@ -373,7 +375,10 @@ fn breadcrumb(
                 let collapse_id = egui::Id::new(("page-properties-collapsed", page.id));
                 let is_collapsed = ui
                     .ctx()
-                    .data_mut(|d| d.get_persisted::<bool>(collapse_id).or_else(|| d.get_temp::<bool>(collapse_id)))
+                    .data_mut(|d| {
+                        d.get_persisted::<bool>(collapse_id)
+                            .or_else(|| d.get_temp::<bool>(collapse_id))
+                    })
                     .unwrap_or(false);
                 let toggle_label = if is_collapsed {
                     "👁  Özellikleri göster"
@@ -421,7 +426,11 @@ fn breadcrumb(
             ui.menu_button(
                 RichText::new("🕒")
                     .font(FontId::proportional(12.5))
-                    .color(if history.is_empty() { palette.muted } else { palette.accent }),
+                    .color(if history.is_empty() {
+                        palette.muted
+                    } else {
+                        palette.accent
+                    }),
                 |ui| {
                     show_history_menu(ui, page.id, history, palette, intents);
                 },
@@ -469,13 +478,9 @@ fn breadcrumb(
 fn identity(ui: &mut Ui, page: &mut Page, palette: Palette) -> bool {
     let mut page_changed = false;
     ui.horizontal(|ui| {
-        if let Some(new_icon) = crate::ui::icon_picker_button(
-            ui,
-            page.id,
-            &page.icon,
-            29.0,
-            Some(palette.accent),
-        ) {
+        if let Some(new_icon) =
+            crate::ui::icon_picker_button(ui, page.id, &page.icon, 29.0, Some(palette.accent))
+        {
             page.icon = new_icon;
             page_changed = true;
         }
@@ -516,7 +521,8 @@ fn title(
         egui::vec2(document_width, 76.0),
     );
     let is_pointer_over = pointer_pos.map_or(false, |pos| title_zone.contains(pos));
-    let show_add_button = page.icon.is_empty() && (is_pointer_over || was_hovered || was_icon_menu_open);
+    let show_add_button =
+        page.icon.is_empty() && (is_pointer_over || was_hovered || was_icon_menu_open);
 
     let mut add_button_hovered = false;
     let mut is_icon_menu_open = false;
@@ -568,12 +574,27 @@ fn title(
                 )
             } else {
                 let font = FontId::proportional(34.0);
-                let job = egui::text::LayoutJob::simple(text.to_string(), font, palette.text, wrap_width);
+                let job =
+                    egui::text::LayoutJob::simple(text.to_string(), font, palette.text, wrap_width);
                 ui.fonts(|f| f.layout_job(job))
             }
         };
+        let title_id = title_widget_id(page.id, widget_scope);
+        if *title_focus {
+            ui.ctx().memory_mut(|mem| mem.request_focus(title_id));
+            let mut state =
+                egui::text_edit::TextEditState::load(ui.ctx(), title_id).unwrap_or_default();
+            let char_count = page.title.chars().count();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(char_count),
+                )));
+            state.store(ui.ctx(), title_id);
+        }
         let title_edit = egui::TextEdit::singleline(&mut page.title)
-            .id(title_widget_id(page.id, widget_scope))
+            .id(title_id)
             .font(FontId::proportional(34.0))
             .frame(false)
             .hint_text(UNTITLED)
@@ -584,7 +605,18 @@ fn title(
         changed |= title_resp.changed();
         if *title_focus {
             title_resp.request_focus();
+            let mut state =
+                egui::text_edit::TextEditState::load(ui.ctx(), title_resp.id).unwrap_or_default();
+            let char_count = page.title.chars().count();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(char_count),
+                )));
+            state.store(ui.ctx(), title_resp.id);
             *title_focus = false;
+            ui.ctx().request_repaint();
         }
         title_resp.context_menu(|ui| {
             ui.set_min_width(240.0);
@@ -599,7 +631,11 @@ fn title(
                 if let Some(new_icon) = crate::ui::icon_picker_button(
                     ui,
                     ("ctx-icon-picker", page.id, widget_scope),
-                    if page.icon.is_empty() { "☺" } else { &page.icon },
+                    if page.icon.is_empty() {
+                        "☺"
+                    } else {
+                        &page.icon
+                    },
                     16.0,
                     Some(palette.accent),
                 ) {
@@ -627,7 +663,10 @@ fn title(
             let collapse_id = egui::Id::new(("page-properties-collapsed", page.id));
             let is_collapsed = ui
                 .ctx()
-                .data_mut(|d| d.get_persisted::<bool>(collapse_id).or_else(|| d.get_temp::<bool>(collapse_id)))
+                .data_mut(|d| {
+                    d.get_persisted::<bool>(collapse_id)
+                        .or_else(|| d.get_temp::<bool>(collapse_id))
+                })
                 .unwrap_or(false);
             let toggle_label = if is_collapsed {
                 "👁  Özellikleri göster"
@@ -651,37 +690,15 @@ fn title(
             });
             ui.separator();
             ui.menu_button("+  Add property", |ui| {
-                for (kind, label) in crate::domain::model::PROPERTY_TYPES {
-                    let icon = crate::ui::page_properties::property_icon(kind);
-                    if ui.button(format!("{icon}   {label}")).clicked() {
-                        let base = match kind {
-                            "text" => "Notes",
-                            "number" => "Number",
-                            "date" => "Date",
-                            "status" => "Status",
-                            "select" => "Category",
-                            "multi-select" => "Tags",
-                            "checkbox" => "Done",
-                            _ => "Property",
-                        };
-                        let mut name = base.to_owned();
-                        let mut idx = 2usize;
-                        while properties
-                            .iter()
-                            .any(|p| p.name.eq_ignore_ascii_case(&name))
-                        {
-                            name = format!("{base} {idx}");
-                            idx += 1;
-                        }
-                        intents.push(Intent::Action(Action::AddPageProperty {
-                            page: page.id,
-                            name,
-                            kind: kind.into(),
-                            options: Vec::new(),
-                        }));
-                        ui.close_menu();
-                    }
-                }
+                crate::ui::page_properties::show_add_property_panel(
+                    ui,
+                    page.id,
+                    widget_scope.unwrap_or_default(),
+                    properties,
+                    false,
+                    palette,
+                    intents,
+                );
             });
             if !properties.is_empty() {
                 ui.menu_button("⚙  Edit properties", |ui| {
@@ -784,8 +801,8 @@ fn cover(ui: &Ui, rect: Rect, color: Color32) {
 }
 
 fn format_history_timestamp(timestamp: i64) -> String {
-    let Some(date_time) = chrono::DateTime::from_timestamp(timestamp, 0)
-        .map(|utc| utc.with_timezone(&chrono::Local))
+    let Some(date_time) =
+        chrono::DateTime::from_timestamp(timestamp, 0).map(|utc| utc.with_timezone(&chrono::Local))
     else {
         return "—".to_owned();
     };
@@ -868,7 +885,11 @@ pub(super) fn show_history_menu(
                             } else {
                                 entry.description.clone()
                             };
-                            ui.label(RichText::new(title_text).strong().font(FontId::proportional(12.0)));
+                            ui.label(
+                                RichText::new(title_text)
+                                    .strong()
+                                    .font(FontId::proportional(12.0)),
+                            );
                             ui.label(
                                 RichText::new(format_history_timestamp(entry.timestamp))
                                     .font(FontId::proportional(10.5))

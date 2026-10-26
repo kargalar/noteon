@@ -152,7 +152,10 @@ impl Repository {
         }
         let mut deduped = Vec::new();
         for opt in options {
-            if !deduped.iter().any(|existing: &PropertyOption| existing.name == opt.name) {
+            if !deduped
+                .iter()
+                .any(|existing: &PropertyOption| existing.name == opt.name)
+            {
                 deduped.push(opt);
             }
         }
@@ -248,7 +251,12 @@ impl Repository {
         Ok(())
     }
 
-    pub fn move_page_property(&mut self, page: PageId, property: i64, direction: i32) -> Result<()> {
+    pub fn move_page_property(
+        &mut self,
+        page: PageId,
+        property: i64,
+        direction: i32,
+    ) -> Result<()> {
         let transaction = self.connection.transaction()?;
         let mut ids: Vec<i64> = {
             let mut stmt = transaction.prepare(
@@ -338,7 +346,11 @@ fn normalize_options(options: &[PropertyOption]) -> Result<Vec<PropertyOption>> 
     let mut normalized = Vec::new();
     for opt in options {
         let trimmed = opt.name.trim();
-        if !trimmed.is_empty() && !normalized.iter().any(|existing: &PropertyOption| existing.name == trimmed) {
+        if !trimmed.is_empty()
+            && !normalized
+                .iter()
+                .any(|existing: &PropertyOption| existing.name == trimmed)
+        {
             normalized.push(PropertyOption {
                 name: trimmed.to_owned(),
                 color: opt.color.as_deref().map(|c| c.trim().to_ascii_uppercase()),

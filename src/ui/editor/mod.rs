@@ -91,7 +91,8 @@ impl Editor {
         if !same_page {
             self.find = find::PageFind::default();
         } else if self.find.open {
-            self.find.update_matches(Some(&document), &self.cache.blocks);
+            self.find
+                .update_matches(Some(&document), &self.cache.blocks);
         }
         self.title_focus = !same_page && document.page.title.is_empty();
         self.document = Some(document);
@@ -117,7 +118,8 @@ impl Editor {
 
     pub fn open_find(&mut self) {
         self.find.open();
-        self.find.update_matches(self.document.as_ref(), &self.cache.blocks);
+        self.find
+            .update_matches(self.document.as_ref(), &self.cache.blocks);
         if let Some(m) = self.find.current_match() {
             match m {
                 find::PageFindMatch::Title { .. } => {
@@ -270,7 +272,9 @@ impl Editor {
             &mut self.reset_scroll,
             &mut self.scroll_offset,
         );
-        if self.find.open && let Some(doc) = &self.document {
+        if self.find.open
+            && let Some(doc) = &self.document
+        {
             for stub_pos in (0..doc.outline.len()).step_by(crate::config::BLOCK_BATCH_SIZE) {
                 if let Some(load_start) = self.cache.request(stub_pos) {
                     intents.push(Intent::LoadBlocks {

@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use eframe::egui::{self, FontId, RichText, Stroke, Ui, pos2, vec2};
+use std::collections::BTreeMap;
 
 use crate::domain::model::{Block, BlockId, Document, PageId};
 use crate::ui::palette::Palette;
@@ -65,7 +65,11 @@ impl PageFind {
         }
     }
 
-    pub fn active_range_for_block(&self, block_id: BlockId, position: usize) -> Option<(usize, usize)> {
+    pub fn active_range_for_block(
+        &self,
+        block_id: BlockId,
+        position: usize,
+    ) -> Option<(usize, usize)> {
         if let Some(PageFindMatch::Block {
             position: p,
             block_id: id,
@@ -84,51 +88,33 @@ impl PageFind {
         matches!(self.current_match(), Some(PageFindMatch::Title { .. }))
     }
 
-    pub fn update_matches(
-        &mut self,
-        document: Option<&Document>,
-        blocks: &BTreeMap<usize, Block>,
-    ) {
-        let query = self.query.trim().to_lowercase();
+    pub fn update_matches(&mut self, document: Option<&Document>, blocks: &BTreeMap<usize, Block>) {
+        let query = self.query.trim();
         self.matches.clear();
         if query.is_empty() {
             self.current_index = 0;
             return;
         }
 
-        let q_char_len = query.chars().count();
-
         // 1. Check page title
         if let Some(doc) = document {
-            let title_lower = doc.page.title.to_lowercase();
-            let mut search_idx = 0;
-            while let Some(pos) = title_lower[search_idx..].find(&query) {
-                let byte_start = search_idx + pos;
-                let byte_end = byte_start + query.len();
-                let char_start = doc.page.title[..byte_start].chars().count();
+            for range in find_char_ranges(&doc.page.title, query) {
                 self.matches.push(PageFindMatch::Title {
-                    char_start,
-                    char_end: char_start + q_char_len,
+                    char_start: range.start,
+                    char_end: range.end,
                 });
-                search_idx = byte_end;
             }
         }
 
         // 2. Check blocks in document order
         for (pos, block) in blocks {
-            let content_lower = block.content.to_lowercase();
-            let mut search_idx = 0;
-            while let Some(match_pos) = content_lower[search_idx..].find(&query) {
-                let byte_start = search_idx + match_pos;
-                let byte_end = byte_start + query.len();
-                let char_start = block.content[..byte_start].chars().count();
+            for range in find_char_ranges(&block.content, query) {
                 self.matches.push(PageFindMatch::Block {
                     position: *pos,
                     block_id: block.id,
-                    char_start,
-                    char_end: char_start + q_char_len,
+                    char_start: range.start,
+                    char_end: range.end,
                 });
-                search_idx = byte_end;
             }
         }
 
@@ -237,37 +223,40 @@ impl PageFind {
                             }
 
                             // Previous button
-                            let prev_btn = ui.add(
-                                egui::Button::new(
-                                    RichText::new("▲").size(10.5).color(palette.muted),
+                            let prev_btn = ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("▲").size(10.5).color(palette.muted),
+                                    )
+                                    .frame(false),
                                 )
-                                .frame(false),
-                            )
-                            .on_hover_text("Önceki eşleşme (Shift + Enter)");
+                                .on_hover_text("Önceki eşleşme (Shift + Enter)");
                             if prev_btn.clicked() {
                                 prev_clicked = true;
                             }
 
                             // Next button
-                            let next_btn = ui.add(
-                                egui::Button::new(
-                                    RichText::new("▼").size(10.5).color(palette.muted),
+                            let next_btn = ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("▼").size(10.5).color(palette.muted),
+                                    )
+                                    .frame(false),
                                 )
-                                .frame(false),
-                            )
-                            .on_hover_text("Sonraki eşleşme (Enter)");
+                                .on_hover_text("Sonraki eşleşme (Enter)");
                             if next_btn.clicked() {
                                 next_clicked = true;
                             }
 
                             // Close button
-                            let close_btn = ui.add(
-                                egui::Button::new(
-                                    RichText::new("✕").size(10.5).color(palette.muted),
+                            let close_btn = ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("✕").size(10.5).color(palette.muted),
+                                    )
+                                    .frame(false),
                                 )
-                                .frame(false),
-                            )
-                            .on_hover_text("Kapat (Esc)");
+                                .on_hover_text("Kapat (Esc)");
                             if close_btn.clicked() {
                                 close_clicked = true;
                             }
@@ -283,12 +272,15 @@ impl PageFind {
         if query_changed {
             self.update_matches(document, blocks);
             self.apply_scroll_to_match(jump_to, reset_scroll, scroll_offset);
+            ui.ctx().request_repaint();
         } else if next_clicked {
             self.next();
             self.apply_scroll_to_match(jump_to, reset_scroll, scroll_offset);
+            ui.ctx().request_repaint();
         } else if prev_clicked {
             self.prev();
             self.apply_scroll_to_match(jump_to, reset_scroll, scroll_offset);
+            ui.ctx().request_repaint();
         }
     }
 
@@ -310,5 +302,44 @@ impl PageFind {
                 }
             }
         }
+    }
+}
+
+pub fn find_char_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    let q = query.trim();
+    if q.is_empty() || text.is_empty() {
+        return Vec::new();
+    }
+    let text_chars: Vec<char> = text.chars().collect();
+    let q_chars: Vec<char> = q.chars().collect();
+    let q_len = q_chars.len();
+    if q_len > text_chars.len() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i + q_len <= text_chars.len() {
+        let is_match = text_chars[i..i + q_len]
+            .iter()
+            .zip(q_chars.iter())
+            .all(|(tc, qc)| char_eq_case_insensitive(*tc, *qc));
+        if is_match {
+            ranges.push(i..i + q_len);
+            i += q_len;
+        } else {
+            i += 1;
+        }
+    }
+    ranges
+}
+
+fn char_eq_case_insensitive(a: char, b: char) -> bool {
+    if a == b || a.eq_ignore_ascii_case(&b) {
+        return true;
+    }
+    match (a, b) {
+        ('İ', 'i') | ('i', 'İ') | ('İ', 'I') | ('I', 'İ') => true,
+        ('I', 'ı') | ('ı', 'I') => true,
+        _ => a.to_lowercase().eq(b.to_lowercase()),
     }
 }

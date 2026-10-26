@@ -174,9 +174,8 @@ impl NoteonApp {
                 .data(|d| d.get_temp::<bool>(egui::Id::new("sidebar_autohide_open")))
                 .unwrap_or(false);
 
-            let in_y_range = mouse_pos.is_some_and(|pos| {
-                pos.y >= sidebar_top && pos.y <= available_area.bottom()
-            });
+            let in_y_range = mouse_pos
+                .is_some_and(|pos| pos.y >= sidebar_top && pos.y <= available_area.bottom());
 
             let is_hovered = in_y_range
                 && mouse_pos.is_some_and(|pos| {
@@ -275,10 +274,26 @@ impl NoteonApp {
         let mut current_sort = ui.ctx().data(|d| d.get_temp::<u8>(sort_id)).unwrap_or(0);
 
         match current_sort {
-            0 => pages.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id))),
-            1 => pages.sort_by(|a, b| a.updated_at.cmp(&b.updated_at).then_with(|| a.id.cmp(&b.id))),
-            2 => pages.sort_by(|a, b| a.display_title().to_lowercase().cmp(&b.display_title().to_lowercase())),
-            _ => pages.sort_by(|a, b| b.display_title().to_lowercase().cmp(&a.display_title().to_lowercase())),
+            0 => pages.sort_by(|a, b| {
+                b.updated_at
+                    .cmp(&a.updated_at)
+                    .then_with(|| a.id.cmp(&b.id))
+            }),
+            1 => pages.sort_by(|a, b| {
+                a.updated_at
+                    .cmp(&b.updated_at)
+                    .then_with(|| a.id.cmp(&b.id))
+            }),
+            2 => pages.sort_by(|a, b| {
+                a.display_title()
+                    .to_lowercase()
+                    .cmp(&b.display_title().to_lowercase())
+            }),
+            _ => pages.sort_by(|a, b| {
+                b.display_title()
+                    .to_lowercase()
+                    .cmp(&a.display_title().to_lowercase())
+            }),
         }
 
         ui.horizontal(|ui| {
@@ -286,15 +301,20 @@ impl NoteonApp {
                 ui.heading(RichText::new("Trash").size(31.0));
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Buradaki sayfalar geri yüklenebilir veya kalıcı olarak silinebilir.")
-                        .color(palette.muted),
+                    RichText::new(
+                        "Buradaki sayfalar geri yüklenebilir veya kalıcı olarak silinebilir.",
+                    )
+                    .color(palette.muted),
                 );
             });
 
             if !pages.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let confirm_id = egui::Id::new("confirm_empty_trash");
-                    let confirming = ui.ctx().data(|d| d.get_temp::<bool>(confirm_id)).unwrap_or(false);
+                    let confirming = ui
+                        .ctx()
+                        .data(|d| d.get_temp::<bool>(confirm_id))
+                        .unwrap_or(false);
 
                     if confirming {
                         ui.horizontal(|ui| {
@@ -336,23 +356,35 @@ impl NoteonApp {
                     };
 
                     ui.menu_button(RichText::new(sort_label).color(palette.muted), |ui| {
-                        if ui.selectable_label(current_sort == 0, "Silinme: En yeni (Yeni → Eski)").clicked() {
+                        if ui
+                            .selectable_label(current_sort == 0, "Silinme: En yeni (Yeni → Eski)")
+                            .clicked()
+                        {
                             current_sort = 0;
                             ui.ctx().data_mut(|d| d.insert_temp(sort_id, 0));
                             ui.close_menu();
                         }
-                        if ui.selectable_label(current_sort == 1, "Silinme: En eski (Eski → Yeni)").clicked() {
+                        if ui
+                            .selectable_label(current_sort == 1, "Silinme: En eski (Eski → Yeni)")
+                            .clicked()
+                        {
                             current_sort = 1;
                             ui.ctx().data_mut(|d| d.insert_temp(sort_id, 1));
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.selectable_label(current_sort == 2, "Başlık (A → Z)").clicked() {
+                        if ui
+                            .selectable_label(current_sort == 2, "Başlık (A → Z)")
+                            .clicked()
+                        {
                             current_sort = 2;
                             ui.ctx().data_mut(|d| d.insert_temp(sort_id, 2));
                             ui.close_menu();
                         }
-                        if ui.selectable_label(current_sort == 3, "Başlık (Z → A)").clicked() {
+                        if ui
+                            .selectable_label(current_sort == 3, "Başlık (Z → A)")
+                            .clicked()
+                        {
                             current_sort = 3;
                             ui.ctx().data_mut(|d| d.insert_temp(sort_id, 3));
                             ui.close_menu();
@@ -369,7 +401,11 @@ impl NoteonApp {
                 ui.add_space(60.0);
                 ui.label(RichText::new("🗑").size(36.0));
                 ui.add_space(8.0);
-                ui.label(RichText::new("Çöp kutusu boş.").color(palette.muted).size(15.0));
+                ui.label(
+                    RichText::new("Çöp kutusu boş.")
+                        .color(palette.muted)
+                        .size(15.0),
+                );
             });
         } else {
             egui::ScrollArea::vertical().show_rows(ui, 62.0, pages.len(), |ui, range| {
@@ -383,34 +419,49 @@ impl NoteonApp {
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
-                                let icon = if page.icon.is_empty() { "📄" } else { &page.icon };
+                                let icon = if page.icon.is_empty() {
+                                    "📄"
+                                } else {
+                                    &page.icon
+                                };
                                 ui.label(RichText::new(icon).size(15.0));
                                 ui.vertical(|ui| {
-                                    ui.label(RichText::new(page.display_title()).strong().size(13.5));
                                     ui.label(
-                                        RichText::new(format!("Silinme: {}", format_trash_date(page.updated_at)))
-                                            .small()
-                                            .color(palette.muted),
+                                        RichText::new(page.display_title()).strong().size(13.5),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Silinme: {}",
+                                            format_trash_date(page.updated_at)
+                                        ))
+                                        .small()
+                                        .color(palette.muted),
                                     );
                                 });
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         let delete_btn = egui::Button::new(
-                                            RichText::new("Tamamen sil").color(palette.danger).size(12.0),
+                                            RichText::new("Tamamen sil")
+                                                .color(palette.danger)
+                                                .size(12.0),
                                         );
                                         if ui
                                             .add_enabled(!self.busy, delete_btn)
                                             .on_hover_text("Bu sayfayı kalıcı olarak sil")
                                             .clicked()
                                         {
-                                            intents.push(Intent::Action(Action::DeletePermanently(page.id)));
+                                            intents.push(Intent::Action(
+                                                Action::DeletePermanently(page.id),
+                                            ));
                                         }
 
                                         ui.add_space(6.0);
 
                                         let restore_btn = egui::Button::new(
-                                            RichText::new("Geri yükle").color(palette.accent).size(12.0),
+                                            RichText::new("Geri yükle")
+                                                .color(palette.accent)
+                                                .size(12.0),
                                         );
                                         if ui
                                             .add_enabled(!self.busy, restore_btn)
@@ -954,6 +1005,9 @@ impl NoteonApp {
         if open_full_page {
             self.page_dialog = None;
             self.open_page(dialog_page_id, None, true);
+            if let Some(editor) = self.editors.get_mut(&dialog_page_id) {
+                editor.title_focus = true;
+            }
         } else if close_dialog || modal.should_close() {
             self.page_dialog = None;
         }
@@ -988,10 +1042,7 @@ fn show_color_row(
                     .on_hover_text("Varsayılana döndür")
                     .clicked()
                 {
-                    intents.push(Intent::SetCustomThemeColor {
-                        key,
-                        value: None,
-                    });
+                    intents.push(Intent::SetCustomThemeColor { key, value: None });
                 }
                 ui.label(
                     RichText::new(Palette::to_setting(current_color))
@@ -1549,9 +1600,21 @@ fn format_trash_date(timestamp: i64) -> String {
     if date_time.date_naive() == today {
         format!("Bugün {:02}:{:02}", date_time.hour(), date_time.minute())
     } else if date_time.year() == today.year() {
-        format!("{} {} {:02}:{:02}", date_time.day(), month, date_time.hour(), date_time.minute())
+        format!(
+            "{} {} {:02}:{:02}",
+            date_time.day(),
+            month,
+            date_time.hour(),
+            date_time.minute()
+        )
     } else {
-        format!("{} {} {} {:02}:{:02}", date_time.day(), month, date_time.year(), date_time.hour(), date_time.minute())
+        format!(
+            "{} {} {} {:02}:{:02}",
+            date_time.day(),
+            month,
+            date_time.year(),
+            date_time.hour(),
+            date_time.minute()
+        )
     }
 }
-

@@ -235,3 +235,63 @@ fn sidebar_ancestors_returns_hierarchy_in_root_to_leaf_order() {
     let ancestors_root = sidebar.ancestors(1);
     assert!(ancestors_root.is_empty());
 }
+
+#[test]
+fn sidebar_clicking_outside_clears_selection() {
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let mut sidebar = Sidebar::default();
+    sidebar.set_pages(test_pages());
+
+    frame_sidebar(&context, &mut sidebar, Vec::new(), Modifiers::NONE);
+
+    let page1_pos = egui::pos2(80.0, 115.0);
+    // 1. Click on Page 1 -> selects Page 1
+    frame_sidebar(
+        &context,
+        &mut sidebar,
+        vec![
+            Event::PointerMoved(page1_pos),
+            Event::PointerButton {
+                pos: page1_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: page1_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+        Modifiers::NONE,
+    );
+    assert_eq!(sidebar.selected_pages.len(), 1);
+    assert!(sidebar.selected_pages.contains(&1));
+
+    // 2. Click outside (e.g. at x=400, y=300, table/editor area)
+    let outside_pos = egui::pos2(400.0, 300.0);
+    frame_sidebar(
+        &context,
+        &mut sidebar,
+        vec![
+            Event::PointerMoved(outside_pos),
+            Event::PointerButton {
+                pos: outside_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: outside_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+        Modifiers::NONE,
+    );
+    assert!(sidebar.selected_pages.is_empty());
+    assert_eq!(sidebar.anchor_page, None);
+}

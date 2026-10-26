@@ -241,6 +241,133 @@ fn embedded_database_top_right_button_opens_full_page() {
 }
 
 #[test]
+fn table_checkboxes_toggle_rows_without_replacing_previous_selection() {
+    for modifiers in [Modifiers::NONE, Modifiers::CTRL] {
+        let context = egui::Context::default();
+        noteon::ui::theme::configure(&context);
+        let mut database = test_database();
+        frame_database(&context, &mut database, vec![], Modifiers::NONE);
+        let selection_id = egui::Id::new(("database-selected-rows", database.page_id));
+
+        for (row, expected) in [
+            (0, HashSet::from([1_i64])),
+            (1, HashSet::from([1_i64, 2])),
+            (0, HashSet::from([2_i64])),
+        ] {
+            let position = egui::pos2(16.0, 154.0 + row as f32 * 36.0);
+            frame_database(
+                &context,
+                &mut database,
+                vec![Event::PointerMoved(position)],
+                modifiers,
+            );
+            for pressed in [true, false] {
+                frame_database(
+                    &context,
+                    &mut database,
+                    vec![Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers,
+                    }],
+                    modifiers,
+                );
+            }
+            let selected: HashSet<PageId> = context
+                .data(|state| state.get_temp(selection_id))
+                .unwrap_or_default();
+            assert_eq!(selected, expected, "checkbox row {row}, {modifiers:?}");
+        }
+    }
+}
+
+#[test]
+fn table_delete_trashes_the_current_property_row_without_checkbox_selection() {
+    for kind in [
+        "text",
+        "number",
+        "url",
+        "email",
+        "phone",
+        "checkbox",
+        "select",
+        "multi-select",
+        "date",
+        "created_time",
+        "last_edited_time",
+    ] {
+        let context = egui::Context::default();
+        noteon::ui::theme::configure(&context);
+        let mut database = test_database();
+        database
+            .properties
+            .push(noteon::domain::model::DatabaseProperty {
+                id: 7,
+                name: "Property".into(),
+                kind: kind.into(),
+                options: Vec::new(),
+            });
+        frame_database(&context, &mut database, vec![], Modifiers::NONE);
+        let position = egui::pos2(420.0, 160.0);
+        frame_database(
+            &context,
+            &mut database,
+            vec![Event::PointerMoved(position)],
+            Modifiers::NONE,
+        );
+        for pressed in [true, false] {
+            frame_database(
+                &context,
+                &mut database,
+                vec![Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                }],
+                Modifiers::NONE,
+            );
+        }
+        let selected: HashSet<PageId> = context
+            .data(|state| {
+                state.get_temp(egui::Id::new(("database-selected-rows", database.page_id)))
+            })
+            .unwrap_or_default();
+        assert!(selected.is_empty());
+        if kind == "text" {
+            assert!(context.memory(|memory| memory.focused()).is_some());
+            frame_database(
+                &context,
+                &mut database,
+                vec![Event::PointerMoved(egui::pos2(900.0, 700.0))],
+                Modifiers::NONE,
+            );
+        }
+        let intents = frame_database(
+            &context,
+            &mut database,
+            vec![Event::Key {
+                key: Key::Delete,
+                physical_key: Some(Key::Delete),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+        );
+        let trashed: Vec<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::Action(noteon::worker::Action::Trash(id)) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(trashed, vec![1], "property kind: {kind}");
+    }
+}
+
+#[test]
 fn table_delete_prioritizes_multiple_selected_rows_over_focused_database_title() {
     for selected in [HashSet::from([1_i64, 3]), HashSet::from([1_i64])] {
         let context = egui::Context::default();

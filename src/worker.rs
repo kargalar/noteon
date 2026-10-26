@@ -343,6 +343,7 @@ pub enum Event {
     ActionDone {
         pages: Vec<Page>,
         document: Option<Document>,
+        preserve_view: bool,
         page_properties: Option<(PageId, Vec<crate::domain::model::PageProperty>)>,
         focus: Option<usize>,
         focus_at_end: bool,
@@ -665,6 +666,10 @@ fn perform_action(
     page_histories: &mut HashMap<PageId, PageHistory>,
     action: Action,
 ) -> Result<Event> {
+    let preserve_view = matches!(
+        &action,
+        Action::UndoPage(_) | Action::RedoPage(_) | Action::RestorePageHistory { .. }
+    );
     let mut focus = None;
     let mut focus_at_end = false;
     let mut notice = None;
@@ -1027,7 +1032,6 @@ fn perform_action(
                 }
                 history.last_save_time = None;
                 let _ = repository.restore_page_snapshot(&prev.snapshot)?;
-                focus = Some(0);
                 Some(page_id)
             } else {
                 return Ok(Event::PageUndoEmpty { page_id });
@@ -1051,7 +1055,6 @@ fn perform_action(
                 }
                 history.last_save_time = None;
                 let _ = repository.restore_page_snapshot(&next.snapshot)?;
-                focus = Some(0);
                 Some(page_id)
             } else {
                 return Ok(Event::PageRedoEmpty { page_id });
@@ -1080,7 +1083,6 @@ fn perform_action(
                 history.last_save_time = None;
                 let _ = repository.restore_page_snapshot(&entry.snapshot)?;
                 notice = Some("Geçmiş sürüm geri yüklendi.".into());
-                focus = Some(0);
                 Some(page_id)
             } else {
                 None
@@ -1348,8 +1350,19 @@ fn perform_action(
             repository.document(id)
         })
         .transpose()?;
+    if preserve_view && let Some(id) = page {
+        let restored_page = repository.page(id)?;
+        refresh_database = if restored_page.is_database {
+            Some(id)
+        } else {
+            restored_page
+                .parent_id
+                .filter(|parent| repository.page(*parent).is_ok_and(|page| page.is_database))
+        };
+    }
     Ok(Event::ActionDone {
         pages: repository.list_pages()?,
+        preserve_view,
         document: page
             .map(|id| {
                 let _ = repository.ensure_subpage_blocks(id);
@@ -1397,6 +1410,62 @@ fn finish_column_insertion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_restores_refresh_the_table_without_requesting_navigation() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+        let database = repository.create_database(None).unwrap();
+        let record = repository.create_database_record(database).unwrap();
+
+        for page in [database, record] {
+            let original = repository.page_snapshot(page).unwrap();
+            let original_title = original.title.clone();
+            let mut history = PageHistory::default();
+            history.push_undo(original, "Title changed");
+            let mut histories = HashMap::from([(page, history)]);
+            repository
+                .rename_database_record(page, "Changed title")
+                .unwrap();
+
+            for operation in ["undo", "redo", "restore"] {
+                let (action, expected_title) = match operation {
+                    "undo" => (Action::UndoPage(page), original_title.as_str()),
+                    "redo" => (Action::RedoPage(page), "Changed title"),
+                    _ => (
+                        Action::RestorePageHistory {
+                            page,
+                            entry_id: histories[&page].undo_stack.last().unwrap().id,
+                        },
+                        original_title.as_str(),
+                    ),
+                };
+                let event = perform_action(&mut repository, &mut histories, action).unwrap();
+                let Event::ActionDone {
+                    document: Some(document),
+                    preserve_view,
+                    refresh_database,
+                    focus,
+                    ..
+                } = event
+                else {
+                    panic!("history restores must update the document in place");
+                };
+                assert!(preserve_view);
+                assert_eq!(refresh_database, Some(database));
+                assert_eq!(focus, None);
+                assert_eq!(document.page.id, page);
+                assert_eq!(document.page.title, expected_title);
+                let data = repository.database(database).unwrap();
+                let table_title = if page == database {
+                    &data.title
+                } else {
+                    &data.rows[0].page.title
+                };
+                assert_eq!(table_title, expected_title);
+            }
+        }
+    }
 
     #[test]
     fn cell_edits_persist_and_refresh_only_the_edited_database() {

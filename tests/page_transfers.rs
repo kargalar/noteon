@@ -1,3 +1,14 @@
+fn text_rect(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
+    output.shapes.iter().find_map(|shape| {
+        if let egui::Shape::Text(text) = &shape.shape
+            && text.galley.text() == label
+        {
+            Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+        } else {
+            None
+        }
+    })
+}
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, Event, Modifiers};
@@ -470,17 +481,7 @@ fn name_cell_whitespace_focuses_editing_and_only_the_hover_button_opens_the_page
         });
         (intents, output)
     };
-    let text_rect = |output: &egui::FullOutput, label: &str| {
-        output.shapes.iter().find_map(|shape| {
-            if let egui::Shape::Text(text) = &shape.shape
-                && text.galley.text() == label
-            {
-                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-            } else {
-                None
-            }
-        })
-    };
+
     let (_, output) = frame(Vec::new());
     assert!(
         text_rect(&output, "↗").is_none(),
@@ -552,19 +553,8 @@ fn record_names_still_save_after_clicking_to_rename() {
         (intents, output)
     };
     let (_, output) = frame(Vec::new());
-    let start = output
-        .shapes
-        .iter()
-        .find_map(|shape| {
-            if let egui::Shape::Text(text) = &shape.shape
-                && text.galley.text() == "Record with content"
-            {
-                Some(text.pos + egui::vec2(30.0, 6.0))
-            } else {
-                None
-            }
-        })
-        .unwrap();
+    let name = text_rect(&output, "Record with content").unwrap();
+    let start = name.right_center() + egui::vec2(16.0, 0.0);
     frame(vec![Event::PointerMoved(start)]);
     frame(vec![pointer(start, true)]);
     frame(vec![pointer(start, false)]);
@@ -577,7 +567,7 @@ fn record_names_still_save_after_clicking_to_rename() {
 }
 
 #[test]
-fn dragging_an_unfocused_record_name_moves_it_to_a_page_or_another_table() {
+fn dragging_a_record_moves_it_to_a_page_or_another_table() {
     for to_table in [false, true] {
         let (_directory, mut repository) = repository();
         let source = repository.create_database(None).unwrap();
@@ -621,33 +611,9 @@ fn dragging_an_unfocused_record_name_moves_it_to_a_page_or_another_table() {
             (intents, output, target_rect)
         };
         let (_, output, target) = frame(Vec::new());
-        let start = output
-            .shapes
-            .iter()
-            .find_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape
-                    && text.galley.text() == "Record with content"
-                {
-                    Some(text.pos + egui::vec2(8.0, 6.0))
-                } else {
-                    None
-                }
-            })
-            .expect("record name must be rendered");
-        let (_, hovered, _) = frame(vec![Event::PointerMoved(start)]);
-        let start = hovered
-            .shapes
-            .iter()
-            .find_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape
-                    && text.galley.text() == "Record with content"
-                {
-                    Some(text.pos + egui::vec2(30.0, 6.0))
-                } else {
-                    None
-                }
-            })
-            .unwrap();
+        let name = text_rect(&output, "Record with content").expect("record name must be rendered");
+        let start = name.left_center() - egui::vec2(16.0, 0.0);
+        let (_, _hovered, _) = frame(vec![Event::PointerMoved(start)]);
         frame(vec![Event::PointerMoved(start), pointer(start, true)]);
         let end = if to_table {
             egui::pos2(target.left() + 100.0, start.y)
@@ -657,7 +623,7 @@ fn dragging_an_unfocused_record_name_moves_it_to_a_page_or_another_table() {
         frame(vec![Event::PointerMoved(end)]);
         let payload =
             egui::DragAndDrop::payload::<noteon::ui::page_transfer::PageDragPayload>(&context)
-                .expect("record name must initiate a page drag");
+                .expect("record icon must initiate a page drag");
         assert_eq!(payload.pages, [record]);
         let (intents, _, _) = frame(vec![pointer(end, false)]);
         assert!(intents.iter().any(|intent| matches!(intent, Intent::Action(Action::TransferPages { pages, parent: Some(parent), copy: false, .. }) if pages == &[record] && *parent == destination)));

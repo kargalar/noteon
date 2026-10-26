@@ -163,6 +163,7 @@ impl NoteonApp {
                 Event::ActionDone {
                     mut pages,
                     document,
+                    preserve_view,
                     page_properties,
                     focus,
                     focus_at_end,
@@ -210,7 +211,7 @@ impl NoteonApp {
                     if let Some(mut document) = document {
                         let id = document.page.id;
                         let in_dialog = self.page_dialog == Some(id);
-                        if !in_dialog {
+                        if !in_dialog && !preserve_view {
                             if self.selected != Some(id) {
                                 self.history.truncate(self.history_index + 1);
                                 self.history.push(id);
@@ -223,7 +224,9 @@ impl NoteonApp {
                             self.record_navigation(id, false);
                         }
                         self.generation += 1;
-                        self.loading = false;
+                        if self.selected == Some(id) {
+                            self.loading = false;
+                        }
                         self.saves.overlay_page(&mut document.page);
                         self.editors.entry(id).or_default().bind_with_focus(
                             document,

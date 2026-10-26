@@ -49,6 +49,7 @@ fn new_record_button(ui: &Ui) -> egui::Button<'static> {
     .corner_radius(5)
 }
 
+#[allow(dead_code)]
 fn focus_record_name(ui: &Ui, id: egui::Id, title: &str) {
     ui.ctx()
         .data_mut(|data| data.insert_temp(id.with("editing"), true));
@@ -342,12 +343,55 @@ fn delete_selected_table_rows(ui: &Ui, data: &DatabaseData, intents: &mut Vec<In
         .iter()
         .filter(|row| selected.contains(&row.page.id))
         .collect();
-    // Multi-row deletion takes priority over text edits, including the database title.
-    if selected_rows.len() > 1
+    let focused_row = ui
+        .ctx()
+        .data(|state| {
+            state.get_temp::<(egui::Id, crate::domain::model::PageId)>(egui::Id::new((
+                "database-table-focused-row",
+                data.page_id,
+            )))
+        })
+        .filter(|(widget, page)| {
+            ui.memory(|memory| memory.has_focus(*widget))
+                && data.rows.iter().any(|row| row.page.id == *page)
+        })
+        .map(|(_, page)| page);
+    let hovered_row = if ui.ctx().wants_keyboard_input() {
+        None
+    } else {
+        ui.input(|input| input.pointer.hover_pos())
+            .and_then(|position| {
+                if ui.ctx().layer_id_at(position) != Some(ui.layer_id()) {
+                    return None;
+                }
+                ui.ctx()
+                    .data(|state| {
+                        state.get_temp::<Vec<(crate::domain::model::PageId, egui::Rect)>>(
+                            egui::Id::new(("database-table-row-hit-areas", data.page_id)),
+                        )
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|(page, rect)| {
+                        rect.contains(position) && data.rows.iter().any(|row| row.page.id == *page)
+                    })
+                    .map(|(page, _)| page)
+            })
+    };
+    // Multiple selected rows take priority; otherwise Delete acts on the current cell's row.
+    let targets: Vec<_> = if selected_rows.len() > 1 {
+        selected_rows.iter().map(|row| row.page.id).collect()
+    } else {
+        focused_row.or(hovered_row).into_iter().collect()
+    };
+    if !targets.is_empty()
         && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
     {
-        for row in selected_rows {
-            intents.push(Intent::Action(Action::Trash(row.page.id)));
+        for page in targets {
+            intents.push(Intent::Action(Action::Trash(page)));
+        }
+        if let Some(widget) = ui.memory(|memory| memory.focused()) {
+            ui.memory_mut(|memory| memory.surrender_focus(widget));
         }
         ui.ctx().data_mut(|state| {
             state.remove::<std::collections::HashSet<crate::domain::model::PageId>>(selection_id);
@@ -1895,6 +1939,7 @@ fn show_table(
                 let offset = (target_bottom - active_rows_h).max(0.0);
                 vscroll = vscroll.vertical_scroll_offset(offset);
             }
+            let mut row_hit_areas = Vec::new();
             vscroll.show_rows(ui, TABLE_ROW_HEIGHT, rows.len(), |ui, visible| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 for row in &rows[visible] {
@@ -1904,6 +1949,7 @@ fn show_table(
                         row_cursor,
                         egui::vec2(table_width, TABLE_ROW_HEIGHT),
                     );
+                    row_hit_areas.push((row_id, row_rect.intersect(ui.clip_rect())));
                     if let Some(sel_rect) = selection_rect {
                         if sel_rect.intersects(row_rect) {
                             selected_rows.insert(row_id);
@@ -1913,11 +1959,16 @@ fn show_table(
                     }
                     let is_row_selected = selected_rows.contains(&row_id);
                     let row_hovered = ui.rect_contains_pointer(row_rect);
+                    let sel_box_rect = egui::Rect::from_center_size(
+                        row_cursor + egui::vec2(8.0, 10.0),
+                        egui::vec2(14.0, 14.0),
+                    );
 
                     if primary_clicked
                         && !marquee_active
                         && let Some(pos) = pointer_pos
                         && row_rect.contains(pos)
+                        && !sel_box_rect.contains(pos)
                     {
                         if is_ctrl {
                             if selected_rows.contains(&row_id) {
@@ -1956,6 +2007,7 @@ fn show_table(
                         }
                     }
 
+                    let focused_before = ui.memory(|memory| memory.focused());
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                         table_cell(
@@ -1975,10 +2027,6 @@ fn show_table(
 
                                 let mut sel_box_hit: Option<egui::Rect> = None;
                                 if hovered || is_row_selected {
-                                    let sel_box_rect = egui::Rect::from_center_size(
-                                        ui.cursor().min + egui::vec2(8.0, 10.0),
-                                        egui::vec2(14.0, 14.0),
-                                    );
                                     sel_box_hit = Some(sel_box_rect.expand(2.0));
                                     let sel_resp = ui.interact(
                                         sel_box_rect,
@@ -2010,7 +2058,7 @@ fn show_table(
                                         if let Some(f) = ui.ctx().memory(|m| m.focused()) {
                                             ui.ctx().memory_mut(|m| m.surrender_focus(f));
                                         }
-                                        if is_ctrl {
+                                        if is_ctrl || !is_shift {
                                             if selected_rows.contains(&row_id) {
                                                 selected_rows.remove(&row_id);
                                             } else {
@@ -2033,13 +2081,6 @@ fn show_table(
                                             for r in &rows[start..=end] {
                                                 selected_rows.insert(r.page.id);
                                             }
-                                        } else if is_row_selected && selected_rows.len() == 1 {
-                                            selected_rows.clear();
-                                            anchor_row = None;
-                                        } else {
-                                            selected_rows.clear();
-                                            selected_rows.insert(row_id);
-                                            anchor_row = Some(row_id);
                                         }
                                     }
                                 }
@@ -2076,6 +2117,23 @@ fn show_table(
                                     egui::pos2(icon_start_x, name_cell_rect.top()),
                                     egui::pos2(ui.cursor().min.x + 2.0, name_cell_rect.bottom()),
                                 );
+                                let icon_drag = ui.interact(
+                                    icon_hit_rect,
+                                    ui.id().with(("table-row-icon-drag", row.page.id)),
+                                    egui::Sense::drag(),
+                                );
+                                icon_drag.dnd_set_drag_payload(
+                                    crate::ui::page_transfer::PageDragPayload {
+                                        pages: if selected_rows.contains(&row.page.id) {
+                                            rows.iter()
+                                                .filter(|row| selected_rows.contains(&row.page.id))
+                                                .map(|row| row.page.id)
+                                                .collect()
+                                        } else {
+                                            vec![row.page.id]
+                                        },
+                                    },
+                                );
 
                                 let title = drafts
                                     .titles
@@ -2087,6 +2145,16 @@ fn show_table(
                                     name_w - 42.0
                                 })
                                 .max(24.0);
+
+                                let title_edit_id =
+                                    ui.id().with(("table-row-title-edit", row.page.id));
+
+                                let text_color =
+                                    if crate::ui::page_transfer::is_cut(ui.ctx(), row.page.id) {
+                                        palette.muted
+                                    } else {
+                                        palette.text
+                                    };
 
                                 let display_text = if title.is_empty() {
                                     EMPTY_RECORD_NAME
@@ -2104,96 +2172,19 @@ fn show_table(
                                 });
                                 let title_edit_w = (text_width + 8.0).clamp(24.0, width_avail);
 
-                                let title_edit_id =
-                                    ui.id().with(("table-row-title-edit", row.page.id));
-                                if pending_focus_record == Some(row.page.id) && !busy {
-                                    ui.ctx().memory_mut(|mem| mem.request_focus(title_edit_id));
-                                    let mut state = egui::text_edit::TextEditState::load(
-                                        ui.ctx(),
-                                        title_edit_id,
-                                    )
-                                    .unwrap_or_default();
-                                    let char_count = title.chars().count();
-                                    let range = CCursorRange::two(
-                                        CCursor::new(0),
-                                        CCursor::new(char_count),
-                                    );
-                                    state.cursor.set_char_range(Some(range));
-                                    state.store(ui.ctx(), title_edit_id);
-                                }
-
-                                let editing_state = title_edit_id.with("editing");
-                                let editing = ui
-                                    .ctx()
-                                    .data(|data| data.get_temp::<bool>(editing_state))
-                                    .unwrap_or(false)
-                                    || ui.memory(|memory| memory.has_focus(title_edit_id))
-                                    || pending_focus_record == Some(row.page.id);
-                                let response = if editing {
-                                    ui.add_enabled(
-                                        !busy,
-                                        egui::TextEdit::singleline(title)
-                                            .id(title_edit_id)
-                                            .hint_text(
-                                                RichText::new(EMPTY_RECORD_NAME)
-                                                    .color(palette.muted),
-                                            )
-                                            .desired_width(title_edit_w)
-                                            .font(FontId::proportional(13.0))
-                                            .frame(false)
-                                            .margin(egui::Margin::ZERO),
-                                    )
-                                } else {
-                                    let response = ui.add_enabled(
-                                        !busy,
-                                        egui::Label::new(
-                                            RichText::new(display_text)
-                                                .font(FontId::proportional(13.0))
-                                                .color(
-                                                    if crate::ui::page_transfer::is_cut(
-                                                        ui.ctx(),
-                                                        row.page.id,
-                                                    ) {
-                                                        palette.muted
-                                                    } else {
-                                                        palette.text
-                                                    },
-                                                ),
+                                let response = ui.add_enabled(
+                                    !busy,
+                                    egui::TextEdit::singleline(title)
+                                        .id(title_edit_id)
+                                        .hint_text(
+                                            RichText::new(EMPTY_RECORD_NAME).color(palette.muted),
                                         )
-                                        .selectable(false)
-                                        .sense(egui::Sense::hover()),
-                                    );
-                                    let response = ui.interact(
-                                        response.rect,
-                                        ui.id().with(("table-row-title-drag", row.page.id)),
-                                        egui::Sense::click_and_drag(),
-                                    );
-                                    let response =
-                                        response.on_hover_text("Drag to move · Click to rename");
-                                    response.dnd_set_drag_payload(
-                                        crate::ui::page_transfer::PageDragPayload {
-                                            pages: if selected_rows.contains(&row.page.id) {
-                                                rows.iter()
-                                                    .filter(|row| {
-                                                        selected_rows.contains(&row.page.id)
-                                                    })
-                                                    .map(|row| row.page.id)
-                                                    .collect()
-                                            } else {
-                                                vec![row.page.id]
-                                            },
-                                        },
-                                    );
-                                    if response.clicked() {
-                                        focus_record_name(ui, title_edit_id, title);
-                                    }
-                                    response
-                                };
-                                if editing {
-                                    let focused = response.has_focus();
-                                    ui.ctx()
-                                        .data_mut(|data| data.insert_temp(editing_state, focused));
-                                }
+                                        .text_color(text_color)
+                                        .desired_width(title_edit_w)
+                                        .font(FontId::proportional(13.0))
+                                        .frame(false)
+                                        .margin(egui::Margin::ZERO),
+                                );
 
                                 if pending_focus_record == Some(row.page.id) && !busy {
                                     response.request_focus();
@@ -2213,21 +2204,16 @@ fn show_table(
                                     ui.ctx().request_repaint();
                                 }
 
-                                if response.gained_focus() {
-                                    let mut state =
-                                        egui::text_edit::TextEditState::load(ui.ctx(), response.id)
-                                            .unwrap_or_default();
-                                    let char_count = title.chars().count();
-                                    let range = CCursorRange::two(
-                                        CCursor::new(0),
-                                        CCursor::new(char_count),
-                                    );
-                                    state.cursor.set_char_range(Some(range));
-                                    state.store(ui.ctx(), response.id);
-                                    ui.ctx().request_repaint();
+                                let enter_pressed = response.has_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if enter_pressed {
+                                    response.surrender_focus();
                                 }
 
-                                if response.lost_focus() && title != &row.page.title {
+                                if ((response.changed() && !title.is_empty())
+                                    || response.lost_focus())
+                                    && title != &row.page.title
+                                {
                                     intents.push(Intent::Action(Action::RenameDatabaseRecord {
                                         page: row.page.id,
                                         title: title.clone(),
@@ -2380,7 +2366,18 @@ fn show_table(
                                         && !is_shift
                                         && ui.ctx().dragged_id().is_none()
                                     {
-                                        focus_record_name(ui, title_edit_id, title);
+                                        response.request_focus();
+                                        let mut state = egui::text_edit::TextEditState::load(
+                                            ui.ctx(),
+                                            title_edit_id,
+                                        )
+                                        .unwrap_or_default();
+                                        let char_count = title.chars().count();
+                                        state.cursor.set_char_range(Some(CCursorRange::two(
+                                            CCursor::new(0),
+                                            CCursor::new(char_count),
+                                        )));
+                                        state.store(ui.ctx(), title_edit_id);
                                     }
                                 }
                             },
@@ -2435,6 +2432,20 @@ fn show_table(
                             );
                         }
                     });
+                    if let Some(focused) = ui.memory(|memory| memory.focused())
+                        && (Some(focused) != focused_before
+                            || ui.ctx().read_response(focused).is_some_and(|response| {
+                                response.layer_id == ui.layer_id()
+                                    && row_rect.contains(response.rect.center())
+                            }))
+                    {
+                        ui.ctx().data_mut(|state| {
+                            state.insert_temp(
+                                egui::Id::new(("database-table-focused-row", data.page_id)),
+                                (focused, row_id),
+                            );
+                        });
+                    }
                     paint_table_row_extension(
                         ui,
                         data_right..table_right,
@@ -2563,6 +2574,10 @@ fn show_table(
             }
 
             ui.ctx().data_mut(|d| {
+                d.insert_temp(
+                    egui::Id::new(("database-table-row-hit-areas", data.page_id)),
+                    row_hit_areas,
+                );
                 d.insert_temp(marquee_anchor_id, marquee_anchor);
                 d.insert_temp(marquee_active_id, marquee_active);
                 d.insert_temp(marquee_base_id, marquee_base);
@@ -3773,15 +3788,29 @@ fn property_editor(
             } else {
                 (column_width - 16.0).max(24.0)
             };
+            let edit_id =
+                ui.make_persistent_id(("database-property-value", row.page.id, property.id));
             let text = ui.add_enabled(
                 !busy,
                 egui::TextEdit::singleline(edited)
+                    .id(edit_id)
                     .desired_width(edit_w)
                     .font(FontId::proportional(13.0))
                     .frame(false)
                     .margin(egui::Margin::ZERO)
                     .hint_text(hint_text),
             );
+            let number_submitted = property.kind == "number"
+                && (text.has_focus() || text.lost_focus())
+                && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if number_submitted && !edited.trim().is_empty() {
+                let Some(result) = crate::domain::number_expression::evaluate(edited) else {
+                    text.request_focus();
+                    return;
+                };
+                *edited = result;
+                ui.ctx().request_repaint();
+            }
             if has_url_action
                 && ui
                     .small_button(RichText::new("↗").color(palette.accent))
@@ -3797,11 +3826,7 @@ fn property_editor(
                     };
                 intents.push(Intent::OpenUrl(full_url));
             }
-            // A sign or decimal separator can be a temporary numeric draft.
-            let valid_value = property.kind != "number"
-                || edited.is_empty()
-                || edited.parse::<f64>().is_ok_and(f64::is_finite);
-            if ((text.changed() && valid_value) || text.lost_focus()) && edited != &value {
+            if (text.lost_focus() || number_submitted) && edited != &value {
                 intents.push(action(edited.clone()));
             }
         }
@@ -5255,27 +5280,127 @@ mod property_value_tests {
     use super::*;
 
     #[test]
-    fn typing_saves_valid_property_values_without_leaving_the_cell() {
-        for kind in ["text", "number", "email", "url"] {
+    fn number_cell_calculates_on_enter_and_keeps_invalid_input_editable() {
+        for (expression, expected) in [
+            ("500+20", Some("520")),
+            ("500-20", Some("480")),
+            ("500*20", Some("10000")),
+            ("500/20", Some("25")),
+            ("500/0", None),
+            ("500+", None),
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let mut repository =
                 crate::storage::Repository::open(&directory.path().join("test.sqlite")).unwrap();
-            let page = repository.create_page(None, "Record").unwrap();
-            let row = DatabaseRow {
-                page: repository.page(page).unwrap(),
-                preview: String::new(),
-                values: HashMap::new(),
-            };
-            let property = DatabaseProperty {
-                id: 7,
-                name: "Value".into(),
-                kind: kind.into(),
-                options: Vec::new(),
-            };
+            let database = repository.create_database(None).unwrap();
+            let page = repository.create_database_record(database).unwrap();
+            repository
+                .add_database_property(database, "Number", "number", &[])
+                .unwrap();
+            let data = repository.database(database).unwrap();
+            let property = data
+                .properties
+                .iter()
+                .find(|property| property.kind == "number")
+                .unwrap();
+            let row = &data.rows[0];
             let context = egui::Context::default();
             let mut drafts = HashMap::new();
+            let mut edit_id = egui::Id::NULL;
             let mut frame = |events| {
                 let mut intents = Vec::new();
+                let _ = context.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            edit_id = ui.make_persistent_id((
+                                "database-property-value",
+                                page,
+                                property.id,
+                            ));
+                            property_editor(
+                                ui,
+                                row,
+                                property,
+                                TABLE_PROPERTY_WIDTH,
+                                false,
+                                Palette::new(false),
+                                &mut intents,
+                                &mut drafts,
+                            );
+                        });
+                    },
+                );
+                (intents, edit_id)
+            };
+            let (_, field) = frame(Vec::new());
+            context.memory_mut(|memory| memory.request_focus(field));
+            frame(Vec::new());
+            assert!(
+                frame(vec![egui::Event::Text(expression.into())])
+                    .0
+                    .is_empty()
+            );
+            let (intents, _) = frame(vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: Some(egui::Key::Enter),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let saved: Vec<_> = intents
+                .iter()
+                .filter_map(|intent| match intent {
+                    Intent::Action(Action::SetDatabaseProperty { value, .. }) => {
+                        Some(value.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                saved,
+                expected.into_iter().collect::<Vec<_>>(),
+                "{expression}"
+            );
+            if expected.is_none() {
+                assert_eq!(context.memory(|memory| memory.focused()), Some(field));
+            }
+            assert_eq!(drafts[&(page, property.id)], expected.unwrap_or(expression));
+        }
+    }
+
+    #[test]
+    fn cell_edits_save_on_blur_without_reverting_or_stealing_the_next_fields_focus() {
+        for kind in ["text", "number", "email", "url"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("test.sqlite");
+            let mut repository = crate::storage::Repository::open(&path).unwrap();
+            let database = repository.create_database(None).unwrap();
+            let page = repository.create_database_record(database).unwrap();
+            repository
+                .add_database_property(database, "Value", kind, &[])
+                .unwrap();
+            let data = repository.database(database).unwrap();
+            let property = data
+                .properties
+                .iter()
+                .find(|property| property.kind == kind)
+                .unwrap();
+            let original = if kind == "number" { "1" } else { "old" };
+            repository
+                .set_database_property(page, property.id, original)
+                .unwrap();
+            let mut row = repository.database(database).unwrap().rows[0].clone();
+            let context = egui::Context::default();
+            let mut drafts = HashMap::new();
+            let mut next_value = String::new();
+            let next_id = egui::Id::new("next-field");
+            let mut frame = |row: &DatabaseRow, events| {
+                let mut intents = Vec::new();
+                let mut next_rect = egui::Rect::NOTHING;
                 let _ = context.run(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
@@ -5289,60 +5414,100 @@ mod property_value_tests {
                         egui::CentralPanel::default().show(context, |ui| {
                             property_editor(
                                 ui,
-                                &row,
-                                &property,
+                                row,
+                                property,
                                 TABLE_PROPERTY_WIDTH,
                                 false,
                                 Palette::new(false),
                                 &mut intents,
                                 &mut drafts,
                             );
+                            next_rect = ui
+                                .add(egui::TextEdit::singleline(&mut next_value).id(next_id))
+                                .rect;
                         });
                     },
                 );
-                intents
+                (intents, next_rect)
             };
-            frame(Vec::new());
+            frame(&row, Vec::new());
             let position = egui::pos2(25.0, 16.0);
-            frame(vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ]);
-            frame(vec![egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            }]);
+            for pressed in [true, false] {
+                frame(
+                    &row,
+                    vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
             let focused = context
                 .memory(|memory| memory.focused())
                 .expect("cell must be focused");
-            let first = if kind == "number" { "-" } else { "a" };
-            let actions = frame(vec![egui::Event::Text(first.into())]);
-            if kind == "number" {
+            let mut state = egui::text_edit::TextEditState::load(&context, focused).unwrap();
+            state.cursor.set_char_range(Some(CCursorRange::two(
+                CCursor::new(0),
+                CCursor::new(original.chars().count()),
+            )));
+            state.store(&context, focused);
+            let value = if kind == "number" { "5" } else { "edited" };
+            for character in value.chars() {
+                let (intents, _) = frame(&row, vec![egui::Event::Text(character.to_string())]);
                 assert!(
-                    actions.is_empty(),
-                    "a temporary numeric sign must stay a draft"
+                    intents.is_empty(),
+                    "typing must not save or refresh the table"
                 );
-            } else {
-                assert!(actions.iter().any(|intent| matches!(intent,
-                    Intent::Action(Action::SetDatabaseProperty { value, .. }) if value == "a")));
+                assert_eq!(context.memory(|memory| memory.focused()), Some(focused));
             }
-            let second = if kind == "number" { "2" } else { "b" };
-            let expected = if kind == "number" { "-2" } else { "ab" };
-            let actions = frame(vec![egui::Event::Text(second.into())]);
-            assert!(actions.iter().any(|intent| matches!(intent,
-                Intent::Action(Action::SetDatabaseProperty { page: saved_page, property: 7, value })
-                    if *saved_page == page && value == expected)));
-            assert_eq!(context.memory(|memory| memory.focused()), Some(focused));
-            assert!(
-                frame(Vec::new()).is_empty(),
-                "idle frames must not send repeated writes"
+            let (_, next_rect) = frame(&row, Vec::new());
+            let position = next_rect.center();
+            let mut saved = Vec::new();
+            for pressed in [true, false] {
+                let (intents, _) = frame(
+                    &row,
+                    vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                saved.extend(intents);
+            }
+            assert_eq!(saved.len(), 1);
+            let Intent::Action(Action::SetDatabaseProperty {
+                page: saved_page,
+                property: saved_property,
+                value: saved_value,
+            }) = &saved[0]
+            else {
+                panic!("leaving the cell must save its draft");
+            };
+            assert_eq!(*saved_page, page);
+            assert_eq!(*saved_property, property.id);
+            assert_eq!(saved_value, value);
+            assert_eq!(context.memory(|memory| memory.focused()), Some(next_id));
+            repository
+                .set_database_property(*saved_page, *saved_property, saved_value)
+                .unwrap();
+            row = repository.database(database).unwrap().rows[0].clone();
+            let (intents, _) = frame(&row, Vec::new());
+            assert!(intents.is_empty());
+            assert_eq!(context.memory(|memory| memory.focused()), Some(next_id));
+            assert_eq!(drafts[&(page, property.id)], value);
+            drop(repository);
+            let reopened = crate::storage::Repository::open(&path).unwrap();
+            assert_eq!(
+                reopened.database(database).unwrap().rows[0].values[&property.id],
+                value
             );
         }
     }

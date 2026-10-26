@@ -2314,10 +2314,6 @@ fn show_text_or_number_editor(
         _ => "Empty",
     };
 
-    let is_invalid_number = property.kind == "number"
-        && !value.trim().is_empty()
-        && value.trim().parse::<f64>().map_or(true, |n| !n.is_finite());
-
     let has_url_action = property.kind == "url" && !value.trim().is_empty();
     let edit_w = if has_url_action {
         (available_width - 42.0).max(60.0)
@@ -2335,7 +2331,21 @@ fn show_text_or_number_editor(
             .margin(egui::Margin::symmetric(4, 2))
             .desired_width(edit_w),
     );
-    save_draft(ui, value_id, &value, response.changed());
+    let number_submitted = property.kind == "number"
+        && (response.has_focus() || response.lost_focus())
+        && ui.input(|input| input.key_pressed(egui::Key::Enter));
+    if number_submitted && !value.trim().is_empty() {
+        if let Some(result) = crate::domain::number_expression::evaluate(&value) {
+            value = result;
+            ui.ctx().request_repaint();
+        } else {
+            response.request_focus();
+        }
+    }
+    save_draft(ui, value_id, &value, response.changed() || number_submitted);
+    let is_invalid_number = property.kind == "number"
+        && !value.trim().is_empty()
+        && value.trim().parse::<f64>().map_or(true, |n| !n.is_finite());
 
     if has_url_action
         && ui
@@ -2565,4 +2575,88 @@ fn split_options(options: &str) -> Vec<String> {
         .filter(|option| !option.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+#[cfg(test)]
+mod number_input_tests {
+    use super::*;
+
+    #[test]
+    fn number_property_calculates_on_enter_and_rejects_invalid_results() {
+        for (expression, expected) in [
+            ("500+20", Some("520")),
+            ("2+3*4", Some("14")),
+            ("1/0", None),
+        ] {
+            let context = egui::Context::default();
+            let property = PageProperty {
+                id: 7,
+                name: "Number".into(),
+                kind: "number".into(),
+                options: Vec::new(),
+                value: String::new(),
+            };
+            let frame = |events| {
+                let mut intents = Vec::new();
+                let mut field = egui::Id::NULL;
+                let _ = context.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            field = ui.id().with(("property-value", 1_i64, property.id));
+                            show_text_or_number_editor(
+                                ui,
+                                1,
+                                &property,
+                                250.0,
+                                false,
+                                Palette::new(false),
+                                &mut intents,
+                            );
+                        });
+                    },
+                );
+                (intents, field)
+            };
+            let (_, field) = frame(Vec::new());
+            context.memory_mut(|memory| memory.request_focus(field));
+            frame(Vec::new());
+            assert!(
+                frame(vec![egui::Event::Text(expression.into())])
+                    .0
+                    .is_empty()
+            );
+            let (intents, _) = frame(vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: Some(egui::Key::Enter),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let saved: Vec<_> = intents
+                .iter()
+                .filter_map(|intent| match intent {
+                    Intent::Action(Action::SetPagePropertyValue { value, .. }) => {
+                        Some(value.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                saved,
+                expected.into_iter().collect::<Vec<_>>(),
+                "{expression}"
+            );
+            let draft = context
+                .data(|state| state.get_temp::<String>(field))
+                .unwrap();
+            assert_eq!(draft, expected.unwrap_or(expression));
+            if expected.is_none() {
+                assert_eq!(context.memory(|memory| memory.focused()), Some(field));
+            }
+        }
+    }
 }

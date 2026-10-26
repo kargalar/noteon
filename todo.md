@@ -3,8 +3,6 @@ cargo build --release
 
 
 
-
-
 <!-- Check -->
 arıca tablolarda şöyle de yapapbielyim. mesela bir sütunu number olarak belirlediysem sütunun en altındaki alana basınca bana bazı seçenekler göstrsin. topla, ortalamsını göster gibi. o seçim neyse o alanda sonucu göster. vaysayıaln olarak boş olsun
 
@@ -31,3 +29,7 @@ sütunun başlığına çift tıklarsam sütunun ismini değiştirebileyim
 tablo içindeki bir öğenini bir protiry değişirnceki mesela textiniseçip değiştirmey eçalıştığmıda ootmatik olarak sütundaki öğenini tamamini seçiyor. sütundaki öğeyi seçme olayı sadece tablo dışından basılı tutarak alaln seçerken olmalı
 
 tablodaki bir öğenini proerty değiştirdiğimda anında kaydedilsin ddeğişiklik.
+
+tabloda bir değişiklik yapıp ctrl ile geri aldığımda o değişikliğin sayfası tam ekran olarak açılıyor ne oluyor anlamıyorum öyle yeni sayfa açma düzgünce geri al olduğum yerdeyken
+
+proptylerde number ise 500+20 yazıp enter a basarsm otomatik 520 olsun aynı şey çarpma bölme çıkarma falaln için de geçeçrli olsun

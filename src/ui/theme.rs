@@ -37,10 +37,9 @@ pub fn configure(context: &egui::Context) {
         .map(std::path::PathBuf::from)
         .and_then(|path| std::fs::read(path.join("Fonts/seguiemj.ttf")).ok())
     {
-        fonts.font_data.insert(
-            "segoe-emoji".into(),
-            Arc::new(FontData::from_owned(bytes)),
-        );
+        fonts
+            .font_data
+            .insert("segoe-emoji".into(), Arc::new(FontData::from_owned(bytes)));
         fonts
             .families
             .entry(FontFamily::Proportional)
@@ -73,7 +72,14 @@ pub fn configure(context: &egui::Context) {
             .insert(FontFamily::Name(family_name.into()), font_names);
     }
     context.set_fonts(fonts);
-    apply(context, false, None, None, 1.0, &super::palette::CustomTheme::default());
+    apply(
+        context,
+        false,
+        None,
+        None,
+        1.0,
+        &super::palette::CustomTheme::default(),
+    );
 }
 
 pub fn apply(

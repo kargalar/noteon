@@ -1,3 +1,4 @@
+use crate::ui::menus::{PersistentContextMenu, PersistentMenuUi};
 use std::collections::HashMap;
 
 use eframe::egui::{
@@ -17,11 +18,15 @@ use crate::worker::Action;
 use super::{Intent, ThemeSection, palette::Palette};
 
 const TABLE_NAME_WIDTH: f32 = 250.0;
+const EMPTY_RECORD_NAME: &str = "Empty";
 const TABLE_CREATED_WIDTH: f32 = 135.0;
 const TABLE_PROPERTY_WIDTH: f32 = 180.0;
 const TABLE_ADD_PROP_WIDTH: f32 = 42.0;
 const TABLE_HEADER_HEIGHT: f32 = 34.0;
 const TABLE_ROW_HEIGHT: f32 = 36.0;
+const TABLE_RECORD_ICON_WIDTH: f32 = 24.0;
+const TABLE_OPEN_PAGE_BUTTON_SIZE: f32 = 20.0;
+const TABLE_OPEN_PAGE_BUTTON_MARGIN: f32 = 4.0;
 const DEFAULT_TABLE_MAX_ROWS_HEIGHT: f32 = 648.0;
 const DEFAULT_GALLERY_MAX_HEIGHT: f32 = 760.0;
 const DEFAULT_BOARD_MAX_CARDS_HEIGHT: f32 = 648.0;
@@ -42,6 +47,18 @@ fn new_record_button(ui: &Ui) -> egui::Button<'static> {
     .fill(background)
     .stroke(egui::Stroke::NONE)
     .corner_radius(5)
+}
+
+fn focus_record_name(ui: &Ui, id: egui::Id, title: &str) {
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(id.with("editing"), true));
+    ui.memory_mut(|memory| memory.request_focus(id));
+    let mut state = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+    state.cursor.set_char_range(Some(CCursorRange::two(
+        CCursor::new(0),
+        CCursor::new(title.chars().count()),
+    )));
+    state.store(ui.ctx(), id);
 }
 
 #[derive(Clone, Copy)]
@@ -197,7 +214,7 @@ fn board_max_column_cards_height(data: &DatabaseData, status_id: i64) -> f32 {
 }
 
 pub fn desired_embedded_height(ui: &Ui, data: &DatabaseData) -> f32 {
-    let chrome_height = if data.title.is_empty() { 64.0 } else { 90.0 };
+    let chrome_height = 90.0;
     match data.view {
         DatabaseView::Table => {
             let natural_rows_h = (data.rows.len() as f32 * TABLE_ROW_HEIGHT).max(TABLE_ROW_HEIGHT);
@@ -311,6 +328,37 @@ pub fn show_embedded(
     show_inner(ui, data, None, &[], false, palette, intents, drafts, false);
 }
 
+fn delete_selected_table_rows(ui: &Ui, data: &DatabaseData, intents: &mut Vec<Intent>) {
+    if data.view != DatabaseView::Table {
+        return;
+    }
+    let selection_id = egui::Id::new(("database-selected-rows", data.page_id));
+    let selected: std::collections::HashSet<crate::domain::model::PageId> = ui
+        .ctx()
+        .data(|state| state.get_temp(selection_id))
+        .unwrap_or_default();
+    let selected_rows: Vec<_> = data
+        .rows
+        .iter()
+        .filter(|row| selected.contains(&row.page.id))
+        .collect();
+    // Multi-row deletion takes priority over text edits, including the database title.
+    if selected_rows.len() > 1
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+    {
+        for row in selected_rows {
+            intents.push(Intent::Action(Action::Trash(row.page.id)));
+        }
+        ui.ctx().data_mut(|state| {
+            state.remove::<std::collections::HashSet<crate::domain::model::PageId>>(selection_id);
+            state.remove::<Option<crate::domain::model::PageId>>(egui::Id::new((
+                "database-anchor-row",
+                data.page_id,
+            )));
+        });
+    }
+}
+
 fn show_inner(
     ui: &mut Ui,
     data: &mut DatabaseData,
@@ -322,7 +370,52 @@ fn show_inner(
     drafts: &mut Drafts<'_>,
     full_page: bool,
 ) {
-    ui.vertical(|ui| {
+    let selection_scope = ui.id().with(("database-row-selection", data.page_id));
+    if crate::ui::selection::select_all(ui, selection_scope, true) {
+        let rows: std::collections::HashSet<_> = data.rows.iter().map(|row| row.page.id).collect();
+        ui.ctx().data_mut(|state| {
+            state.insert_temp(
+                egui::Id::new(("database-selected-rows", data.page_id)),
+                rows,
+            );
+            state.insert_temp(
+                egui::Id::new(("database-anchor-row", data.page_id)),
+                data.rows.first().map(|row| row.page.id),
+            );
+        });
+    }
+    delete_selected_table_rows(ui, data, intents);
+    let selected: std::collections::HashSet<i64> = ui
+        .ctx()
+        .data(|state| state.get_temp(egui::Id::new(("database-selected-rows", data.page_id))))
+        .unwrap_or_default();
+    if !selected.is_empty()
+        && crate::ui::selection::is_active(ui, selection_scope)
+        && !ui.ctx().wants_keyboard_input()
+        && let Some(cut) = crate::ui::page_transfer::clipboard_shortcut(ui)
+    {
+        let rows: Vec<_> = data
+            .rows
+            .iter()
+            .filter(|row| selected.contains(&row.page.id))
+            .collect();
+        crate::ui::page_transfer::copy_pages(
+            ui.ctx(),
+            rows.iter().map(|row| row.page.id).collect(),
+            &rows
+                .iter()
+                .map(|row| row.page.display_title().to_owned())
+                .collect::<Vec<_>>(),
+            cut,
+        );
+    }
+    if !ui.ctx().wants_keyboard_input()
+        && crate::ui::selection::is_active(ui, selection_scope)
+        && let Some(action) = crate::ui::page_transfer::take_paste(ui, data.page_id, None, None)
+    {
+        intents.push(Intent::Action(action));
+    }
+    let content = ui.vertical(|ui| {
         if full_page {
             ui.add_space(20.0);
             if !breadcrumbs.is_empty() {
@@ -388,25 +481,11 @@ fn show_inner(
                     }));
                 }
                 ui.add_space(10.0);
-                let previous_title = data.title.clone();
-                let title_response = ui.add_enabled(
-                    !busy,
-                    egui::TextEdit::singleline(&mut data.title)
-                        .font(FontId::proportional(30.0))
-                        .hint_text("Untitled Database")
-                        .frame(false)
-                        .margin(egui::Margin::ZERO)
-                        .desired_width((ui.available_width() - 88.0).max(120.0)),
-                );
-                if title_response.lost_focus() && previous_title != data.title {
-                    intents.push(Intent::Action(Action::RenameDatabaseRecord {
-                        page: data.page_id,
-                        title: data.title.clone(),
-                    }));
-                }
+                let title_width = (ui.available_width() - 88.0).max(120.0);
+                show_title(ui, data, busy, 30.0, title_width, intents);
             });
             ui.add_space(16.0);
-        } else if !data.title.is_empty() {
+        } else {
             ui.horizontal(|ui| {
                 let current_icon = if !data.icon.is_empty() {
                     &data.icon
@@ -426,11 +505,22 @@ fn show_inner(
                         icon: new_icon,
                     }));
                 }
-                ui.label(
-                    RichText::new(&data.title)
-                        .font(FontId::proportional(16.0))
-                        .strong(),
-                );
+                let button_width = 28.0;
+                let title_width =
+                    (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(0.0);
+                show_title(ui, data, busy, 16.0, title_width, intents);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_sized(
+                            [button_width, 24.0],
+                            egui::Button::new(RichText::new("⛶").color(palette.muted)).frame(false),
+                        )
+                        .on_hover_text("Tam ekranda aç")
+                        .clicked()
+                    {
+                        intents.push(Intent::Open(data.page_id, None));
+                    }
+                });
             });
             ui.add_space(6.0);
         }
@@ -495,7 +585,7 @@ fn show_inner(
                             }
 
                             if data.view != DatabaseView::Table {
-                                ui.menu_button(
+                                ui.persistent_menu_button(
                                     RichText::new("+ Property")
                                         .font(FontId::proportional(13.0))
                                         .color(palette.muted),
@@ -515,7 +605,7 @@ fn show_inner(
                             } else {
                                 " ▲"
                             };
-                            ui.menu_button(
+                            ui.persistent_menu_button(
                                 RichText::new(format!("⇅ Sort: {sort_name}{direction_arrow}"))
                                     .font(FontId::proportional(12.5))
                                     .color(palette.muted),
@@ -610,6 +700,61 @@ fn show_inner(
                 });
             });
     });
+    if let Some(payload) =
+        egui::DragAndDrop::payload::<crate::ui::page_transfer::PageDragPayload>(ui.ctx())
+        && !payload
+            .pages
+            .iter()
+            .all(|id| data.rows.iter().any(|row| row.page.id == *id))
+    {
+        crate::ui::page_transfer::drop_target(
+            ui,
+            content.response.rect,
+            Some(data.page_id),
+            None,
+            palette,
+            intents,
+        );
+    }
+}
+
+fn show_title(
+    ui: &mut Ui,
+    data: &mut DatabaseData,
+    busy: bool,
+    font_size: f32,
+    width: f32,
+    intents: &mut Vec<Intent>,
+) {
+    let title_id = egui::Id::new(("database-header-title", data.page_id));
+    let original_id = title_id.with("original");
+    let previous_title = data.title.clone();
+    let response = ui.add_enabled(
+        !busy,
+        egui::TextEdit::singleline(&mut data.title)
+            .id(title_id)
+            .font(FontId::proportional(font_size))
+            .hint_text("Untitled Database")
+            .frame(false)
+            .margin(egui::Margin::ZERO)
+            .desired_width(width),
+    );
+    if response.changed() {
+        ui.ctx().data_mut(|state| {
+            state.get_temp_mut_or_insert_with(original_id, || previous_title);
+        });
+    }
+    if response.lost_focus()
+        && let Some(original) = ui
+            .ctx()
+            .data_mut(|state| state.remove_temp::<String>(original_id))
+        && original != data.title
+    {
+        intents.push(Intent::Action(Action::RenameDatabaseRecord {
+            page: data.page_id,
+            title: data.title.clone(),
+        }));
+    }
 }
 
 fn sort_key_label(data: &DatabaseData) -> String {
@@ -635,7 +780,7 @@ fn show_view_options(ui: &mut Ui, data: &mut DatabaseData, intents: &mut Vec<Int
         .collect();
     let view = data.view;
     let settings = &mut data.view_settings;
-    ui.menu_button("View options", |ui| {
+    ui.persistent_menu_button("View options", |ui| {
         ui.set_min_width(240.0);
         ui.horizontal(|ui| {
             ui.label("Yeni öğe açılışı");
@@ -854,7 +999,7 @@ fn render_record_multi_select_chips(
                         value: updated.join("|"),
                     }));
                 }
-                resp.context_menu(|ui| {
+                resp.persistent_context_menu(|ui| {
                     show_color_palette_grid(ui, palette, item_color, |new_color| {
                         let mut opts = property.options.clone();
                         if let Some(target) = opts.iter_mut().find(|o| o.name == *item) {
@@ -879,7 +1024,7 @@ fn render_record_multi_select_chips(
             ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
             ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
             ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-            ui.menu_button(
+            ui.persistent_menu_button(
                 RichText::new(trigger_label)
                     .font(FontId::proportional(12.0))
                     .color(palette.muted),
@@ -912,7 +1057,7 @@ fn render_record_multi_select_chips(
                             let dot_color =
                                 option_base_color(palette, "multi-select", &option.name, opt_color);
                             ui.horizontal(|ui| {
-                                ui.menu_button(
+                                ui.persistent_menu_button(
                                     RichText::new("●")
                                         .font(FontId::proportional(13.0))
                                         .color(dot_color),
@@ -1091,7 +1236,7 @@ pub fn show_record_property_rows(
                                                 egui::Stroke::NONE;
                                             ui.spacing_mut().button_padding = egui::vec2(4.0, 3.0);
 
-                                            let menu_resp = ui.menu_button(
+                                            let menu_resp = ui.persistent_menu_button(
                                                 RichText::new(format!("{icon}   {}", property.name))
                                                     .font(FontId::proportional(13.0))
                                                     .color(if is_hovered {
@@ -1113,7 +1258,7 @@ pub fn show_record_property_rows(
                                                     property.name,
                                                     property_types_label(&property.kind)
                                                 ))
-                                                .context_menu(|ui| {
+                                                .persistent_context_menu(|ui| {
                                                     show_property_edit_menu(
                                                         ui, property, busy, palette, intents,
                                                         drafts,
@@ -1236,7 +1381,7 @@ fn auto_fit_name_column(ui: &Ui, rows: &[&DatabaseRow]) -> f32 {
         .iter()
         .map(|row| {
             let title = if row.page.title.is_empty() {
-                "Untitled"
+                EMPTY_RECORD_NAME
             } else {
                 &row.page.title
             };
@@ -1423,19 +1568,21 @@ fn show_table(
                 })
                 .collect();
 
-            let table_width = name_w
+            let data_columns_width = name_w
                 + if show_created_at { created_w } else { 0.0 }
-                + prop_widths.iter().sum::<f32>()
-                + TABLE_ADD_PROP_WIDTH;
+                + prop_widths.iter().sum::<f32>();
+            let table_width = data_columns_width + TABLE_ADD_PROP_WIDTH;
 
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             ui.set_min_width(table_width);
 
             let table_top = ui.cursor().min.y;
             let table_left = ui.cursor().min.x;
+            let data_right = table_left + data_columns_width;
+            let table_right = table_left + table_width.max(ui.available_width());
 
             // 1. Table Header Row
-            ui.horizontal(|ui| {
+            let header = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 table_cell(
                     ui,
@@ -1565,7 +1712,7 @@ fn show_table(
                         ui.new_child(egui::UiBuilder::new().max_rect(add_rect).layout(
                             egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                         ));
-                    let menu_resp = child_ui.menu_button(
+                    let menu_resp = child_ui.persistent_menu_button(
                         RichText::new("+").size(16.0).color(palette.muted).strong(),
                         |ui| {
                             ui.ctx().data_mut(|d| d.insert_temp(popup_open_id, true));
@@ -1579,6 +1726,13 @@ fn show_table(
                     ui.ctx().data_mut(|d| d.insert_temp(popup_open_id, false));
                 }
             });
+
+            paint_table_row_extension(
+                ui,
+                data_right..table_right,
+                header.response.rect.top()..header.response.rect.bottom(),
+                palette,
+            );
 
             // 2. Data Rows
             let selection_id = egui::Id::new(("database-selected-rows", data.page_id));
@@ -1657,10 +1811,15 @@ fn show_table(
                 rows_start_cursor,
                 egui::vec2(table_width.max(ui.available_width()), active_rows_h),
             );
+            let rows_content = egui::Rect::from_min_size(
+                rows_start_cursor,
+                egui::vec2(table_width, natural_rows_h.min(active_rows_h)),
+            );
 
             if primary_pressed
                 && let Some(pos) = pointer_pos
-                && rows_area.contains(pos)
+                && ui.rect_contains_pointer(rows_area)
+                && !rows_content.contains(pos)
             {
                 marquee_anchor = Some(pos);
                 marquee_active = false;
@@ -1883,8 +2042,8 @@ fn show_table(
                                             anchor_row = Some(row_id);
                                         }
                                     }
-                                    ui.add_space(18.0);
                                 }
+                                ui.add_space(18.0);
 
                                 let icon_start_x = ui.cursor().min.x;
                                 let icon = if row.page.icon.is_empty() {
@@ -1892,13 +2051,22 @@ fn show_table(
                                 } else {
                                     &row.page.icon
                                 };
-                                if let Some(new_icon) = crate::ui::icon_picker_button(
-                                    ui,
-                                    ("table-row-icon", row.page.id),
-                                    icon,
-                                    13.0,
-                                    None,
-                                ) {
+                                let new_icon = ui
+                                    .allocate_ui_with_layout(
+                                        egui::vec2(TABLE_RECORD_ICON_WIDTH, TABLE_ROW_HEIGHT),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            crate::ui::icon_picker_button(
+                                                ui,
+                                                ("table-row-icon", row.page.id),
+                                                icon,
+                                                13.0,
+                                                None,
+                                            )
+                                        },
+                                    )
+                                    .inner;
+                                if let Some(new_icon) = new_icon {
                                     intents.push(Intent::Action(Action::SetDatabaseRecordIcon {
                                         page: row.page.id,
                                         icon: new_icon,
@@ -1921,7 +2089,7 @@ fn show_table(
                                 .max(24.0);
 
                                 let display_text = if title.is_empty() {
-                                    "Untitled"
+                                    EMPTY_RECORD_NAME
                                 } else {
                                     title.as_str()
                                 };
@@ -1954,16 +2122,78 @@ fn show_table(
                                     state.store(ui.ctx(), title_edit_id);
                                 }
 
-                                let response = ui.add_enabled(
-                                    !busy,
-                                    egui::TextEdit::singleline(title)
-                                        .id(title_edit_id)
-                                        .hint_text("Untitled")
-                                        .desired_width(title_edit_w)
-                                        .font(FontId::proportional(13.0))
-                                        .frame(false)
-                                        .margin(egui::Margin::ZERO),
-                                );
+                                let editing_state = title_edit_id.with("editing");
+                                let editing = ui
+                                    .ctx()
+                                    .data(|data| data.get_temp::<bool>(editing_state))
+                                    .unwrap_or(false)
+                                    || ui.memory(|memory| memory.has_focus(title_edit_id))
+                                    || pending_focus_record == Some(row.page.id);
+                                let response = if editing {
+                                    ui.add_enabled(
+                                        !busy,
+                                        egui::TextEdit::singleline(title)
+                                            .id(title_edit_id)
+                                            .hint_text(
+                                                RichText::new(EMPTY_RECORD_NAME)
+                                                    .color(palette.muted),
+                                            )
+                                            .desired_width(title_edit_w)
+                                            .font(FontId::proportional(13.0))
+                                            .frame(false)
+                                            .margin(egui::Margin::ZERO),
+                                    )
+                                } else {
+                                    let response = ui.add_enabled(
+                                        !busy,
+                                        egui::Label::new(
+                                            RichText::new(display_text)
+                                                .font(FontId::proportional(13.0))
+                                                .color(
+                                                    if crate::ui::page_transfer::is_cut(
+                                                        ui.ctx(),
+                                                        row.page.id,
+                                                    ) {
+                                                        palette.muted
+                                                    } else {
+                                                        palette.text
+                                                    },
+                                                ),
+                                        )
+                                        .selectable(false)
+                                        .sense(egui::Sense::hover()),
+                                    );
+                                    let response = ui.interact(
+                                        response.rect,
+                                        ui.id().with(("table-row-title-drag", row.page.id)),
+                                        egui::Sense::click_and_drag(),
+                                    );
+                                    let response =
+                                        response.on_hover_text("Drag to move · Click to rename");
+                                    response.dnd_set_drag_payload(
+                                        crate::ui::page_transfer::PageDragPayload {
+                                            pages: if selected_rows.contains(&row.page.id) {
+                                                rows.iter()
+                                                    .filter(|row| {
+                                                        selected_rows.contains(&row.page.id)
+                                                    })
+                                                    .map(|row| row.page.id)
+                                                    .collect()
+                                            } else {
+                                                vec![row.page.id]
+                                            },
+                                        },
+                                    );
+                                    if response.clicked() {
+                                        focus_record_name(ui, title_edit_id, title);
+                                    }
+                                    response
+                                };
+                                if editing {
+                                    let focused = response.has_focus();
+                                    ui.ctx()
+                                        .data_mut(|data| data.insert_temp(editing_state, focused));
+                                }
 
                                 if pending_focus_record == Some(row.page.id) && !busy {
                                     response.request_focus();
@@ -2004,7 +2234,35 @@ fn show_table(
                                     }));
                                 }
 
-                                response.context_menu(|ui| {
+                                response.persistent_context_menu(|ui| {
+                                    let rows_to_copy: Vec<_> =
+                                        if selected_rows.contains(&row.page.id) {
+                                            rows.iter()
+                                                .filter(|row| selected_rows.contains(&row.page.id))
+                                                .collect()
+                                        } else {
+                                            vec![row]
+                                        };
+                                    for (label, cut) in
+                                        [("Copy pages  Ctrl+C", false), ("Cut pages  Ctrl+X", true)]
+                                    {
+                                        if ui.button(label).clicked() {
+                                            crate::ui::page_transfer::copy_pages(
+                                                ui.ctx(),
+                                                rows_to_copy
+                                                    .iter()
+                                                    .map(|row| row.page.id)
+                                                    .collect(),
+                                                &rows_to_copy
+                                                    .iter()
+                                                    .map(|row| row.page.display_title().to_owned())
+                                                    .collect::<Vec<_>>(),
+                                                cut,
+                                            );
+                                            ui.close_menu();
+                                        }
+                                    }
+                                    ui.separator();
                                     if selected_rows.contains(&row.page.id)
                                         && selected_rows.len() > 1
                                     {
@@ -2075,48 +2333,54 @@ fn show_table(
                                 });
 
                                 let mut open_btn_hit: Option<egui::Rect> = None;
-                                if hovered {
+                                if ui.rect_contains_pointer(name_cell_rect) {
                                     let btn_rect = egui::Rect::from_center_size(
                                         egui::pos2(
-                                            name_cell_rect.right() - 14.0,
+                                            name_cell_rect.right()
+                                                - TABLE_OPEN_PAGE_BUTTON_MARGIN
+                                                - TABLE_OPEN_PAGE_BUTTON_SIZE * 0.5,
                                             name_cell_rect.center().y,
                                         ),
-                                        egui::vec2(20.0, 20.0),
+                                        egui::Vec2::splat(TABLE_OPEN_PAGE_BUTTON_SIZE),
                                     );
                                     open_btn_hit = Some(btn_rect.expand(2.0));
-                                    let open_resp = ui.put(
-                                        btn_rect,
-                                        egui::Button::new(
-                                            RichText::new("↗")
-                                                .color(palette.text)
-                                                .font(FontId::proportional(12.5)),
-                                        )
-                                        .frame(false),
-                                    );
+                                    let open_resp = ui
+                                        .push_id(("table-row-open-page", row.page.id), |ui| {
+                                            ui.put(
+                                                btn_rect,
+                                                egui::Button::new(
+                                                    RichText::new("↗")
+                                                        .color(palette.text)
+                                                        .font(FontId::proportional(12.5)),
+                                                )
+                                                .frame(false),
+                                            )
+                                        })
+                                        .inner;
                                     if open_resp.on_hover_text("Open page").clicked() {
                                         intents.push(Intent::Open(row.page.id, None));
                                     }
                                 }
 
-                                let is_interactive = pointer_pos.map_or(false, |pos| {
-                                    sel_box_hit.map_or(false, |r| r.contains(pos))
+                                let is_interactive = pointer_pos.is_some_and(|pos| {
+                                    sel_box_hit.is_some_and(|r| r.contains(pos))
                                         || icon_hit_rect.contains(pos)
                                         || response.rect.contains(pos)
-                                        || open_btn_hit.map_or(false, |r| r.contains(pos))
+                                        || open_btn_hit.is_some_and(|r| r.contains(pos))
                                 });
 
                                 let in_empty_space = pointer_pos
-                                    .map_or(false, |pos| name_cell_rect.contains(pos))
+                                    .is_some_and(|pos| name_cell_rect.contains(pos))
                                     && !is_interactive;
 
-                                if in_empty_space && !marquee_active {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                if in_empty_space && !marquee_active && !busy {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                                     if primary_clicked
                                         && !is_ctrl
                                         && !is_shift
                                         && ui.ctx().dragged_id().is_none()
                                     {
-                                        intents.push(Intent::Open(row.page.id, None));
+                                        focus_record_name(ui, title_edit_id, title);
                                     }
                                 }
                             },
@@ -2171,11 +2435,17 @@ fn show_table(
                             );
                         }
                     });
+                    paint_table_row_extension(
+                        ui,
+                        data_right..table_right,
+                        row_rect.top()..row_rect.bottom(),
+                        palette,
+                    );
                 }
             });
 
             // 3. "+ New" Bottom Row
-            ui.horizontal(|ui| {
+            let new_row = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 table_cell(
                     ui,
@@ -2232,6 +2502,13 @@ fn show_table(
                     );
                 }
             });
+
+            paint_table_row_extension(
+                ui,
+                data_right..table_right,
+                new_row.response.rect.top()..new_row.response.rect.bottom(),
+                palette,
+            );
 
             if primary_clicked
                 && !is_ctrl
@@ -2295,7 +2572,7 @@ fn show_table(
 
             // 4. Table Calculation / Footer
             let mut calc_settings_changed = false;
-            ui.horizontal(|ui| {
+            let footer = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 table_footer_cell(ui, name_w, palette, true, |ui| {
                     ui.label(
@@ -2325,11 +2602,15 @@ fn show_table(
                 }
             });
 
+            paint_table_row_extension(
+                ui,
+                data_right..table_right,
+                footer.response.rect.top()..footer.response.rect.bottom(),
+                palette,
+            );
+
             let table_bottom = ui.cursor().min.y;
             let total_h = (table_bottom - table_top).max(TABLE_HEADER_HEIGHT);
-            let data_columns_width = name_w
-                + if show_created_at { created_w } else { 0.0 }
-                + prop_widths.iter().sum::<f32>();
             let mut settings_changed = calc_settings_changed
                 || show_vertical_resize_handle(
                     ui,
@@ -2403,6 +2684,27 @@ fn show_table(
                 }));
             }
         });
+}
+
+fn paint_table_row_extension(
+    ui: &Ui,
+    horizontal: std::ops::Range<f32>,
+    vertical: std::ops::Range<f32>,
+    palette: Palette,
+) {
+    if horizontal.is_empty() {
+        return;
+    }
+    let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+    for y in [vertical.start, vertical.end] {
+        ui.painter().line_segment(
+            [
+                egui::pos2(horizontal.start, y),
+                egui::pos2(horizontal.end, y),
+            ],
+            stroke,
+        );
+    }
 }
 
 fn table_border_color(palette: Palette) -> Color32 {
@@ -2598,40 +2900,34 @@ fn table_number_footer_cell(
         );
     }
 
-    egui::popup::popup_below_widget(
-        ui,
-        popup_id,
-        &response,
-        egui::popup::PopupCloseBehavior::CloseOnClick,
-        |ui| {
-            ui.set_min_width(160.0);
-            for calc in NumberCalculation::ALL {
-                if ui
-                    .selectable_label(current_calc == calc, calc.menu_label())
-                    .clicked()
-                {
-                    if calc == NumberCalculation::None {
-                        if data
-                            .view_settings
-                            .table_column_calculations
-                            .remove(&property.id)
-                            .is_some()
-                        {
-                            changed = true;
-                        }
-                    } else if data
+    crate::ui::menus::popup_below_widget(ui, popup_id, &response, |ui| {
+        ui.set_min_width(160.0);
+        for calc in NumberCalculation::ALL {
+            if ui
+                .selectable_label(current_calc == calc, calc.menu_label())
+                .clicked()
+            {
+                if calc == NumberCalculation::None {
+                    if data
                         .view_settings
                         .table_column_calculations
-                        .insert(property.id, calc)
-                        != Some(calc)
+                        .remove(&property.id)
+                        .is_some()
                     {
                         changed = true;
                     }
-                    ui.memory_mut(|mem| mem.close_popup());
+                } else if data
+                    .view_settings
+                    .table_column_calculations
+                    .insert(property.id, calc)
+                    != Some(calc)
+                {
+                    changed = true;
                 }
+                ui.memory_mut(|mem| mem.close_popup());
             }
-        },
-    );
+        }
+    });
 
     changed
 }
@@ -2735,7 +3031,7 @@ pub fn show_property_edit_menu(
                                     opt_color,
                                 );
                                 ui.horizontal(|ui| {
-                                    ui.menu_button(
+                                    ui.persistent_menu_button(
                                         RichText::new("●")
                                             .font(FontId::proportional(14.0))
                                             .color(dot_color),
@@ -2913,6 +3209,35 @@ fn show_property_header(
     intents: &mut Vec<Intent>,
     drafts: &mut Drafts<'_>,
 ) {
+    let rename_id = ui.id().with(("property-header-rename", property.id));
+    if let Some(mut name) = ui.ctx().data(|state| state.get_temp::<String>(rename_id)) {
+        let response = ui.add_enabled(
+            !busy,
+            egui::TextEdit::singleline(&mut name)
+                .id(rename_id)
+                .desired_width((column_width - 12.0).max(24.0)),
+        );
+        let cancel = (response.has_focus() || response.lost_focus())
+            && ui.input(|input| input.key_pressed(egui::Key::Escape));
+        let save = response.lost_focus()
+            || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+        if cancel || save {
+            if !cancel && !busy && !name.trim().is_empty() && name.trim() != property.name {
+                intents.push(Intent::Action(Action::RenameDatabaseProperty {
+                    property: property.id,
+                    name: name.trim().to_owned(),
+                }));
+                drafts.properties.remove(&property.id);
+            }
+            response.surrender_focus();
+            ui.ctx().data_mut(|state| state.remove::<String>(rename_id));
+        } else {
+            ui.ctx()
+                .data_mut(|state| state.insert_temp(rename_id, name));
+        }
+        return;
+    }
+
     let sort_key = property.id.to_string();
     let is_active_sort = data.sort_key == sort_key;
     let sort_arrow = if is_active_sort {
@@ -2946,31 +3271,50 @@ fn show_property_header(
             .frame(false),
         )
         .on_hover_text(format!(
-            "{} (Left click: sort · Right click: edit)",
+            "{} (Left click: sort · Double click: rename · Right click: column options)",
             property.name
         ));
 
-    if resp.clicked() {
+    if resp.double_clicked() && !busy {
+        ui.ctx().data_mut(|state| {
+            state.insert_temp(rename_id, property.name.clone());
+        });
+        ui.memory_mut(|memory| memory.request_focus(rename_id));
+        ui.ctx().request_repaint();
+    } else if resp.clicked() {
         toggle_sort(data, &sort_key, intents);
     }
 
-    resp.context_menu(|ui| {
-        show_property_edit_menu(ui, property, busy, palette, intents, drafts);
+    resp.persistent_context_menu(|ui| {
+        show_property_column_menu(ui, property, busy, palette, intents, drafts);
     });
 
     if hovered {
-        let menu_resp = ui.menu_button(
+        let menu_resp = ui.persistent_menu_button(
             RichText::new("⋯")
                 .color(palette.muted)
                 .font(FontId::proportional(13.0)),
             |ui| {
-                show_property_edit_menu(ui, property, busy, palette, intents, drafts);
+                show_property_column_menu(ui, property, busy, palette, intents, drafts);
             },
         );
-        menu_resp.response.context_menu(|ui| {
-            show_property_edit_menu(ui, property, busy, palette, intents, drafts);
+        menu_resp.response.persistent_context_menu(|ui| {
+            show_property_column_menu(ui, property, busy, palette, intents, drafts);
         });
     }
+}
+
+fn show_property_column_menu(
+    ui: &mut Ui,
+    property: &DatabaseProperty,
+    busy: bool,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+    drafts: &mut Drafts<'_>,
+) {
+    ui.persistent_menu_button("Edit property", |ui| {
+        show_property_edit_menu(ui, property, busy, palette, intents, drafts);
+    });
 }
 
 fn property_types_label(kind: &str) -> &'static str {
@@ -3014,7 +3358,7 @@ fn property_editor(
                 ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_fill;
                 ui.style_mut().visuals.widgets.inactive.bg_fill = pill_fill;
                 ui.style_mut().visuals.widgets.inactive.bg_stroke = pill_stroke;
-                ui.menu_button(
+                ui.persistent_menu_button(
                     RichText::new(display_text)
                         .font(FontId::proportional(12.0))
                         .color(text_color),
@@ -3044,7 +3388,7 @@ fn property_editor(
                                         opt_color,
                                     );
                                     ui.horizontal(|ui| {
-                                        ui.menu_button(
+                                        ui.persistent_menu_button(
                                             RichText::new("●")
                                                 .font(FontId::proportional(13.0))
                                                 .color(dot_color),
@@ -3202,7 +3546,7 @@ fn property_editor(
                 ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_fill;
                 ui.style_mut().visuals.widgets.inactive.bg_fill = pill_fill;
                 ui.style_mut().visuals.widgets.inactive.bg_stroke = pill_stroke;
-                ui.menu_button(
+                ui.persistent_menu_button(
                     RichText::new(selected_label)
                         .font(FontId::proportional(12.0))
                         .color(text_color),
@@ -3235,7 +3579,7 @@ fn property_editor(
                                         opt_color,
                                     );
                                     ui.horizontal(|ui| {
-                                        ui.menu_button(
+                                        ui.persistent_menu_button(
                                             RichText::new("●")
                                                 .font(FontId::proportional(13.0))
                                                 .color(dot_color),
@@ -3365,7 +3709,7 @@ fn property_editor(
                 ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
                 ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-                ui.menu_button(
+                ui.persistent_menu_button(
                     RichText::new(display_label)
                         .font(FontId::proportional(12.5))
                         .color(label_color),
@@ -3453,8 +3797,11 @@ fn property_editor(
                     };
                 intents.push(Intent::OpenUrl(full_url));
             }
-            let enter = text.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (text.lost_focus() || enter) && edited != &value {
+            // A sign or decimal separator can be a temporary numeric draft.
+            let valid_value = property.kind != "number"
+                || edited.is_empty()
+                || edited.parse::<f64>().is_ok_and(f64::is_finite);
+            if ((text.changed() && valid_value) || text.lost_focus()) && edited != &value {
                 intents.push(action(edited.clone()));
             }
         }
@@ -3791,7 +4138,7 @@ fn show_cards(
                                 egui::StrokeKind::Inside,
                             );
 
-                            card_resp.context_menu(|ui| {
+                            card_resp.persistent_context_menu(|ui| {
                                 if ui.button("↗  Sayfayı aç").clicked() {
                                     intents.push(Intent::Open(row.page.id, None));
                                     ui.close_menu();
@@ -4587,7 +4934,7 @@ fn show_board(
                                             }
                                         }
 
-                                        card_resp.context_menu(|ui| {
+                                        card_resp.persistent_context_menu(|ui| {
                                             if ui.button("Open page").clicked() {
                                                 intents.push(Intent::Open(row.page.id, None));
                                                 ui.close_menu();
@@ -4772,7 +5119,7 @@ fn show_board(
                 }
 
                 // "+ Add group" column button on the right of the board
-                ui.menu_button(
+                ui.persistent_menu_button(
                     RichText::new("+ Group")
                         .font(FontId::proportional(12.5))
                         .color(palette.muted),
@@ -4900,5 +5247,213 @@ mod date_format_tests {
         let same_day = Local.with_ymd_and_hms(2025, 10, 15, 9, 7, 53).unwrap();
 
         assert_eq!(format_date_at(same_day, today), "15 October, 09:07");
+    }
+}
+
+#[cfg(test)]
+mod property_value_tests {
+    use super::*;
+
+    #[test]
+    fn typing_saves_valid_property_values_without_leaving_the_cell() {
+        for kind in ["text", "number", "email", "url"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut repository =
+                crate::storage::Repository::open(&directory.path().join("test.sqlite")).unwrap();
+            let page = repository.create_page(None, "Record").unwrap();
+            let row = DatabaseRow {
+                page: repository.page(page).unwrap(),
+                preview: String::new(),
+                values: HashMap::new(),
+            };
+            let property = DatabaseProperty {
+                id: 7,
+                name: "Value".into(),
+                kind: kind.into(),
+                options: Vec::new(),
+            };
+            let context = egui::Context::default();
+            let mut drafts = HashMap::new();
+            let mut frame = |events| {
+                let mut intents = Vec::new();
+                let _ = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(400.0, 120.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            property_editor(
+                                ui,
+                                &row,
+                                &property,
+                                TABLE_PROPERTY_WIDTH,
+                                false,
+                                Palette::new(false),
+                                &mut intents,
+                                &mut drafts,
+                            );
+                        });
+                    },
+                );
+                intents
+            };
+            frame(Vec::new());
+            let position = egui::pos2(25.0, 16.0);
+            frame(vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            frame(vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let focused = context
+                .memory(|memory| memory.focused())
+                .expect("cell must be focused");
+            let first = if kind == "number" { "-" } else { "a" };
+            let actions = frame(vec![egui::Event::Text(first.into())]);
+            if kind == "number" {
+                assert!(
+                    actions.is_empty(),
+                    "a temporary numeric sign must stay a draft"
+                );
+            } else {
+                assert!(actions.iter().any(|intent| matches!(intent,
+                    Intent::Action(Action::SetDatabaseProperty { value, .. }) if value == "a")));
+            }
+            let second = if kind == "number" { "2" } else { "b" };
+            let expected = if kind == "number" { "-2" } else { "ab" };
+            let actions = frame(vec![egui::Event::Text(second.into())]);
+            assert!(actions.iter().any(|intent| matches!(intent,
+                Intent::Action(Action::SetDatabaseProperty { page: saved_page, property: 7, value })
+                    if *saved_page == page && value == expected)));
+            assert_eq!(context.memory(|memory| memory.focused()), Some(focused));
+            assert!(
+                frame(Vec::new()).is_empty(),
+                "idle frames must not send repeated writes"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod property_header_tests {
+    use super::*;
+
+    #[test]
+    fn double_click_renames_property_and_escape_cancels() {
+        for cancel in [false, true] {
+            let context = egui::Context::default();
+            let property = DatabaseProperty {
+                id: 7,
+                name: "Status".into(),
+                kind: "text".into(),
+                options: Vec::new(),
+            };
+            let database = DatabaseData {
+                page_id: 100,
+                title: "Database".into(),
+                icon: String::new(),
+                view: DatabaseView::Table,
+                gallery_columns: 3,
+                view_settings: Default::default(),
+                sort_key: "manual".into(),
+                sort_descending: false,
+                properties: vec![property.clone()],
+                rows: Vec::new(),
+            };
+            let mut properties = HashMap::new();
+            let mut titles = HashMap::new();
+            let mut values = HashMap::new();
+            let mut time = 0.0;
+            let mut frame = |events| {
+                time += 0.05;
+                let mut intents = Vec::new();
+                let mut rect = egui::Rect::NOTHING;
+                let _ = context.run(
+                    egui::RawInput {
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            show_property_header(
+                                ui,
+                                &database,
+                                &property,
+                                TABLE_PROPERTY_WIDTH,
+                                false,
+                                Palette::new(false),
+                                false,
+                                &mut intents,
+                                &mut Drafts {
+                                    properties: &mut properties,
+                                    titles: &mut titles,
+                                    values: &mut values,
+                                },
+                            );
+                            rect = ui.min_rect();
+                        });
+                    },
+                );
+                (rect, intents)
+            };
+            let (rect, _) = frame(Vec::new());
+            let position = rect.left_top() + egui::vec2(40.0, 15.0);
+            for _ in 0..2 {
+                for pressed in [true, false] {
+                    frame(vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]);
+                }
+            }
+            frame(Vec::new());
+            frame(vec![egui::Event::Text(" updated".into())]);
+            let (_, intents) = frame(vec![egui::Event::Key {
+                key: if cancel {
+                    egui::Key::Escape
+                } else {
+                    egui::Key::Enter
+                },
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            let names: Vec<_> = intents
+                .iter()
+                .filter_map(|intent| match intent {
+                    Intent::Action(Action::RenameDatabaseProperty { property: 7, name }) => {
+                        Some(name.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if cancel {
+                assert!(names.is_empty());
+            } else {
+                assert_eq!(names.len(), 1);
+                assert!(names[0].contains("updated"));
+            }
+        }
     }
 }

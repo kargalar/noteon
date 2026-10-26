@@ -1,6 +1,7 @@
 use super::block;
 use crate::config::UNTITLED;
-use crate::domain::model::{Document, Page, PageEdit};
+use crate::domain::model::{BlockKind, Document, Page, PageEdit};
+use crate::ui::menus::{PersistentContextMenu, PersistentMenuUi};
 use crate::ui::{Intent, ThemeSection, palette::Palette, quiet_button, small_label, text};
 use crate::worker::Action;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, vec2};
@@ -135,7 +136,7 @@ pub(super) fn show(
         if cover_response.clicked() {
             ui.memory_mut(|mem| mem.toggle_popup(cover_response.id.with("__context_menu")));
         }
-        cover_response.context_menu(|ui| {
+        cover_response.persistent_context_menu(|ui| {
             ui.set_min_width(200.0);
 
             ui.label(
@@ -149,7 +150,7 @@ pub(super) fn show(
                 intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
                 ui.close_menu();
             }
-            ui.menu_button("🎨  Renk Seç", |ui| {
+            ui.persistent_menu_button("🎨  Renk Seç", |ui| {
                 for (style, label) in [(1, "Sage"), (2, "Sand"), (3, "Sky"), (4, "Rose")] {
                     if ui
                         .selectable_label(page.cover == style && page.cover_image.is_none(), label)
@@ -239,7 +240,6 @@ pub(super) fn show(
         &mut intents,
         find_query,
         is_find_title_active,
-        history,
     );
     if page_changed {
         intents.push(Intent::PageChanged(PageEdit::from(&*page)));
@@ -357,11 +357,7 @@ fn breadcrumb(
             ui.label(RichText::new(current_label).size(12.0));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button("···", |ui| {
-                ui.menu_button("🕒  Değişiklik Geçmişi", |ui| {
-                    show_history_menu(ui, page.id, history, palette, intents);
-                });
-                ui.separator();
+            ui.persistent_menu_button("···", |ui| {
                 let full_width_label = if page.full_width {
                     "⤡  Standard width"
                 } else {
@@ -422,21 +418,11 @@ fn breadcrumb(
                     intents.push(Intent::Action(Action::Trash(page.id)));
                     ui.close_menu();
                 }
-            });
-            ui.menu_button(
-                RichText::new("🕒")
-                    .font(FontId::proportional(12.5))
-                    .color(if history.is_empty() {
-                        palette.muted
-                    } else {
-                        palette.accent
-                    }),
-                |ui| {
+                ui.separator();
+                ui.persistent_menu_button("🕒  Değişiklik Geçmişi", |ui| {
                     show_history_menu(ui, page.id, history, palette, intents);
-                },
-            )
-            .response
-            .on_hover_text("Değişiklik Geçmişi (Son 10)");
+                });
+            });
             if quiet_button(
                 ui,
                 if page.full_width { "⤡" } else { "⤢" },
@@ -501,7 +487,6 @@ fn title(
     intents: &mut Vec<Intent>,
     find_query: Option<&str>,
     is_find_title_active: bool,
-    history: &[crate::domain::model::PageHistorySummary],
 ) -> bool {
     let mut changed = false;
 
@@ -593,6 +578,8 @@ fn title(
                 )));
             state.store(ui.ctx(), title_id);
         }
+        let insert_first_block = ui.memory(|mem| mem.has_focus(title_id))
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let title_edit = egui::TextEdit::singleline(&mut page.title)
             .id(title_id)
             .font(FontId::proportional(34.0))
@@ -618,7 +605,18 @@ fn title(
             *title_focus = false;
             ui.ctx().request_repaint();
         }
-        title_resp.context_menu(|ui| {
+        if insert_first_block {
+            title_resp.surrender_focus();
+            intents.push(Intent::Action(Action::InsertBlock {
+                column_anchor: None,
+                page: page.id,
+                position: 0,
+                kind: BlockKind::Text,
+                content: String::new(),
+                text_styles: Vec::new(),
+            }));
+        }
+        title_resp.persistent_context_menu(|ui| {
             ui.set_min_width(240.0);
             ui.label(
                 RichText::new("PAGE & PROPERTIES")
@@ -685,11 +683,8 @@ fn title(
                 intents.push(Intent::FindInPage);
                 ui.close_menu();
             }
-            ui.menu_button("🕒  Değişiklik Geçmişi", |ui| {
-                show_history_menu(ui, page.id, history, palette, intents);
-            });
             ui.separator();
-            ui.menu_button("+  Add property", |ui| {
+            ui.persistent_menu_button("+  Add property", |ui| {
                 crate::ui::page_properties::show_add_property_panel(
                     ui,
                     page.id,
@@ -701,11 +696,11 @@ fn title(
                 );
             });
             if !properties.is_empty() {
-                ui.menu_button("⚙  Edit properties", |ui| {
+                ui.persistent_menu_button("⚙  Edit properties", |ui| {
                     let total = properties.len();
                     for (idx, prop) in properties.iter().enumerate() {
                         let icon = crate::ui::page_properties::property_icon(&prop.kind);
-                        ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                        ui.persistent_menu_button(format!("{icon}  {}", prop.name), |ui| {
                             crate::ui::page_properties::show_property_edit_panel(
                                 ui, page.id, prop, idx, total, false, palette, intents,
                             );
@@ -713,7 +708,7 @@ fn title(
                     }
                 });
             }
-            ui.menu_button("🖼  Cover", |ui| {
+            ui.persistent_menu_button("🖼  Cover", |ui| {
                 if ui.button("Choose image…").clicked() {
                     intents.push(Intent::Action(Action::ChooseCoverImage(page.id)));
                     ui.close_menu();

@@ -107,7 +107,6 @@ pub fn show_image(ui: &mut Ui, path: &Path, available: Vec2, fullscreen_id: &str
     }
 }
 
-
 pub fn show_video(ui: &mut Ui, path: &Path, size: Vec2, fullscreen_id: &str) {
     let key = path.to_string_lossy().into_owned();
     let texture = VIDEOS.with(|videos| {
@@ -202,7 +201,10 @@ fn cached_image(context: &Context, key: &str, path: &Path) -> Option<TextureHand
                         if let Some(oldest) = loader
                             .cache
                             .iter()
-                            .find(|(k, v)| k.as_str() != response.key && matches!(v, CachedImageState::Loaded(_)))
+                            .find(|(k, v)| {
+                                k.as_str() != response.key
+                                    && matches!(v, CachedImageState::Loaded(_))
+                            })
                             .map(|(k, _)| k.clone())
                         {
                             loader.cache.remove(&oldest);
@@ -213,9 +215,7 @@ fn cached_image(context: &Context, key: &str, path: &Path) -> Option<TextureHand
                         .insert(response.key, CachedImageState::Loaded(texture));
                 }
                 Err(()) => {
-                    loader
-                        .cache
-                        .insert(response.key, CachedImageState::Failed);
+                    loader.cache.insert(response.key, CachedImageState::Failed);
                 }
             }
         }
@@ -237,7 +237,6 @@ fn cached_image(context: &Context, key: &str, path: &Path) -> Option<TextureHand
         }
     })
 }
-
 
 pub fn paint_cover(ui: &Ui, path: &Path, rect: egui::Rect, focus: Vec2) -> Option<Vec2> {
     let key = path.to_string_lossy().into_owned();

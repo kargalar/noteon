@@ -8,7 +8,8 @@ use eframe::egui;
 use crate::config::{BLOCK_BATCH_SIZE, SettingKey};
 use crate::domain::model::{
     Block, BlockId, BlockKind, BulkBlockStyleOp, DatabaseData, DatabaseView, DatabaseViewSettings,
-    Document, DropPlacement, Page, PageId, PageSnapshot, PropertyOption, SaveBatch, SearchHit, TextStyleRange,
+    Document, DropPlacement, Page, PageId, PageSnapshot, PropertyOption, SaveBatch, SearchHit,
+    TextStyleRange,
 };
 use crate::error::{Error, Result};
 use crate::storage::Repository;
@@ -37,17 +38,31 @@ pub enum Action {
     },
     Duplicate(PageId),
     MovePage(PageId, Option<PageId>),
+    TransferPages {
+        pages: Vec<PageId>,
+        parent: Option<PageId>,
+        position: Option<usize>,
+        replace_block: Option<BlockId>,
+        copy: bool,
+    },
     ReorderPage {
         source: PageId,
         target: PageId,
         after: bool,
     },
     InsertBlock {
+        column_anchor: Option<BlockId>,
         page: PageId,
         position: usize,
         kind: BlockKind,
         content: String,
         text_styles: Vec<TextStyleRange>,
+    },
+    InsertBlocks {
+        column_anchor: Option<BlockId>,
+        page: PageId,
+        position: usize,
+        blocks: Vec<crate::domain::model::StyledBlockContent>,
     },
     ImportMedia {
         page: PageId,
@@ -335,6 +350,7 @@ pub enum Event {
         refresh_database: Option<PageId>,
         created_record_document: Option<Document>,
         history: Option<Vec<crate::domain::model::PageHistorySummary>>,
+        page_transfer: Option<Box<PageTransferUpdate>>,
     },
     PageUndoEmpty {
         page_id: PageId,
@@ -346,6 +362,13 @@ pub enum Event {
         operation: FailedOperation,
         message: String,
     },
+}
+
+#[derive(Debug)]
+pub struct PageTransferUpdate {
+    pub moved_pages: Vec<PageId>,
+    pub databases: Vec<PageId>,
+    pub documents: Vec<Document>,
 }
 
 pub struct Worker {
@@ -475,26 +498,28 @@ impl Worker {
                             for &page_id in &touched_pages {
                                 let history = page_histories.entry(page_id).or_default();
                                 let should_push = match history.last_save_time {
-                                    Some(time) => time.elapsed() > std::time::Duration::from_millis(1500),
+                                    Some(time) => {
+                                        time.elapsed() > std::time::Duration::from_millis(1500)
+                                    }
                                     None => true,
                                 };
                                 if let Ok(current_snap) = repository.page_snapshot(page_id) {
-                                    let is_discrete_change = batch.pages.iter().any(|p| p.id == page_id)
-                                        || batch.blocks.iter().any(|b| {
-                                            current_snap
-                                                .blocks
-                                                .iter()
-                                                .any(|cb| cb.id == b.id && (cb.checked != b.checked || cb.kind != b.kind))
-                                        });
+                                    let is_discrete_change =
+                                        batch.pages.iter().any(|p| p.id == page_id)
+                                            || batch.blocks.iter().any(|b| {
+                                                current_snap.blocks.iter().any(|cb| {
+                                                    cb.id == b.id
+                                                        && (cb.checked != b.checked
+                                                            || cb.kind != b.kind)
+                                                })
+                                            });
                                     if should_push || is_discrete_change {
                                         let desc = if is_discrete_change
                                             && batch.blocks.iter().any(|b| {
-                                                current_snap
-                                                    .blocks
-                                                    .iter()
-                                                    .any(|cb| cb.id == b.id && cb.checked != b.checked)
-                                            })
-                                        {
+                                                current_snap.blocks.iter().any(|cb| {
+                                                    cb.id == b.id && cb.checked != b.checked
+                                                })
+                                            }) {
                                             "Görev durumu değiştirildi"
                                         } else if batch.pages.iter().any(|p| p.id == page_id) {
                                             "Başlık düzenlendi"
@@ -508,11 +533,28 @@ impl Worker {
                             }
                             let result = repository.save(&batch);
                             write_failed = result.is_err();
-                            let updated_histories: HashMap<PageId, Vec<crate::domain::model::PageHistorySummary>> = touched_pages
+                            let updated_histories: HashMap<
+                                PageId,
+                                Vec<crate::domain::model::PageHistorySummary>,
+                            > = touched_pages
                                 .into_iter()
-                                .map(|p| (p, page_histories.get(&p).map(|h| h.summaries()).unwrap_or_default()))
+                                .map(|p| {
+                                    (
+                                        p,
+                                        page_histories
+                                            .get(&p)
+                                            .map(|h| h.summaries())
+                                            .unwrap_or_default(),
+                                    )
+                                })
                                 .collect();
-                            (FailedOperation::Save(id), result.map(|()| Event::Saved { id, histories: updated_histories }))
+                            (
+                                FailedOperation::Save(id),
+                                result.map(|()| Event::Saved {
+                                    id,
+                                    histories: updated_histories,
+                                }),
+                            )
                         }
                         Request::Action(action) => {
                             let result = if write_failed {
@@ -629,18 +671,28 @@ fn perform_action(
     let mut refresh_database = None;
     let mut refresh_page_properties = None;
     let mut created_record = None;
+    let mut page_transfer = None;
 
     let action_info: Option<(PageId, &'static str)> = match &action {
-        Action::InsertBlock { page, .. } => Some((*page, "Blok eklendi")),
+        Action::InsertBlock { page, .. } | Action::InsertBlocks { page, .. } => {
+            Some((*page, "Blok eklendi"))
+        }
         Action::CreateSubpageBlock { page, .. } => Some((*page, "Alt sayfa eklendi")),
         Action::ImportMedia { page, .. } => Some((*page, "Medya eklendi")),
-        Action::DeleteBlock { page, .. } | Action::DeleteBlocks { page, .. } => Some((*page, "Blok silindi")),
+        Action::DeleteBlock { page, .. } | Action::DeleteBlocks { page, .. } => {
+            Some((*page, "Blok silindi"))
+        }
         Action::SetBlocksKind { page, .. } => Some((*page, "Blok türü değiştirildi")),
         Action::SetBlocksChecked { page, .. } => Some((*page, "Görev durumu değiştirildi")),
         Action::FormatBlocks { page, .. } => Some((*page, "Biçimlendirme uygulandı")),
-        Action::MoveBlocks { page, .. } | Action::MoveBlock { page, .. } | Action::ArrangeBlock { page, .. } | Action::ArrangeBlocks { page, .. } => Some((*page, "Blok taşındı")),
+        Action::MoveBlocks { page, .. }
+        | Action::MoveBlock { page, .. }
+        | Action::ArrangeBlock { page, .. }
+        | Action::ArrangeBlocks { page, .. } => Some((*page, "Blok taşındı")),
         Action::DuplicateBlocks { page, .. } => Some((*page, "Bloklar çoğaltıldı")),
-        Action::GroupBlocksInColumns { page, .. } | Action::UngroupBlockColumns { page, .. } | Action::ResizeColumns { page, .. } => Some((*page, "Sütunlar düzenlendi")),
+        Action::GroupBlocksInColumns { page, .. }
+        | Action::UngroupBlockColumns { page, .. }
+        | Action::ResizeColumns { page, .. } => Some((*page, "Sütunlar düzenlendi")),
         Action::CreateDatabaseBlock { page, .. } => Some((*page, "Veritabanı eklendi")),
         Action::AddPageProperty { page, .. }
         | Action::RenamePageProperty { page, .. }
@@ -698,7 +750,8 @@ fn perform_action(
             property,
             value,
         } => {
-            let record = repository.create_database_record_with_property(database, Some((property, &value)))?;
+            let record = repository
+                .create_database_record_with_property(database, Some((property, &value)))?;
             refresh_database = Some(database);
             created_record = Some(record);
             None
@@ -769,9 +822,13 @@ fn perform_action(
             property,
             value,
         } => {
-            refresh_database = repository.page(page)?.parent_id;
+            let database = repository.page(page)?.parent_id.ok_or_else(|| {
+                Error::Invalid("The record does not belong to a database.".into())
+            })?;
             repository.set_database_property(page, property, &value)?;
-            None
+            // Cell edits must not reload the entire workspace or invalidate the
+            // active table while the user is still typing.
+            return Ok(Event::Database(repository.database(database)?));
         }
         Action::AddPageProperty {
             page: property_page,
@@ -1000,7 +1057,10 @@ fn perform_action(
                 return Ok(Event::PageRedoEmpty { page_id });
             }
         }
-        Action::RestorePageHistory { page: page_id, entry_id } => {
+        Action::RestorePageHistory {
+            page: page_id,
+            entry_id,
+        } => {
             let history = page_histories.entry(page_id).or_default();
             if let Some(pos) = history.undo_stack.iter().position(|e| e.id == entry_id) {
                 let entry = history.undo_stack[pos].clone();
@@ -1027,6 +1087,40 @@ fn perform_action(
             }
         }
         Action::Duplicate(id) => Some(repository.duplicate_page(id)?),
+        Action::TransferPages {
+            pages,
+            parent,
+            position,
+            replace_block,
+            copy,
+        } => {
+            let mut affected: HashSet<_> = pages
+                .iter()
+                .map(|id| repository.page(*id).map(|page| page.parent_id))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+            affected.extend(parent);
+            if !copy {
+                affected.extend(pages.iter().copied());
+            }
+            repository.transfer_pages(&pages, parent, position, replace_block, copy)?;
+            let mut update = PageTransferUpdate {
+                moved_pages: if copy { Vec::new() } else { pages },
+                databases: Vec::new(),
+                documents: Vec::new(),
+            };
+            for id in affected {
+                if repository.page(id)?.is_database {
+                    update.databases.push(id);
+                } else {
+                    update.documents.push(repository.document(id)?);
+                }
+            }
+            page_transfer = Some(Box::new(update));
+            None
+        }
         Action::MovePage(id, parent) => {
             repository.move_page(id, parent)?;
             None
@@ -1040,6 +1134,7 @@ fn perform_action(
             None
         }
         Action::InsertBlock {
+            column_anchor,
             page,
             position,
             kind,
@@ -1055,7 +1150,29 @@ fn perform_action(
                     &[(kind, content, false, text_styles)],
                 )?;
             }
-            focus = Some(position);
+            focus = Some(finish_column_insertion(
+                repository,
+                page,
+                position,
+                1,
+                column_anchor,
+            )?);
+            Some(page)
+        }
+        Action::InsertBlocks {
+            column_anchor,
+            page,
+            position,
+            blocks,
+        } => {
+            repository.append_blocks_with_styles(page, position, &blocks)?;
+            focus = Some(finish_column_insertion(
+                repository,
+                page,
+                position,
+                blocks.len(),
+                column_anchor,
+            )?);
             Some(page)
         }
         Action::ImportMedia {
@@ -1250,14 +1367,128 @@ fn perform_action(
         focus_at_end,
         notice,
         refresh_database,
+        page_transfer,
         created_record_document,
-        history: page.and_then(|id| page_histories.get(&id)).map(|h| h.summaries()),
+        history: page
+            .and_then(|id| page_histories.get(&id))
+            .map(|h| h.summaries()),
+    })
+}
+
+/// Keep Enter and multiline paste in the originating column, including its last block.
+fn finish_column_insertion(
+    repository: &mut Repository,
+    page: PageId,
+    position: usize,
+    count: usize,
+    anchor: Option<BlockId>,
+) -> Result<usize> {
+    let Some(anchor) = anchor else {
+        return Ok(position + count.saturating_sub(1));
+    };
+    let inserted = repository.blocks(page, position, count)?;
+    let ids: Vec<_> = inserted.iter().map(|block| block.id).collect();
+    repository.arrange_blocks(page, &ids, anchor, DropPlacement::AfterInColumn)?;
+    ids.last().map_or(Ok(position), |id| {
+        Ok(repository.block_position(*id)?.unwrap_or(position))
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_edits_persist_and_refresh_only_the_edited_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("test.sqlite");
+        let mut repository = Repository::open(&path).unwrap();
+        let database = repository.create_database(None).unwrap();
+        let page = repository.create_database_record(database).unwrap();
+        repository
+            .add_database_property(database, "Value", "number", &[])
+            .unwrap();
+        let property = repository
+            .database(database)
+            .unwrap()
+            .properties
+            .iter()
+            .find(|property| property.kind == "number")
+            .unwrap()
+            .id;
+        let mut histories = HashMap::new();
+        for value in ["1", "12", "-4", ""] {
+            let event = perform_action(
+                &mut repository,
+                &mut histories,
+                Action::SetDatabaseProperty {
+                    page,
+                    property,
+                    value: value.into(),
+                },
+            )
+            .unwrap();
+            let Event::Database(data) = event else {
+                panic!("cell edits must refresh the database without resetting the workspace");
+            };
+            assert_eq!(data.page_id, database);
+            assert_eq!(data.rows[0].values[&property], value);
+        }
+        drop(repository);
+        let repository = Repository::open(&path).unwrap();
+        assert_eq!(
+            repository.database(database).unwrap().rows[0].values[&property],
+            ""
+        );
+    }
+
+    #[test]
+    fn inserted_blocks_continue_the_column_at_its_end() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+        let page = repository.create_page(None, "Columns").unwrap();
+        let left = repository.blocks(page, 0, 1).unwrap()[0].id;
+        let right = repository.insert_block(page, 1, BlockKind::Text).unwrap();
+        repository
+            .arrange_block(page, right, left, DropPlacement::Right)
+            .unwrap();
+        for anchor in [left, right] {
+            let position = repository.block_position(anchor).unwrap().unwrap() + 1;
+            repository
+                .append_blocks_with_styles(
+                    page,
+                    position,
+                    &[
+                        (
+                            BlockKind::Text,
+                            "First pasted line".into(),
+                            false,
+                            Vec::new(),
+                        ),
+                        (
+                            BlockKind::Text,
+                            "Second pasted line".into(),
+                            false,
+                            Vec::new(),
+                        ),
+                    ],
+                )
+                .unwrap();
+            let focused =
+                finish_column_insertion(&mut repository, page, position, 2, Some(anchor)).unwrap();
+            let blocks = repository.blocks(page, 0, 10).unwrap();
+            let anchor_block = blocks.iter().find(|block| block.id == anchor).unwrap();
+            let inserted = &blocks[position..position + 2];
+            assert_eq!(focused, position + 1);
+            assert!(
+                inserted
+                    .iter()
+                    .all(|block| block.column_group == anchor_block.column_group
+                        && block.column_index == anchor_block.column_index)
+            );
+            assert_eq!(inserted[1].content, "Second pasted line");
+        }
+    }
 
     #[test]
     fn page_history_caps_at_maximum_entries_and_clears_redo_on_push() {

@@ -1,3 +1,4 @@
+use crate::ui::menus::PersistentMenuUi;
 use eframe::egui::{self, Color32, RichText, Stroke, vec2};
 use egui_dock::{DockArea, OverlayType, Style as DockStyle, TabViewer};
 
@@ -177,7 +178,7 @@ impl NoteonApp {
             let in_y_range = mouse_pos
                 .is_some_and(|pos| pos.y >= sidebar_top && pos.y <= available_area.bottom());
 
-            let is_hovered = in_y_range
+            let in_sidebar = in_y_range
                 && mouse_pos.is_some_and(|pos| {
                     if is_open_prev {
                         pos.x <= config::SIDEBAR_WIDTH + 14.0
@@ -186,18 +187,27 @@ impl NoteonApp {
                     }
                 });
 
+            let clicked_outside = context.input(|input| input.pointer.any_pressed())
+                && !in_sidebar
+                && !crate::ui::menus::pointer_in_menu(context);
+            let is_open = if is_open_prev {
+                !clicked_outside
+            } else {
+                in_sidebar
+            };
+
             context.data_mut(|d| {
-                d.insert_temp(egui::Id::new("sidebar_autohide_open"), is_hovered);
+                d.insert_temp(egui::Id::new("sidebar_autohide_open"), is_open);
             });
 
-            let open_t = context.animate_bool(egui::Id::new("sidebar_autohide_anim"), is_hovered);
+            let open_t = context.animate_bool(egui::Id::new("sidebar_autohide_anim"), is_open);
 
             if open_t < 0.99 {
                 let strip_rect = egui::Rect::from_min_max(
                     egui::pos2(0.0, sidebar_top),
                     egui::pos2(3.0, available_area.bottom()),
                 );
-                let strip_color = if is_hovered {
+                let strip_color = if is_open {
                     palette.accent
                 } else {
                     Color32::from_rgba_unmultiplied(
@@ -355,41 +365,50 @@ impl NoteonApp {
                         _ => "⇅ Başlık (Z-A)",
                     };
 
-                    ui.menu_button(RichText::new(sort_label).color(palette.muted), |ui| {
-                        if ui
-                            .selectable_label(current_sort == 0, "Silinme: En yeni (Yeni → Eski)")
-                            .clicked()
-                        {
-                            current_sort = 0;
-                            ui.ctx().data_mut(|d| d.insert_temp(sort_id, 0));
-                            ui.close_menu();
-                        }
-                        if ui
-                            .selectable_label(current_sort == 1, "Silinme: En eski (Eski → Yeni)")
-                            .clicked()
-                        {
-                            current_sort = 1;
-                            ui.ctx().data_mut(|d| d.insert_temp(sort_id, 1));
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        if ui
-                            .selectable_label(current_sort == 2, "Başlık (A → Z)")
-                            .clicked()
-                        {
-                            current_sort = 2;
-                            ui.ctx().data_mut(|d| d.insert_temp(sort_id, 2));
-                            ui.close_menu();
-                        }
-                        if ui
-                            .selectable_label(current_sort == 3, "Başlık (Z → A)")
-                            .clicked()
-                        {
-                            current_sort = 3;
-                            ui.ctx().data_mut(|d| d.insert_temp(sort_id, 3));
-                            ui.close_menu();
-                        }
-                    });
+                    ui.persistent_menu_button(
+                        RichText::new(sort_label).color(palette.muted),
+                        |ui| {
+                            if ui
+                                .selectable_label(
+                                    current_sort == 0,
+                                    "Silinme: En yeni (Yeni → Eski)",
+                                )
+                                .clicked()
+                            {
+                                current_sort = 0;
+                                ui.ctx().data_mut(|d| d.insert_temp(sort_id, 0));
+                                ui.close_menu();
+                            }
+                            if ui
+                                .selectable_label(
+                                    current_sort == 1,
+                                    "Silinme: En eski (Eski → Yeni)",
+                                )
+                                .clicked()
+                            {
+                                current_sort = 1;
+                                ui.ctx().data_mut(|d| d.insert_temp(sort_id, 1));
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui
+                                .selectable_label(current_sort == 2, "Başlık (A → Z)")
+                                .clicked()
+                            {
+                                current_sort = 2;
+                                ui.ctx().data_mut(|d| d.insert_temp(sort_id, 2));
+                                ui.close_menu();
+                            }
+                            if ui
+                                .selectable_label(current_sort == 3, "Başlık (Z → A)")
+                                .clicked()
+                            {
+                                current_sort = 3;
+                                ui.ctx().data_mut(|d| d.insert_temp(sort_id, 3));
+                                ui.close_menu();
+                            }
+                        },
+                    );
                 });
             }
         });

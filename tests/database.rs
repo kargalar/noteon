@@ -4,7 +4,7 @@ use noteon::domain::model::{
 };
 use noteon::ui::{
     Intent,
-    database::{Drafts, show_embedded},
+    database::{Drafts, show, show_embedded},
     palette::Palette,
 };
 use std::collections::{HashMap, HashSet};
@@ -56,6 +56,16 @@ fn frame_database(
     events: Vec<Event>,
     modifiers: Modifiers,
 ) -> Vec<Intent> {
+    frame_database_view(context, database, events, modifiers, false)
+}
+
+fn frame_database_view(
+    context: &egui::Context,
+    database: &mut DatabaseData,
+    events: Vec<Event>,
+    modifiers: Modifiers,
+    full_page: bool,
+) -> Vec<Intent> {
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -77,10 +87,265 @@ fn frame_database(
                 titles: &mut title_drafts,
                 values: &mut val_drafts,
             };
-            show_embedded(ui, database, Palette::new(false), &mut intents, &mut drafts);
+            if full_page {
+                show(
+                    ui,
+                    database,
+                    None,
+                    &[],
+                    false,
+                    Palette::new(false),
+                    &mut intents,
+                    &mut drafts,
+                );
+            } else {
+                show_embedded(ui, database, Palette::new(false), &mut intents, &mut drafts);
+            }
         });
     });
     intents
+}
+
+#[test]
+fn database_title_saves_after_typing_and_leaving_the_field() {
+    for full_page in [false, true] {
+        for original_title in ["Test Database", ""] {
+            for commit_with_enter in [false, true] {
+                let context = egui::Context::default();
+                let mut database = test_database();
+                database.title = original_title.into();
+                frame_database_view(&context, &mut database, vec![], Modifiers::NONE, full_page);
+                let title_id = egui::Id::new(("database-header-title", database.page_id));
+                context.memory_mut(|memory| memory.request_focus(title_id));
+                frame_database_view(&context, &mut database, vec![], Modifiers::NONE, full_page);
+
+                let intents = frame_database_view(
+                    &context,
+                    &mut database,
+                    vec![Event::Text(" updated".into())],
+                    Modifiers::NONE,
+                    full_page,
+                );
+                assert_ne!(database.title, original_title);
+                assert!(!intents.iter().any(|intent| matches!(
+                    intent,
+                    Intent::Action(noteon::worker::Action::RenameDatabaseRecord { .. })
+                )));
+                // Losing focus happens in a later frame, after the text has already changed.
+                frame_database_view(&context, &mut database, vec![], Modifiers::NONE, full_page);
+                let events = if commit_with_enter {
+                    vec![Event::Key {
+                        key: Key::Enter,
+                        physical_key: Some(Key::Enter),
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Modifiers::NONE,
+                    }]
+                } else {
+                    let position = egui::pos2(990.0, 790.0);
+                    vec![
+                        Event::PointerMoved(position),
+                        Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Modifiers::NONE,
+                        },
+                        Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Modifiers::NONE,
+                        },
+                    ]
+                };
+                let intents = frame_database_view(
+                    &context,
+                    &mut database,
+                    events,
+                    Modifiers::NONE,
+                    full_page,
+                );
+                assert_eq!(
+                    intents.iter().filter(|intent| matches!(
+                        intent,
+                        Intent::Action(noteon::worker::Action::RenameDatabaseRecord { page, title })
+                            if *page == database.page_id && title == &database.title
+                    )).count(),
+                    1,
+                    "full_page={full_page}, original_title={original_title:?}, enter={commit_with_enter}"
+                );
+                let intents = frame_database_view(
+                    &context,
+                    &mut database,
+                    vec![],
+                    Modifiers::NONE,
+                    full_page,
+                );
+                assert!(!intents.iter().any(|intent| matches!(
+                    intent,
+                    Intent::Action(noteon::worker::Action::RenameDatabaseRecord { .. })
+                )));
+            }
+        }
+    }
+}
+
+#[test]
+fn embedded_database_top_right_button_opens_full_page() {
+    for view in [
+        DatabaseView::Table,
+        DatabaseView::Board,
+        DatabaseView::Gallery,
+    ] {
+        for title in ["Test Database", ""] {
+            let context = egui::Context::default();
+            let mut database = test_database();
+            database.view = view;
+            database.title = title.into();
+            frame_database(&context, &mut database, vec![], Modifiers::NONE);
+            let position = egui::pos2(978.0, 20.0);
+            frame_database(
+                &context,
+                &mut database,
+                vec![
+                    Event::PointerMoved(position),
+                    Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+                Modifiers::NONE,
+            );
+            let intents = frame_database(
+                &context,
+                &mut database,
+                vec![Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                }],
+                Modifiers::NONE,
+            );
+            assert!(
+                intents.iter().any(|intent| matches!(
+                    intent, Intent::Open(id, None) if *id == database.page_id
+                )),
+                "view={view:?}, title={title:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn table_delete_prioritizes_multiple_selected_rows_over_focused_database_title() {
+    for selected in [HashSet::from([1_i64, 3]), HashSet::from([1_i64])] {
+        let context = egui::Context::default();
+        let mut database = test_database();
+        frame_database_view(&context, &mut database, Vec::new(), Modifiers::NONE, true);
+        let selection_id = egui::Id::new(("database-selected-rows", database.page_id));
+        let anchor_id = egui::Id::new(("database-anchor-row", database.page_id));
+        let title_id = egui::Id::new(("database-header-title", database.page_id));
+        context.memory_mut(|memory| memory.request_focus(title_id));
+        frame_database_view(&context, &mut database, Vec::new(), Modifiers::NONE, true);
+        assert_eq!(context.memory(|memory| memory.focused()), Some(title_id));
+        assert!(context.wants_keyboard_input());
+        context.data_mut(|state| {
+            state.insert_temp(selection_id, selected.clone());
+            state.insert_temp(anchor_id, Some(1_i64));
+        });
+        let title_before = database.title.clone();
+        let intents = frame_database_view(
+            &context,
+            &mut database,
+            vec![Event::Key {
+                key: Key::Delete,
+                physical_key: Some(Key::Delete),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+            true,
+        );
+        let trashed: HashSet<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::Action(noteon::worker::Action::Trash(id)) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let remaining: HashSet<PageId> = context
+            .data(|state| state.get_temp(selection_id))
+            .unwrap_or_default();
+        if selected.len() > 1 {
+            assert_eq!(trashed, selected);
+            assert_eq!(database.title, title_before);
+            assert!(remaining.is_empty());
+            let anchor: Option<PageId> = context.data(|state| state.get_temp(anchor_id)).flatten();
+            assert_eq!(anchor, None);
+        } else {
+            assert!(trashed.is_empty());
+            assert_eq!(remaining, selected);
+        }
+    }
+}
+
+#[test]
+fn ctrl_a_selects_all_database_rows_and_delete_trashes_them() {
+    for view in [
+        DatabaseView::Table,
+        DatabaseView::Gallery,
+        DatabaseView::Board,
+    ] {
+        let context = egui::Context::default();
+        let mut database = test_database();
+        database.view = view;
+        frame_database(&context, &mut database, Vec::new(), Modifiers::NONE);
+        frame_database(
+            &context,
+            &mut database,
+            vec![Event::Key {
+                key: Key::A,
+                physical_key: Some(Key::A),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::CTRL,
+            }],
+            Modifiers::CTRL,
+        );
+
+        let selected: HashSet<PageId> = context
+            .data(|state| {
+                state.get_temp(egui::Id::new(("database-selected-rows", database.page_id)))
+            })
+            .unwrap_or_default();
+        assert_eq!(selected, HashSet::from([1, 2, 3, 4]));
+
+        let intents = frame_database(
+            &context,
+            &mut database,
+            vec![Event::Key {
+                key: Key::Delete,
+                physical_key: Some(Key::Delete),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+        );
+        let trashed: HashSet<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::Action(noteon::worker::Action::Trash(id)) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(trashed, selected);
+    }
 }
 
 #[test]
@@ -223,7 +488,77 @@ fn gallery_select_and_delete_rows() {
 }
 
 #[test]
-fn table_marquee_drag_selects_rows() {
+fn dragging_table_text_keeps_edit_focus_without_selecting_rows() {
+    for text_x in [420.0, 440.0] {
+        let context = egui::Context::default();
+        noteon::ui::theme::configure(&context);
+        let mut database = test_database();
+        database
+            .properties
+            .push(noteon::domain::model::DatabaseProperty {
+                id: 7,
+                name: "Text".into(),
+                kind: "text".into(),
+                options: Vec::new(),
+            });
+        for row in &mut database.rows {
+            row.page.title = "Editable record title".into();
+            row.values.insert(7, "Editable property text".into());
+        }
+        frame_database(&context, &mut database, Vec::new(), Modifiers::NONE);
+
+        let start = egui::pos2(text_x, 160.0);
+        let end = start + egui::vec2(35.0, 0.0);
+        frame_database(
+            &context,
+            &mut database,
+            vec![
+                Event::PointerMoved(start),
+                Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+            Modifiers::NONE,
+        );
+        frame_database(
+            &context,
+            &mut database,
+            vec![Event::PointerMoved(end)],
+            Modifiers::NONE,
+        );
+        let focused = context.memory(|memory| memory.focused());
+        assert!(
+            focused.is_some(),
+            "text field at x={text_x} must have focus"
+        );
+        let text_state = egui::text_edit::TextEditState::load(&context, focused.unwrap()).unwrap();
+        let range = text_state.cursor.char_range().unwrap();
+        assert_ne!(range.primary.index, range.secondary.index);
+
+        frame_database(
+            &context,
+            &mut database,
+            vec![Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+        );
+        let selected: HashSet<PageId> = context
+            .data(|data| data.get_temp(egui::Id::new(("database-selected-rows", database.page_id))))
+            .unwrap_or_default();
+        assert!(selected.is_empty());
+        assert_eq!(context.memory(|memory| memory.focused()), focused);
+    }
+}
+
+#[test]
+fn table_marquee_drag_from_outside_rows_selects_rows() {
     let context = egui::Context::default();
     noteon::ui::theme::configure(&context);
     let mut database = test_database();
@@ -234,7 +569,7 @@ fn table_marquee_drag_selects_rows() {
     let selection_id = egui::Id::new(("database-selected-rows", database.page_id));
 
     // 2. Drag across rows in 3 frames: press, drag, release
-    let start_pos = egui::pos2(50.0, 160.0);
+    let start_pos = egui::pos2(700.0, 160.0);
     let drag_pos = egui::pos2(200.0, 250.0);
 
     frame_database(

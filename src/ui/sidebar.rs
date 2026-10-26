@@ -1,3 +1,4 @@
+use crate::ui::menus::PersistentContextMenu;
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, Align2, FontFamily, FontId, RichText, Sense, Stroke, Ui, vec2};
@@ -278,6 +279,9 @@ impl Sidebar {
                                 palette.muted,
                             );
                             if *title == "WORKSPACE" {
+                                if !trash && egui::DragAndDrop::payload::<crate::ui::page_transfer::PageDragPayload>(ui.ctx()).is_some() {
+                                    crate::ui::page_transfer::drop_target(ui, rect, None, None, palette, intents);
+                                }
                                 let add_rect = egui::Rect::from_center_size(
                                     egui::pos2(rect.right() - 15.0, rect.center().y),
                                     vec2(28.0, 28.0),
@@ -381,7 +385,11 @@ impl Sidebar {
                     }
                 }
             });
-        if pointer_pressed && !page_hit && !ui.ctx().memory(|m| m.any_popup_open()) {
+        if pointer_pressed
+            && !page_hit
+            && !ui.ctx().memory(|m| m.any_popup_open())
+            && !crate::ui::menus::pointer_in_menu(ui.ctx())
+        {
             self.selected_pages.clear();
             self.anchor_page = None;
             self.anchor_row_index = None;
@@ -448,7 +456,7 @@ fn show_footer(ui: &mut Ui, trash: bool, palette: Palette, intents: &mut Vec<Int
         if settings_btn.clicked() {
             intents.push(Intent::Settings);
         }
-        settings_btn.context_menu(|ui| {
+        settings_btn.persistent_context_menu(|ui| {
             if ui.button("🎨 Temayı düzenle").clicked() {
                 intents.push(Intent::OpenSettingsTheme(ThemeSection::Sidebar));
                 ui.close_menu();
@@ -505,6 +513,19 @@ impl PageRow<'_> {
             Sense::click_and_drag(),
         );
         response.dnd_set_drag_payload(self.page.id);
+        if response
+            .dnd_hover_payload::<crate::ui::page_transfer::PageDragPayload>()
+            .is_some()
+        {
+            crate::ui::page_transfer::drop_target(
+                ui,
+                rect,
+                Some(self.page.id),
+                None,
+                palette,
+                intents,
+            );
+        }
         if let Some(source) = response.dnd_hover_payload::<PageId>()
             && *source != self.page.id
             && pages
@@ -559,7 +580,7 @@ impl PageRow<'_> {
         let clicked = response.clicked() && !toggled;
         response
             .on_hover_text(self.page.display_title())
-            .context_menu(|ui| {
+            .persistent_context_menu(|ui| {
                 if is_multi_selected {
                     show_bulk_page_menu(ui, selected_pages, palette, intents);
                 } else {

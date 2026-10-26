@@ -103,6 +103,527 @@ fn enter(modifiers: Modifiers) -> Event {
 }
 
 #[test]
+fn embedded_tables_resize_the_containing_row_before_following_blocks_are_drawn() {
+    use noteon::domain::model::{DatabaseData, DatabaseView, DatabaseViewSettings};
+    use noteon::ui::editor::DatabaseContext;
+    use std::collections::{HashMap, HashSet};
+
+    for in_columns in [false, true] {
+        let context = egui::Context::default();
+        let mut editor = editor("Following block", 3);
+        for position in 0..2 {
+            let stub = &mut editor.document.as_mut().unwrap().outline[position];
+            stub.kind = BlockKind::Database;
+            stub.column_group = in_columns.then_some(1);
+            stub.column_index = if in_columns { position } else { 0 };
+            let block = editor.cache.blocks.get_mut(&position).unwrap();
+            block.kind = BlockKind::Database;
+            block.content = (100 + position).to_string();
+            block.column_group = stub.column_group;
+            block.column_index = stub.column_index;
+        }
+        editor.selected_blocks.insert(2);
+        let mut databases: HashMap<_, _> = (100..102)
+            .map(|id| {
+                (
+                    id,
+                    DatabaseData {
+                        page_id: id,
+                        title: format!("Table {id}"),
+                        icon: String::new(),
+                        view: DatabaseView::Table,
+                        gallery_columns: 3,
+                        view_settings: DatabaseViewSettings::default(),
+                        sort_key: "manual".into(),
+                        sort_descending: false,
+                        properties: Vec::new(),
+                        rows: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+
+        // Grow, shrink, and resize live without editing either containing block.
+        for height in [180.0, 600.0, 100.0, 400.0] {
+            let live_height_id = egui::Id::new(("table-v-resize-live", 100_i64));
+            let resizing_live = height == 400.0;
+            databases.get_mut(&100).unwrap().view_settings.table_height =
+                Some(if resizing_live { 100.0 } else { height });
+            context.data_mut(|data| {
+                data.remove::<f32>(live_height_id);
+                if resizing_live {
+                    data.insert_temp(live_height_id, height);
+                }
+            });
+            databases.get_mut(&101).unwrap().view_settings.table_height = Some(80.0);
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 2000.0),
+                    )),
+                    ..Default::default()
+                };
+                let output = context.run(input, |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        editor.show_with_database_context_in_tab(
+                            ui,
+                            Palette::new(false),
+                            &[],
+                            7,
+                            &mut DatabaseContext {
+                                record_database_id: None,
+                                databases: &mut databases,
+                                loading: &mut HashSet::new(),
+                                property_drafts: &mut HashMap::new(),
+                                title_drafts: &mut HashMap::new(),
+                                value_drafts: &mut HashMap::new(),
+                                visible: &mut HashSet::new(),
+                                sidebar: None,
+                            },
+                        );
+                    });
+                });
+                let following_top = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape
+                            && text.galley.text() == "Following block"
+                        {
+                            Some(text.pos.y)
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("following block must be drawn");
+                let footer_bottom = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape
+                            && text.galley.text() == "+ New"
+                        {
+                            Some(text.pos.y + text.galley.size().y)
+                        } else {
+                            None
+                        }
+                    })
+                    .reduce(f32::max)
+                    .expect("table footers must be drawn");
+                assert!(
+                    following_top >= footer_bottom,
+                    "following block {following_top} overlaps the table footer {footer_bottom} at height {height}, columns={in_columns}"
+                );
+                let selected_height = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        if let egui::Shape::Rect(rect) = &shape.shape
+                            && rect.fill.a() == 34
+                        {
+                            Some(rect.rect.height())
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("selected table must have a highlight");
+                assert!(
+                    selected_height < 300.0,
+                    "short table inherited its neighbor's height: {selected_height}"
+                );
+                assert!(editor.layout.height(0) >= height);
+                assert!(editor.layout.height(0) < height + 300.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn column_separator_drag_accumulates_motion_and_keeps_width_on_release() {
+    for (column_count, boundary, stacked) in
+        [(2, 0, false), (3, 0, false), (3, 1, false), (2, 0, true)]
+    {
+        let context = egui::Context::default();
+        let count = column_count + usize::from(stacked);
+        let mut editor = editor("", count);
+        for position in 0..count {
+            let column = position.min(column_count - 1);
+            let stub = &mut editor.document.as_mut().unwrap().outline[position];
+            stub.column_group = Some(1);
+            stub.column_index = column;
+            stub.column_width = 1.0 / column_count as f32;
+            let block = editor.cache.blocks.get_mut(&position).unwrap();
+            block.column_group = Some(1);
+            block.column_index = column;
+            block.content = format!("Column {position}");
+            editor.selected_blocks.insert(block.id);
+        }
+        let render = |editor: &mut Editor, events: Vec<Event>| {
+            let mut intents = Vec::new();
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 860.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        intents.extend(editor.show(ui, Palette::new(false), &[]));
+                    });
+                },
+            );
+            (output, intents)
+        };
+        let (initial, _) = render(&mut editor, Vec::new());
+        let mut highlights: Vec<_> = initial
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Rect(rect) = &shape.shape
+                    && rect.fill.a() == 34
+                {
+                    Some(rect.rect)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        highlights.sort_by(|left, right| left.left().total_cmp(&right.left()));
+        let separator = egui::pos2(
+            (highlights[boundary].right() + highlights[boundary + 1].left()) * 0.5,
+            highlights[boundary].center().y,
+        );
+        let column_x = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text() == format!("Column {}", boundary + 1)
+                    {
+                        Some(text.pos.x)
+                    } else {
+                        None
+                    }
+                })
+                .expect("second column must be visible")
+        };
+        render(&mut editor, vec![Event::PointerMoved(separator)]);
+        render(
+            &mut editor,
+            vec![Event::PointerButton {
+                pos: separator,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        let moved = separator + egui::vec2(60.0, 0.0);
+        render(&mut editor, vec![Event::PointerMoved(moved)]);
+        let (paused, _) = render(&mut editor, Vec::new());
+        assert!(
+            column_x(&paused) > column_x(&initial) + 50.0,
+            "separator did not keep the drag movement, columns={column_count}, stacked={stacked}"
+        );
+        let moved = separator + egui::vec2(120.0, 0.0);
+        render(&mut editor, vec![Event::PointerMoved(moved)]);
+        let (paused_again, _) = render(&mut editor, Vec::new());
+        assert!(column_x(&paused_again) > column_x(&paused) + 50.0);
+        let (_, intents) = render(
+            &mut editor,
+            vec![Event::PointerButton {
+                pos: moved,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        let (left, right) = intents
+            .iter()
+            .find_map(|intent| {
+                if let Intent::Action(noteon::worker::Action::ResizeColumns {
+                    boundary: saved_boundary,
+                    left_width,
+                    right_width,
+                    ..
+                }) = intent
+                    && *saved_boundary == boundary
+                {
+                    Some((*left_width, *right_width))
+                } else {
+                    None
+                }
+            })
+            .expect("releasing the separator must save its widths");
+        assert!(left > 1.0 / column_count as f32 + 0.1);
+        assert!((left + right - 2.0 / column_count as f32).abs() < 0.001);
+        let (released, _) = render(&mut editor, Vec::new());
+        assert!((column_x(&released) - column_x(&paused_again)).abs() < 1.0);
+    }
+}
+
+#[test]
+fn columns_stack_their_blocks_independently() {
+    let context = egui::Context::default();
+    let mut editor = editor("", 6);
+    for position in 0..5 {
+        let column = usize::from(position > 0);
+        let stub = &mut editor.document.as_mut().unwrap().outline[position];
+        stub.column_group = Some(1);
+        stub.column_index = column;
+        let block = editor.cache.blocks.get_mut(&position).unwrap();
+        block.column_group = Some(1);
+        block.column_index = column;
+        block.content = format!("Column block {position}");
+    }
+    editor.cache.blocks.get_mut(&5).unwrap().content = "After columns".into();
+    for _ in 0..2 {
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 860.0),
+                )),
+                ..Default::default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    editor.show(ui, Palette::new(false), &[]);
+                });
+            },
+        );
+        let text_position = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text() == label
+                    {
+                        Some(text.pos)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        let left = text_position("Column block 0");
+        let right = text_position("Column block 1");
+        assert!(right.x > left.x + 100.0);
+        assert!((right.y - left.y).abs() < 1.0);
+        let mut previous = right;
+        for position in 2..5 {
+            let current = text_position(&format!("Column block {position}"));
+            assert!((current.x - right.x).abs() < 1.0);
+            assert!(current.y >= previous.y + 30.0);
+            previous = current;
+        }
+        assert!(text_position("After columns").y > previous.y + 30.0);
+        assert_eq!(editor.visual_rows, vec![vec![0, 1, 2, 3, 4], vec![5]]);
+    }
+}
+
+#[test]
+fn ctrl_a_selects_all_blocks_including_unloaded_blocks() {
+    for modifiers in [Modifiers::CTRL, Modifiers::COMMAND] {
+        let context = egui::Context::default();
+        let mut editor = editor("Block", 20_000);
+        frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+        assert!(editor.cache.blocks.len() < 20_000);
+
+        frame(
+            &context,
+            &mut editor,
+            vec![Event::Key {
+                key: Key::A,
+                physical_key: Some(Key::A),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+
+        assert_eq!(editor.selected_blocks.len(), 20_000);
+        assert_eq!(editor.anchor_block, Some(1));
+        assert!(editor.selected_blocks.contains(&20_000));
+    }
+}
+
+#[test]
+fn ctrl_a_in_focused_block_selects_blocks_and_escape_clears_selection() {
+    let context = egui::Context::default();
+    let mut editor = editor("Block", 3);
+    editor.focus_position = Some(0);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    assert!(context.memory(|memory| memory.focused()).is_some());
+
+    frame(
+        &context,
+        &mut editor,
+        vec![Event::Key {
+            key: Key::A,
+            physical_key: Some(Key::A),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL,
+        }],
+        Modifiers::CTRL,
+    );
+    assert_eq!(editor.selected_blocks.len(), 3);
+    assert!(context.memory(|memory| memory.focused()).is_none());
+
+    frame(
+        &context,
+        &mut editor,
+        vec![Event::Key {
+            key: Key::Escape,
+            physical_key: Some(Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+        Modifiers::NONE,
+    );
+    assert!(editor.selected_blocks.is_empty());
+}
+
+#[test]
+fn long_text_blocks_grow_beyond_the_old_scroll_limit() {
+    let context = egui::Context::default();
+    for content in ["long text ".repeat(600), "line\n".repeat(80)] {
+        let mut editor = editor(&content, 1);
+        frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+        assert!(
+            editor.layout.height(0) > 260.0,
+            "height: {}",
+            editor.layout.height(0)
+        );
+    }
+}
+
+#[test]
+fn multiline_paste_creates_ordered_blocks_with_markdown_types() {
+    let context = egui::Context::default();
+    let mut editor = editor("", 1);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    context.memory_mut(|memory| memory.request_focus(egui::Id::new(("block", 1_i64))));
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![Event::Paste("# Heading\r\n\r\nParagraph\r\n- Item\r\n- [x] Done\r\n```rust\r\nfirst();\r\nsecond();\r\n```".into())],
+        Modifiers::NONE,
+    );
+    let first = &editor.cache.blocks[&0];
+    assert_eq!(first.kind, BlockKind::Heading1);
+    assert_eq!(first.content, "Heading");
+    let blocks = intents
+        .iter()
+        .find_map(|intent| match intent {
+            Intent::Action(noteon::worker::Action::InsertBlocks {
+                position: 1,
+                blocks,
+                ..
+            }) => Some(blocks),
+            _ => None,
+        })
+        .expect("paste should insert the remaining blocks in one action");
+    assert_eq!(blocks.len(), 4);
+    assert_eq!(
+        (blocks[0].0, blocks[0].1.as_str()),
+        (BlockKind::Text, "Paragraph")
+    );
+    assert_eq!(
+        (blocks[1].0, blocks[1].1.as_str()),
+        (BlockKind::Bullet, "Item")
+    );
+    assert_eq!(
+        (blocks[2].0, blocks[2].1.as_str(), blocks[2].2),
+        (BlockKind::Todo, "Done", true)
+    );
+    assert_eq!(
+        (blocks[3].0, blocks[3].1.as_str()),
+        (BlockKind::Code, "first();\nsecond();")
+    );
+}
+
+#[test]
+fn multiline_paste_replaces_unicode_selection_and_preserves_surrounding_styles() {
+    use noteon::domain::model::{InlineTextStyle, TextStyleRange};
+    let context = egui::Context::default();
+    let mut editor = editor("ö🌱ç", 1);
+    let style = InlineTextStyle {
+        underline: true,
+        ..Default::default()
+    };
+    editor.cache.blocks.get_mut(&0).unwrap().text_styles = vec![TextStyleRange {
+        start: 0,
+        end: 3,
+        style: style.clone(),
+    }];
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    let id = egui::Id::new(("block", 1_i64));
+    context.memory_mut(|memory| memory.request_focus(id));
+    let mut state = egui::text_edit::TextEditState::load(&context, id).unwrap();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(1),
+            egui::text::CCursor::new(2),
+        )));
+    state.store(&context, id);
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![Event::Paste("bir\niki".into())],
+        Modifiers::NONE,
+    );
+    assert_eq!(editor.cache.blocks[&0].content, "öbir");
+    assert_eq!(editor.cache.blocks[&0].text_styles[0].end, 1);
+    let blocks = intents
+        .iter()
+        .find_map(|intent| match intent {
+            Intent::Action(noteon::worker::Action::InsertBlocks { blocks, .. }) => Some(blocks),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(blocks[0].1, "ikiç");
+    assert_eq!(
+        blocks[0].3,
+        vec![TextStyleRange {
+            start: 3,
+            end: 4,
+            style
+        }]
+    );
+}
+
+#[test]
+fn code_paste_keeps_newlines_in_the_existing_block() {
+    let context = egui::Context::default();
+    let mut editor = editor("", 1);
+    editor.cache.blocks.get_mut(&0).unwrap().kind = BlockKind::Code;
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    context.memory_mut(|memory| memory.request_focus(egui::Id::new(("block", 1_i64))));
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![Event::Paste("first();\nsecond();".into())],
+        Modifiers::NONE,
+    );
+    assert_eq!(editor.cache.blocks[&0].content, "first();\nsecond();");
+    assert!(
+        !intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Action(_)))
+    );
+}
+
+#[test]
 fn twenty_thousand_blocks_only_render_visible_rows() {
     let context = egui::Context::default();
     let mut editor = editor("Bir satır", 20_000);
@@ -855,6 +1376,47 @@ fn focused_block_ctrl_x_without_selection_cuts_entire_block() {
 }
 
 #[test]
+fn title_enter_inserts_an_empty_text_block_at_the_top() {
+    for count in [0, 2] {
+        let context = egui::Context::default();
+        let mut editor = editor("Existing content", count);
+        frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+        let title_id = egui::Id::new(("title", 1_i64));
+        context.memory_mut(|memory| memory.request_focus(title_id));
+
+        let intents = frame(
+            &context,
+            &mut editor,
+            vec![enter(Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        let insertions: Vec<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::Action(noteon::worker::Action::InsertBlock {
+                    page,
+                    position,
+                    kind,
+                    content,
+                    text_styles,
+                    ..
+                }) => Some((*page, *position, *kind, content, text_styles)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(insertions.len(), 1);
+        let (page, position, kind, content, text_styles) = insertions[0];
+        assert_eq!(page, 1);
+        assert_eq!(position, 0);
+        assert_eq!(kind, BlockKind::Text);
+        assert!(content.is_empty());
+        assert!(text_styles.is_empty());
+        assert_eq!(editor.document.as_ref().unwrap().page.title, "Test");
+        assert!(!context.memory(|memory| memory.has_focus(title_id)));
+    }
+}
+
+#[test]
 fn enter_creates_new_block_below() {
     let context = egui::Context::default();
     let mut editor = editor("İlk satır", 1);
@@ -872,6 +1434,35 @@ fn enter_creates_new_block_below() {
             .any(|intent| matches!(intent, Intent::Action(noteon::worker::Action::InsertBlock { position, .. }) if *position == 1)),
         "Expected InsertBlock at position 1 on Enter"
     );
+}
+
+#[test]
+fn enter_and_multiline_paste_keep_the_originating_column() {
+    for event in [enter(Modifiers::NONE), Event::Paste("First\nSecond".into())] {
+        let context = egui::Context::default();
+        let mut editor = editor("Text", 2);
+        for position in 0..2 {
+            let stub = &mut editor.document.as_mut().unwrap().outline[position];
+            stub.column_group = Some(1);
+            stub.column_index = position;
+            let block = editor.cache.blocks.get_mut(&position).unwrap();
+            block.column_group = Some(1);
+            block.column_index = position;
+        }
+        frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new(("block", 2_i64))));
+        let intents = frame(&context, &mut editor, vec![event], Modifiers::NONE);
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::Action(noteon::worker::Action::InsertBlock {
+                column_anchor: Some(2),
+                ..
+            }) | Intent::Action(noteon::worker::Action::InsertBlocks {
+                column_anchor: Some(2),
+                ..
+            })
+        )));
+    }
 }
 
 #[test]

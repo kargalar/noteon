@@ -1,8 +1,12 @@
+use crate::ui::menus::PersistentMenuUi;
 pub mod database;
 pub mod editor;
+pub mod menus;
 pub mod page_properties;
+pub mod page_transfer;
 pub mod palette;
 pub mod search;
+mod selection;
 pub mod sidebar;
 pub mod text;
 pub mod theme;
@@ -139,14 +143,16 @@ pub fn show_icon_picker_content(
             .clicked()
         {
             active_tab = IconTab::Color;
-            ui.ctx().data_mut(|data| data.insert_temp(tab_id, active_tab));
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(tab_id, active_tab));
         }
         if ui
             .selectable_label(active_tab == IconTab::Monochrome, "Renksiz")
             .clicked()
         {
             active_tab = IconTab::Monochrome;
-            ui.ctx().data_mut(|data| data.insert_temp(tab_id, active_tab));
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(tab_id, active_tab));
         }
     });
 
@@ -194,7 +200,8 @@ pub fn show_icon_picker_content(
                     .show(ui, |ui| {
                         for (index, (name, icon)) in matching_icons.iter().enumerate() {
                             let button_resp = if let Some(source) = emoji_image_source(icon) {
-                                let img = egui::Image::new(source).fit_to_exact_size(egui::vec2(22.0, 22.0));
+                                let img = egui::Image::new(source)
+                                    .fit_to_exact_size(egui::vec2(22.0, 22.0));
                                 ui.add_sized([30.0, 30.0], egui::Button::image(img))
                             } else {
                                 let icon_font_size = match active_tab {
@@ -225,7 +232,11 @@ pub fn show_icon_picker_content(
         ui.add_space(4.0);
         ui.separator();
         if ui
-            .button(RichText::new("🗑  İkonu kaldır").size(12.0).color(ui.visuals().error_fg_color))
+            .button(
+                RichText::new("🗑  İkonu kaldır")
+                    .size(12.0)
+                    .color(ui.visuals().error_fg_color),
+            )
             .clicked()
         {
             *selected_icon = Some(String::new());
@@ -284,7 +295,7 @@ pub fn icon_picker_button(
     };
     if let Some(source) = emoji_image_source(button_text) {
         let img = egui::Image::new(source).fit_to_exact_size(egui::vec2(font_size, font_size));
-        ui.menu_image_button(img, |ui| {
+        ui.persistent_menu_image_button(img, |ui| {
             show_icon_picker_content(ui, &id_salt, current_icon, &mut selected_icon);
         });
     } else {
@@ -294,7 +305,7 @@ pub fn icon_picker_button(
                 text = text.color(color);
             }
         }
-        ui.menu_button(text, |ui| {
+        ui.persistent_menu_button(text, |ui| {
             show_icon_picker_content(ui, &id_salt, current_icon, &mut selected_icon);
         });
     }
@@ -311,11 +322,10 @@ pub fn add_icon_picker_button(
         .size(12.5)
         .color(palette.muted);
 
-    let menu_resp = ui.menu_button(text, |ui| {
+    let menu_resp = ui.persistent_menu_button(text, |ui| {
         show_icon_picker_content(ui, &id_salt, "", &mut selected_icon);
     });
     let is_open = menu_resp.inner.is_some();
     let hovered = menu_resp.response.hovered();
     (selected_icon, is_open, hovered)
 }
-

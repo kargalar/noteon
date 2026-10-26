@@ -1,6 +1,7 @@
 use super::{DatabaseContext, Editor, block, header::Canvas};
 use crate::domain::model::{BlockId, BlockKind, BulkBlockStyleOp, InlineFontFamily, PageId};
 use crate::domain::virtual_layout::VirtualLayout;
+use crate::ui::menus::PersistentMenuUi;
 use crate::ui::{Intent, palette::Palette};
 use crate::worker::Action;
 use eframe::egui::{
@@ -32,7 +33,7 @@ impl Editor {
             return Vec::new();
         };
         self.prepare_layout(canvas.document_width);
-        self.measure_changed_blocks(ui, canvas.document_width);
+        self.measure_changed_blocks(ui, canvas.document_width, context);
         let scroll = self.scroll_area(page_id);
         let mut intents = Vec::new();
         self.rendered_blocks = 0;
@@ -96,12 +97,20 @@ impl Editor {
                 self.visual_rows.push(row.clone());
                 self.position_to_row[position] = row_index;
                 let widths = row_column_widths(&row, &document.outline, document_width);
-                let mut height: f32 = 0.0;
-                for (column, row_position) in row.iter().enumerate() {
-                    let block_stub = &document.outline[*row_position];
-                    height = height.max(estimate_height(block_stub, widths[column]));
-                    self.position_to_row[*row_position] = row_index;
-                }
+                let columns = row_columns(&row, &document.outline);
+                let height = columns
+                    .iter()
+                    .enumerate()
+                    .map(|(column, positions)| {
+                        positions
+                            .iter()
+                            .map(|position| {
+                                self.position_to_row[*position] = row_index;
+                                estimate_height(&document.outline[*position], widths[column])
+                            })
+                            .sum::<f32>()
+                    })
+                    .fold(0.0, f32::max);
                 row_heights.push(height);
                 position += row.len();
             }
@@ -113,46 +122,56 @@ impl Editor {
         }
     }
 
-    fn measure_changed_blocks(&mut self, ui: &Ui, document_width: f32) {
+    fn measure_changed_blocks(
+        &mut self,
+        ui: &Ui,
+        document_width: f32,
+        databases: &DatabaseContext<'_>,
+    ) {
         // Measure once per load/edit/resize, never walk all resident text each frame.
+        // Database geometry can change independently of the containing block.
+        self.cache
+            .needs_measure
+            .extend(self.cache.blocks.iter().filter_map(|(position, block)| {
+                (block.kind == BlockKind::Database).then_some(*position)
+            }));
         let anchor = self.layout.row_at(self.scroll_offset);
         let within_row = self.scroll_offset - self.layout.top(anchor);
+        let rows: std::collections::HashSet<_> = self
+            .cache
+            .needs_measure
+            .drain()
+            .filter_map(|position| self.position_to_row.get(position).copied())
+            .collect();
         let mut measured = false;
-        for position in self.cache.needs_measure.drain() {
-            if position < self.position_to_row.len()
-                && let Some(block) = self.cache.blocks.get(&position)
-            {
-                let row_index = self.position_to_row[position];
+        if let Some(document) = &self.document {
+            for row_index in rows {
                 let row = &self.visual_rows[row_index];
-                let widths = self
-                    .document
-                    .as_ref()
-                    .map(|doc| row_column_widths(row, &doc.outline, document_width))
-                    .unwrap_or_default();
-                let column = row
+                let widths = row_column_widths(row, &document.outline, document_width);
+                let columns = row_columns(row, &document.outline);
+                let height = columns
                     .iter()
-                    .position(|row_position| *row_position == position)
-                    .unwrap_or(0);
-                let width = widths.get(column).copied().unwrap_or(document_width);
-                let mut height = block::measured_height(ui, block, width);
-                for other in row.iter().copied().filter(|other| *other != position) {
-                    let other_column = row
-                        .iter()
-                        .position(|row_position| *row_position == other)
-                        .unwrap_or(0);
-                    let other_width = widths.get(other_column).copied().unwrap_or(document_width);
-                    if let Some(other_block) = self.cache.blocks.get(&other) {
-                        height = height.max(block::measured_height(ui, other_block, other_width));
-                    } else if let Some(stub) = self
-                        .document
-                        .as_ref()
-                        .and_then(|doc| doc.outline.get(other))
-                    {
-                        height = height.max(estimate_height(stub, other_width));
-                    }
+                    .enumerate()
+                    .map(|(column, positions)| {
+                        positions
+                            .iter()
+                            .map(|position| {
+                                block_height(
+                                    ui,
+                                    *position,
+                                    widths[column],
+                                    &document.outline,
+                                    &self.cache,
+                                    databases,
+                                )
+                            })
+                            .sum::<f32>()
+                    })
+                    .fold(0.0, f32::max);
+                if (self.layout.height(row_index) - height).abs() > 1.0 {
+                    self.layout.set(row_index, height);
+                    measured = true;
                 }
-                self.layout.set(row_index, height);
-                measured = true;
             }
         }
         if measured && !self.layout.is_empty() {
@@ -234,12 +253,17 @@ impl Editor {
                 origin + vec2(0.0, top),
                 vec2(document_width, self.layout.height(row_index)),
             );
-            let mut ratios: Vec<_> = row
+            let columns = row_columns(&row, &document.outline);
+            let mut ratios: Vec<_> = columns
                 .iter()
-                .map(|position| document.outline[*position].column_width.max(0.08))
+                .map(|positions| {
+                    document.outline[positions[0]]
+                        .column_width
+                        .max(MIN_COLUMN_RATIO)
+                })
                 .collect();
             if let Some(group) = document.outline[row[0]].column_group {
-                for boundary in 0..row.len().saturating_sub(1) {
+                for boundary in 0..columns.len().saturating_sub(1) {
                     if let Some((left, right)) = self.column_resize_preview.get(&(group, boundary))
                     {
                         ratios[boundary] = *left;
@@ -248,167 +272,189 @@ impl Editor {
                 }
             }
             let widths = widths_for_ratios(&ratios, document_width);
+            let mut rendered_height: f32 = 0.0;
             let mut x = rect.left();
-            for (column, position) in row.iter().copied().enumerate() {
+            for (column, positions) in columns.iter().enumerate() {
                 let block_width = widths[column];
-                let block_rect = Rect::from_min_size(
-                    rect.min + vec2(x - rect.left(), 0.0),
-                    vec2(block_width, rect.height()),
-                );
-                let block_id = document.outline[position].id;
-                let is_selected = self.selected_blocks.contains(&block_id);
-                visible_handles.push((
-                    block_id,
-                    Rect::from_min_size(block_rect.min, vec2(block::HANDLE_WIDTH - 3.0, 27.0)),
-                ));
-                visible_blocks.push((block_id, block_rect, position));
-                if is_selected {
-                    let highlight_rect = block_rect.shrink2(vec2(1.0, 1.0));
-                    ui.painter().rect_filled(
-                        highlight_rect,
-                        6.0,
-                        Color32::from_rgba_unmultiplied(
-                            palette.accent.r(),
-                            palette.accent.g(),
-                            palette.accent.b(),
-                            34,
-                        ),
+                let mut column_height = 0.0;
+                for position in positions.iter().copied() {
+                    let height = block_height(
+                        ui,
+                        position,
+                        block_width,
+                        &document.outline,
+                        &self.cache,
+                        databases,
                     );
-                    ui.painter().rect_stroke(
-                        highlight_rect,
-                        6.0,
-                        Stroke::new(
-                            1.0,
+                    let block_rect = Rect::from_min_size(
+                        pos2(x, rect.top() + column_height),
+                        vec2(block_width, height),
+                    );
+                    let mut rendered_block_height = height;
+                    let block_id = document.outline[position].id;
+                    let is_selected = self.selected_blocks.contains(&block_id);
+                    visible_handles.push((
+                        block_id,
+                        Rect::from_min_size(block_rect.min, vec2(block::HANDLE_WIDTH - 3.0, 27.0)),
+                    ));
+                    visible_blocks.push((block_id, block_rect, position));
+                    if is_selected {
+                        let highlight_rect = block_rect.shrink2(vec2(1.0, 1.0));
+                        ui.painter().rect_filled(
+                            highlight_rect,
+                            6.0,
                             Color32::from_rgba_unmultiplied(
                                 palette.accent.r(),
                                 palette.accent.g(),
                                 palette.accent.b(),
-                                120,
+                                34,
                             ),
-                        ),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                if let Some(block) = self.cache.blocks.get_mut(&position) {
-                    self.rendered_blocks += 1;
-                    let focus = self.focus_position == Some(position);
-                    let focus_at_end = self.focus_at_end;
-                    let page_link_icon = if block.kind == BlockKind::Text
-                        && block.content.trim_start().starts_with('↗')
-                    {
-                        let target = block
-                            .content
-                            .trim_start()
-                            .trim_start_matches("↗ ")
-                            .trim_start_matches('↗')
-                            .trim();
-                        databases.find_page_icon(target, Some(block.page_id))
-                    } else {
-                        None
-                    };
-                    let find_active = self.find.active_range_for_block(block.id, position);
-                    let find_q = if self.find.open {
-                        Some(self.find.query.as_str())
-                    } else {
-                        None
-                    };
-                    if block::show(
-                        ui,
-                        block_rect,
-                        block,
-                        focus,
-                        focus_at_end,
-                        is_selected,
-                        bulk_selection_active,
-                        &ordered_selected_blocks,
-                        palette,
-                        widget_scope,
-                        intents,
-                        page_link_icon,
-                        find_q,
-                        find_active,
-                    ) {
-                        self.cache.needs_measure.insert(position);
+                        );
+                        ui.painter().rect_stroke(
+                            highlight_rect,
+                            6.0,
+                            Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(
+                                    palette.accent.r(),
+                                    palette.accent.g(),
+                                    palette.accent.b(),
+                                    120,
+                                ),
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
                     }
-                    if block.kind == BlockKind::Database
-                        && let Ok(database_id) = block.content.parse::<PageId>()
-                    {
-                        databases.visible.insert(database_id);
-                        if let Some(database) = databases.databases.get_mut(&database_id) {
-                            let desired_h =
-                                crate::ui::database::desired_embedded_height(ui, database);
-                            if (self.layout.height(row_index) - desired_h).abs() > 1.0 {
-                                self.layout.set(row_index, desired_h);
-                            }
-                            let database_rect = Rect::from_min_max(
-                                block_rect.min + vec2(block::HANDLE_WIDTH, 0.0),
-                                pos2(block_rect.max.x, block_rect.min.y + desired_h),
-                            );
-                            ui.scope_builder(
-                                egui::UiBuilder::new().max_rect(database_rect),
-                                |ui| {
-                                    ui.push_id(("embedded-database", block.id), |ui| {
-                                        egui::Frame::NONE.show(ui, |ui| {
-                                            ui.set_min_width(ui.available_width());
-                                            ui.set_min_height((desired_h - 16.0).max(120.0));
-                                            crate::ui::database::show_embedded(
-                                                ui,
-                                                database,
-                                                palette,
-                                                intents,
-                                                &mut crate::ui::database::Drafts {
-                                                    properties: databases.property_drafts,
-                                                    titles: databases.title_drafts,
-                                                    values: databases.value_drafts,
-                                                },
-                                            );
-                                        });
-                                    });
-                                },
-                            );
+                    if let Some(block) = self.cache.blocks.get_mut(&position) {
+                        self.rendered_blocks += 1;
+                        let focus = self.focus_position == Some(position);
+                        let focus_at_end = self.focus_at_end;
+                        let page_link_icon = if block.kind == BlockKind::Text
+                            && block.content.trim_start().starts_with('↗')
+                        {
+                            let target = block
+                                .content
+                                .trim_start()
+                                .trim_start_matches("↗ ")
+                                .trim_start_matches('↗')
+                                .trim();
+                            databases.find_page_icon(target, Some(block.page_id))
                         } else {
-                            if !databases.loading.contains(&database_id) {
-                                intents.push(Intent::LoadDatabase(database_id));
-                            }
-                            ui.scope_builder(
-                                egui::UiBuilder::new().max_rect(Rect::from_min_max(
-                                    block_rect.min + vec2(block::HANDLE_WIDTH, 0.0),
-                                    block_rect.max,
-                                )),
-                                |ui| {
-                                    ui.vertical_centered(|ui| {
-                                        ui.add_space(100.0);
-                                        ui.spinner();
-                                        ui.label("Loading database…");
-                                    });
-                                },
-                            );
-                        }
-                    }
-                    if focus {
-                        self.focus_position = None;
-                        self.focus_at_end = false;
-                    }
-                    touched.push(position);
-                } else {
-                    if let Some(load_start) = self.cache.request(position) {
-                        intents.push(Intent::LoadBlocks {
-                            page: page_id,
-                            generation,
-                            start: load_start,
+                            None
+                        };
+                        let find_active = self.find.active_range_for_block(block.id, position);
+                        let find_q = if self.find.open {
+                            Some(self.find.query.as_str())
+                        } else {
+                            None
+                        };
+                        let linked_page = databases.sidebar.and_then(|sidebar| {
+                            (block.kind == BlockKind::PageLink)
+                                .then(|| block.content.parse::<PageId>().ok())
+                                .flatten()
+                                .and_then(|id| sidebar.page(id))
                         });
+                        if block::show(
+                            ui,
+                            block_rect,
+                            block,
+                            focus,
+                            focus_at_end,
+                            is_selected,
+                            bulk_selection_active,
+                            &ordered_selected_blocks,
+                            palette,
+                            widget_scope,
+                            intents,
+                            page_link_icon,
+                            linked_page,
+                            find_q,
+                            find_active,
+                        ) {
+                            self.cache.needs_measure.insert(position);
+                        }
+                        if block.kind == BlockKind::Database
+                            && let Ok(database_id) = block.content.parse::<PageId>()
+                        {
+                            databases.visible.insert(database_id);
+                            if let Some(database) = databases.databases.get_mut(&database_id) {
+                                let desired_h =
+                                    crate::ui::database::desired_embedded_height(ui, database);
+                                let database_rect = Rect::from_min_max(
+                                    block_rect.min + vec2(block::HANDLE_WIDTH, 0.0),
+                                    pos2(block_rect.max.x, block_rect.min.y + desired_h),
+                                );
+                                let response = ui.scope_builder(
+                                    egui::UiBuilder::new().max_rect(database_rect),
+                                    |ui| {
+                                        ui.push_id(("embedded-database", block.id), |ui| {
+                                            egui::Frame::NONE.show(ui, |ui| {
+                                                ui.set_min_width(ui.available_width());
+                                                ui.set_min_height((desired_h - 16.0).max(120.0));
+                                                crate::ui::database::show_embedded(
+                                                    ui,
+                                                    database,
+                                                    palette,
+                                                    intents,
+                                                    &mut crate::ui::database::Drafts {
+                                                        properties: databases.property_drafts,
+                                                        titles: databases.title_drafts,
+                                                        values: databases.value_drafts,
+                                                    },
+                                                );
+                                            });
+                                        });
+                                    },
+                                );
+                                rendered_block_height = rendered_block_height
+                                    .max(response.response.rect.bottom() - block_rect.top());
+                            } else {
+                                if !databases.loading.contains(&database_id) {
+                                    intents.push(Intent::LoadDatabase(database_id));
+                                }
+                                ui.scope_builder(
+                                    egui::UiBuilder::new().max_rect(Rect::from_min_max(
+                                        block_rect.min + vec2(block::HANDLE_WIDTH, 0.0),
+                                        block_rect.max,
+                                    )),
+                                    |ui| {
+                                        ui.vertical_centered(|ui| {
+                                            ui.add_space(100.0);
+                                            ui.spinner();
+                                            ui.label("Loading database…");
+                                        });
+                                    },
+                                );
+                            }
+                        }
+                        if focus {
+                            self.focus_position = None;
+                            self.focus_at_end = false;
+                        }
+                        touched.push(position);
+                    } else {
+                        if let Some(load_start) = self.cache.request(position) {
+                            intents.push(Intent::LoadBlocks {
+                                page: page_id,
+                                generation,
+                                start: load_start,
+                            });
+                        }
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(
+                                block_rect.min + vec2(35.0, 12.0),
+                                vec2(block_width * 0.55, 9.0),
+                            ),
+                            4.0,
+                            palette.hover,
+                        );
                     }
-                    ui.painter().rect_filled(
-                        Rect::from_min_size(
-                            block_rect.min + vec2(35.0, 12.0),
-                            vec2(block_width * 0.55, 9.0),
-                        ),
-                        4.0,
-                        palette.hover,
-                    );
+                    column_height += rendered_block_height;
                 }
+                rendered_height = rendered_height.max(column_height);
                 x += block_width;
-                if column + 1 < row.len() {
+                let position = positions[0];
+                if column + 1 < columns.len() {
                     let separator =
                         Rect::from_min_size(pos2(x, rect.top()), vec2(COLUMN_GAP, rect.height()));
                     let response = ui
@@ -432,11 +478,10 @@ impl Editor {
                     );
                     if response.dragged() || response.drag_stopped() {
                         let total = widths.iter().sum::<f32>().max(1.0);
-                        let delta = response.drag_delta().x / total;
-                        let pair_total = document.outline[position].column_width
-                            + document.outline[row[column + 1]].column_width;
-                        let minimum_column = (pair_total * 0.05).max(0.001);
-                        let left = (document.outline[position].column_width + delta)
+                        let delta = response.drag_delta().x / total * ratios.iter().sum::<f32>();
+                        let pair_total = ratios[column] + ratios[column + 1];
+                        let minimum_column = MIN_COLUMN_RATIO.min(pair_total * 0.5);
+                        let left = (ratios[column] + delta)
                             .clamp(minimum_column, pair_total - minimum_column);
                         let right = pair_total - left;
                         if let Some(group) = document.outline[position].column_group {
@@ -450,14 +495,15 @@ impl Editor {
                                     left_width: left,
                                     right_width: right,
                                 }));
-                                self.column_resize_preview.remove(&(group, column));
                             }
                         }
                     }
                     x += COLUMN_GAP;
                 }
             }
+            self.layout.set(row_index, rendered_height);
         }
+        ui.set_min_height(self.layout.total() + 65.0);
         let append_area = Rect::from_min_size(
             origin + vec2(0.0, self.layout.total() + 5.0),
             vec2(document_width, 64.0),
@@ -471,6 +517,7 @@ impl Editor {
             .on_hover_cursor(egui::CursorIcon::Text);
         if append_response.clicked() && !self.marquee_active && self.selected_blocks.is_empty() {
             intents.push(Intent::Action(Action::InsertBlock {
+                column_anchor: None,
                 page: page_id,
                 position: document.outline.len(),
                 kind: BlockKind::Text,
@@ -521,11 +568,57 @@ impl Editor {
                     }));
                 } else {
                     intents.push(Intent::Action(Action::InsertBlock {
+                        column_anchor: None,
                         page: page_id,
                         position: position + offset,
                         kind: crate::domain::model::BlockKind::Text,
                         content: path.to_string_lossy().into_owned(),
                         text_styles: Vec::new(),
+                    }));
+                }
+            }
+        }
+        if egui::DragAndDrop::payload::<crate::ui::page_transfer::PageDragPayload>(ui.ctx())
+            .is_some()
+            && let Some(pointer) = ui.ctx().pointer_interact_pos()
+            && ui.clip_rect().contains(pointer)
+            && !visible_blocks.iter().any(|(_, rect, position)| {
+                document.outline[*position].kind == BlockKind::Database && rect.contains(pointer)
+            })
+        {
+            let local_y = pointer.y - origin.y;
+            let row = self.layout.row_at(local_y.max(0.0));
+            let after = !self.layout.is_empty()
+                && local_y > self.layout.top(row) + self.layout.height(row) * 0.5;
+            let position = self
+                .visual_rows
+                .get(row)
+                .map_or(document.outline.len(), |positions| {
+                    positions[0] + if after { positions.len() } else { 0 }
+                });
+            let line_y = origin.y + self.layout.top(row + usize::from(after));
+            let drop_rect = ui.clip_rect();
+            let response = ui.interact(drop_rect, ui.id().with("page-block-drop"), Sense::hover());
+            if response
+                .dnd_hover_payload::<crate::ui::page_transfer::PageDragPayload>()
+                .is_some()
+            {
+                ui.painter().line_segment(
+                    [
+                        pos2(origin.x, line_y),
+                        pos2(origin.x + document_width, line_y),
+                    ],
+                    Stroke::new(2.0, palette.accent),
+                );
+                if let Some(payload) =
+                    response.dnd_release_payload::<crate::ui::page_transfer::PageDragPayload>()
+                {
+                    intents.push(Intent::Action(Action::TransferPages {
+                        pages: payload.pages.clone(),
+                        parent: Some(page_id),
+                        position: Some(position),
+                        replace_block: None,
+                        copy: false,
                     }));
                 }
             }
@@ -598,7 +691,8 @@ impl Editor {
                 .ctx()
                 .memory(|m| m.area_rect(bulk_menu_id))
                 .is_some_and(|r| r.expand(6.0).contains(pos));
-            let any_popup = ui.ctx().memory(|m| m.any_popup_open());
+            let any_popup = ui.ctx().memory(|m| m.any_popup_open())
+                || crate::ui::menus::pointer_in_menu(ui.ctx());
             let top_layer = ui.ctx().memory(|m| m.layer_id_at(pos));
             let inside_popup =
                 any_popup && top_layer.is_some_and(|l| l.order == egui::Order::Foreground);
@@ -840,6 +934,10 @@ impl Editor {
                         .and_then(|doc| doc.outline.iter().position(|stub| stub.id == *last_id))
                     {
                         intents.push(Intent::Action(Action::InsertBlock {
+                            column_anchor: self
+                                .document
+                                .as_ref()
+                                .and_then(|doc| doc.outline[pos].column_group.map(|_| *last_id)),
                             page: page_id,
                             position: pos + 1,
                             kind: BlockKind::Text,
@@ -904,7 +1002,11 @@ impl Editor {
             }
             let mut ratios: Vec<_> = row
                 .iter()
-                .map(|position| document.outline[*position].column_width.max(0.08))
+                .map(|position| {
+                    document.outline[*position]
+                        .column_width
+                        .max(MIN_COLUMN_RATIO)
+                })
                 .collect();
             if let Some(group) = document.outline[row[0]].column_group {
                 for boundary in 0..row.len().saturating_sub(1) {
@@ -1052,7 +1154,7 @@ impl Editor {
                                 close_menu = true;
                             }
                         }
-                        ui.menu_button("Font", |ui| {
+                        ui.persistent_menu_button("Font", |ui| {
                             for (label, family) in [
                                 ("Default", None),
                                 ("Serif", Some(InlineFontFamily::Serif)),
@@ -1069,7 +1171,7 @@ impl Editor {
                                 }
                             }
                         });
-                        ui.menu_button(RichText::new("A").strong(), |ui| {
+                        ui.persistent_menu_button(RichText::new("A").strong(), |ui| {
                             ui.label(RichText::new("Text color").small().color(palette.muted));
                             for (name, color) in [
                                 ("Default", None),
@@ -1101,7 +1203,7 @@ impl Editor {
                                 }
                             }
                         });
-                        ui.menu_button("Highlight", |ui| {
+                        ui.persistent_menu_button("Highlight", |ui| {
                             ui.label(
                                 RichText::new("Background highlight")
                                     .small()
@@ -1166,7 +1268,7 @@ impl Editor {
                         close_menu = true;
                     }
                     ui.separator();
-                    ui.menu_button("⇄  Turn into", |ui| {
+                    ui.persistent_menu_button("⇄  Turn into", |ui| {
                         ui.set_min_width(170.0);
                         for kind in BlockKind::ALL {
                             if ui.button(kind.label()).clicked() {
@@ -1275,30 +1377,75 @@ impl Editor {
 }
 
 const COLUMN_GAP: f32 = 10.0;
+const MIN_COLUMN_RATIO: f32 = 0.08;
 
 fn row_column_widths(
     row: &[usize],
     outline: &[crate::domain::model::BlockStub],
     document_width: f32,
 ) -> Vec<f32> {
-    let ratios: Vec<_> = row
+    let ratios: Vec<_> = row_columns(row, outline)
         .iter()
-        .map(|position| outline[*position].column_width.max(0.08))
+        .map(|positions| outline[positions[0]].column_width.max(MIN_COLUMN_RATIO))
         .collect();
     widths_for_ratios(&ratios, document_width)
+}
+
+fn row_columns(row: &[usize], outline: &[crate::domain::model::BlockStub]) -> Vec<Vec<usize>> {
+    let mut columns: Vec<Vec<usize>> = Vec::new();
+    for position in row.iter().copied() {
+        let column = outline[position].column_index;
+        if let Some(positions) = columns.last_mut()
+            && outline[positions[0]].column_index == column
+        {
+            positions.push(position);
+        } else {
+            columns.push(vec![position]);
+        }
+    }
+    columns
+}
+
+fn block_height(
+    ui: &Ui,
+    position: usize,
+    width: f32,
+    outline: &[crate::domain::model::BlockStub],
+    cache: &super::BlockCache,
+    databases: &DatabaseContext<'_>,
+) -> f32 {
+    if let Some(block) = cache.blocks.get(&position) {
+        if block.kind == BlockKind::Database
+            && let Ok(database_id) = block.content.parse::<PageId>()
+            && let Some(database) = databases.databases.get(&database_id)
+        {
+            crate::ui::database::desired_embedded_height(ui, database)
+        } else {
+            block::measured_height(ui, block, width)
+        }
+    } else {
+        estimate_height(&outline[position], width)
+    }
 }
 
 fn widths_for_ratios(ratios: &[f32], document_width: f32) -> Vec<f32> {
     let gaps = COLUMN_GAP * ratios.len().saturating_sub(1) as f32;
     let available = (document_width - gaps).max(48.0);
-    let total = ratios.iter().sum::<f32>().max(0.08);
+    let total = ratios
+        .iter()
+        .map(|ratio| ratio.max(MIN_COLUMN_RATIO))
+        .sum::<f32>()
+        .max(MIN_COLUMN_RATIO);
     ratios
         .iter()
-        .map(|ratio| available * ratio.max(0.08) / total)
+        .map(|ratio| available * ratio.max(MIN_COLUMN_RATIO) / total)
         .collect()
 }
 
 fn estimate_height(stub: &crate::domain::model::BlockStub, width: f32) -> f32 {
+    if stub.kind == BlockKind::PageLink {
+        return block::PAGE_LINK_BLOCK_HEIGHT;
+    }
     if stub.kind == BlockKind::Database {
         return block::DATABASE_BLOCK_HEIGHT;
     }
@@ -1310,6 +1457,5 @@ fn estimate_height(stub: &crate::domain::model::BlockStub, width: f32) -> f32 {
         .ceil()
         .max(stub.lines as f32)
         .max(1.0);
-    (lines * (stub.kind.font_size() + 4.0) + block::BLOCK_PADDING * 2.0)
-        .clamp(36.0, block::MAX_BLOCK_HEIGHT)
+    (lines * (stub.kind.font_size() + 4.0) + block::BLOCK_PADDING * 2.0).max(36.0)
 }

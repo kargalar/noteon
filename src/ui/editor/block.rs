@@ -1,3 +1,4 @@
+use crate::ui::menus::{PersistentContextMenu, PersistentMenuUi};
 use eframe::egui::{
     self, Align2, Color32, FontFamily, FontId, Key, KeyboardShortcut, Modifiers, Rect, RichText,
     Sense, Stroke, TextFormat, Ui, pos2, vec2,
@@ -14,10 +15,10 @@ use crate::ui::text;
 use crate::ui::{Intent, ThemeSection, palette::Palette};
 
 pub const BLOCK_PADDING: f32 = 12.0;
-pub const MAX_BLOCK_HEIGHT: f32 = 260.0;
 pub const HANDLE_WIDTH: f32 = 30.0;
 pub const DATABASE_BLOCK_HEIGHT: f32 = 520.0;
 pub const MEDIA_BLOCK_HEIGHT: f32 = 320.0;
+pub const PAGE_LINK_BLOCK_HEIGHT: f32 = 48.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandTarget {
@@ -101,6 +102,9 @@ pub fn text_indent(kind: BlockKind) -> f32 {
 }
 
 pub fn measured_height(ui: &Ui, block: &Block, width: f32) -> f32 {
+    if block.kind == BlockKind::PageLink {
+        return PAGE_LINK_BLOCK_HEIGHT;
+    }
     if block.kind == BlockKind::Database {
         return DATABASE_BLOCK_HEIGHT;
     }
@@ -130,7 +134,7 @@ pub fn measured_height(ui: &Ui, block: &Block, width: f32) -> f32 {
         None,
         None,
     );
-    (galley.size().y + BLOCK_PADDING * 2.0).clamp(36.0, MAX_BLOCK_HEIGHT)
+    (galley.size().y + BLOCK_PADDING * 2.0).max(36.0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -147,6 +151,7 @@ pub fn show(
     widget_scope: Option<u64>,
     intents: &mut Vec<Intent>,
     page_link_icon: Option<&str>,
+    linked_page: Option<&crate::domain::model::Page>,
     find_query: Option<&str>,
     find_active_match: Option<(usize, usize)>,
 ) -> bool {
@@ -162,6 +167,58 @@ pub fn show(
         intents,
     );
     if block.kind == BlockKind::Database {
+        return changed;
+    }
+    if block.kind == BlockKind::PageLink {
+        if let Ok(page_id) = block.content.parse::<crate::domain::model::PageId>() {
+            let body = Rect::from_min_max(
+                rect.min + vec2(HANDLE_WIDTH, 4.0),
+                rect.max - vec2(4.0, 4.0),
+            );
+            let response = ui.interact(
+                body,
+                block_widget_id("page-reference", block.id, widget_scope),
+                Sense::click(),
+            );
+            if response.hovered() {
+                ui.painter().rect_filled(body, 4.0, palette.hover);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let title = linked_page
+                .map(|page| page.title.as_str())
+                .filter(|title| !title.is_empty())
+                .unwrap_or("Untitled");
+            let icon = linked_page
+                .map(|page| page.icon.as_str())
+                .filter(|icon| !icon.is_empty())
+                .unwrap_or("↗");
+            let galley = ui.painter().layout(
+                format!("{icon}  {title}"),
+                FontId::proportional(15.0),
+                palette.text,
+                (body.width() - 16.0).max(1.0),
+            );
+            ui.painter()
+                .with_clip_rect(body.intersect(ui.clip_rect()))
+                .galley(body.min + vec2(8.0, 8.0), galley, palette.text);
+            if response.clicked() || response.middle_clicked() {
+                intents.push(if response.middle_clicked() {
+                    Intent::OpenInTab(page_id)
+                } else {
+                    Intent::Open(page_id, None)
+                });
+            }
+            response.persistent_context_menu(|ui| {
+                if ui.button("Open page").clicked() {
+                    intents.push(Intent::Open(page_id, None));
+                    ui.close_menu();
+                }
+                if ui.button("Open in new tab").clicked() {
+                    intents.push(Intent::OpenInTab(page_id));
+                    ui.close_menu();
+                }
+            });
+        }
         return changed;
     }
     if matches!(block.kind, BlockKind::Image | BlockKind::Video) {
@@ -276,7 +333,7 @@ pub fn show(
                 intents.push(Intent::OpenTitle(display_title.to_string()));
             }
 
-            link_resp.context_menu(|ui| {
+            link_resp.persistent_context_menu(|ui| {
                 ui.set_min_width(170.0);
                 if ui.button("✏  Düzenle").clicked() {
                     ui.ctx().data_mut(|d| {
@@ -382,7 +439,7 @@ pub fn show(
                 intents.push(Intent::OpenFileExplorer(file_path.clone()));
             }
 
-            link_resp.context_menu(|ui| {
+            link_resp.persistent_context_menu(|ui| {
                 ui.set_min_width(170.0);
                 if ui.button("✏  Düzenle").clicked() {
                     ui.ctx().data_mut(|d| {
@@ -619,7 +676,8 @@ fn show_menu(
             .frame(false)
             .sense(Sense::click_and_drag()),
     );
-    let handle = handle.on_hover_text("Block menu");
+    let handle = handle
+        .on_hover_text("Block menu · Drag to move · Hold Shift to drop above or below all columns");
     if handle.drag_started() {
         let payload_blocks = if selected && !selected_blocks.is_empty() {
             selected_blocks.to_vec()
@@ -647,16 +705,22 @@ fn show_menu(
             DropPlacement::Left
         } else if pointer.x >= rect.right() - side_zone {
             DropPlacement::Right
+        } else if block.column_group.is_some() && !ui.input(|input| input.modifiers.shift) {
+            if pointer.y < rect.center().y {
+                DropPlacement::BeforeInColumn
+            } else {
+                DropPlacement::AfterInColumn
+            }
         } else if pointer.y < rect.center().y {
             DropPlacement::Before
         } else {
             DropPlacement::After
         };
         let preview = match placement {
-            DropPlacement::Before => {
+            DropPlacement::Before | DropPlacement::BeforeInColumn => {
                 Rect::from_min_max(rect.left_top(), rect.right_top() + vec2(0.0, 3.0))
             }
-            DropPlacement::After => {
+            DropPlacement::After | DropPlacement::AfterInColumn => {
                 Rect::from_min_max(rect.left_bottom() - vec2(0.0, 3.0), rect.right_bottom())
             }
             DropPlacement::Left => {
@@ -718,111 +782,106 @@ fn show_menu(
     {
         ui.memory_mut(|memory| memory.toggle_popup(popup_id));
     }
-    egui::popup::popup_below_widget(
-        ui,
-        popup_id,
-        &handle,
-        egui::popup::PopupCloseBehavior::CloseOnClick,
-        |ui| {
-            ui.set_min_width(190.0);
-            if is_page_link {
-                if ui.button("✏  Düzenle").clicked() {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(editing_id, true);
-                        d.insert_temp(started_id, true);
-                    });
-                    ui.close_menu();
-                }
-                let target_title = block
-                    .content
-                    .trim_start()
-                    .trim_start_matches("↗ ")
-                    .trim_start_matches('↗')
-                    .trim();
-                let display_title = if target_title.is_empty() {
-                    "Untitled"
-                } else {
-                    target_title
-                };
-                if ui.button(format!("↗  '{display_title}' Aç")).clicked() {
-                    intents.push(Intent::OpenTitle(display_title.to_string()));
-                    ui.close_menu();
-                }
-                ui.separator();
-            }
-            if let Some((file_path, file_name)) = file_link_data.as_ref() {
-                if ui.button("✏  Düzenle").clicked() {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(editing_id, true);
-                        d.insert_temp(started_id, true);
-                    });
-                    ui.close_menu();
-                }
-                if ui.button(format!("📁  '{file_name}' Aç")).clicked() {
-                    intents.push(Intent::OpenFileExplorer(file_path.clone()));
-                    ui.close_menu();
-                }
-                if ui.button("📋  Dosya yolunu kopyala").clicked() {
-                    ui.ctx().copy_text(file_path.clone());
-                    ui.close_menu();
-                }
-                ui.separator();
-            }
-            ui.label(RichText::new("BLOCK TYPE").small().color(palette.muted));
-            for kind in BlockKind::ALL {
-                if ui
-                    .selectable_label(kind == block.kind, kind.label())
-                    .clicked()
-                {
-                    kind_change = Some(kind);
-                    ui.close_menu();
-                }
-            }
-            ui.separator();
-            if ui.button("▲ Move up").clicked() {
-                intents.push(Intent::Action(Action::MoveBlock {
-                    page: block.page_id,
-                    block: block.id,
-                    direction: -1,
-                }));
+    crate::ui::menus::popup_below_widget(ui, popup_id, &handle, |ui| {
+        ui.set_min_width(190.0);
+        if is_page_link {
+            if ui.button("✏  Düzenle").clicked() {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(editing_id, true);
+                    d.insert_temp(started_id, true);
+                });
                 ui.close_menu();
             }
-            if ui.button("▼ Move down").clicked() {
-                intents.push(Intent::Action(Action::MoveBlock {
-                    page: block.page_id,
-                    block: block.id,
-                    direction: 1,
-                }));
-                ui.close_menu();
-            }
-            if ui.button("+ Add text below").clicked() {
-                intents.push(Intent::Action(Action::InsertBlock {
-                    page: block.page_id,
-                    position: block.position + 1,
-                    kind: BlockKind::Text,
-                    content: String::new(),
-                    text_styles: Vec::new(),
-                }));
+            let target_title = block
+                .content
+                .trim_start()
+                .trim_start_matches("↗ ")
+                .trim_start_matches('↗')
+                .trim();
+            let display_title = if target_title.is_empty() {
+                "Untitled"
+            } else {
+                target_title
+            };
+            if ui.button(format!("↗  '{display_title}' Aç")).clicked() {
+                intents.push(Intent::OpenTitle(display_title.to_string()));
                 ui.close_menu();
             }
             ui.separator();
+        }
+        if let Some((file_path, file_name)) = file_link_data.as_ref() {
+            if ui.button("✏  Düzenle").clicked() {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(editing_id, true);
+                    d.insert_temp(started_id, true);
+                });
+                ui.close_menu();
+            }
+            if ui.button(format!("📁  '{file_name}' Aç")).clicked() {
+                intents.push(Intent::OpenFileExplorer(file_path.clone()));
+                ui.close_menu();
+            }
+            if ui.button("📋  Dosya yolunu kopyala").clicked() {
+                ui.ctx().copy_text(file_path.clone());
+                ui.close_menu();
+            }
+            ui.separator();
+        }
+        ui.label(RichText::new("BLOCK TYPE").small().color(palette.muted));
+        for kind in BlockKind::ALL {
             if ui
-                .button(RichText::new("Delete block").color(palette.danger))
+                .selectable_label(kind == block.kind, kind.label())
                 .clicked()
             {
-                intents.push(Intent::Action(Action::DeleteBlock {
-                    page: block.page_id,
-                    block: block.id,
-                }));
+                kind_change = Some(kind);
                 ui.close_menu();
             }
-            ui.separator();
-            if ui.button("🎨 Temayı düzenle").clicked() {
-                intents.push(Intent::OpenSettingsTheme(ThemeSection::Editor));
-                ui.close_menu();
-            }
-        },
-    );
+        }
+        ui.separator();
+        if ui.button("▲ Move up").clicked() {
+            intents.push(Intent::Action(Action::MoveBlock {
+                page: block.page_id,
+                block: block.id,
+                direction: -1,
+            }));
+            ui.close_menu();
+        }
+        if ui.button("▼ Move down").clicked() {
+            intents.push(Intent::Action(Action::MoveBlock {
+                page: block.page_id,
+                block: block.id,
+                direction: 1,
+            }));
+            ui.close_menu();
+        }
+        if ui.button("+ Add text below").clicked() {
+            intents.push(Intent::Action(Action::InsertBlock {
+                column_anchor: block.column_group.map(|_| block.id),
+                page: block.page_id,
+                position: block.position + 1,
+                kind: BlockKind::Text,
+                content: String::new(),
+                text_styles: Vec::new(),
+            }));
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui
+            .button(RichText::new("Delete block").color(palette.danger))
+            .clicked()
+        {
+            intents.push(Intent::Action(Action::DeleteBlock {
+                page: block.page_id,
+                block: block.id,
+            }));
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button("🎨 Temayı düzenle").clicked() {
+            intents.push(Intent::OpenSettingsTheme(ThemeSection::Editor));
+            ui.close_menu();
+        }
+    });
     if let Some(kind) = kind_change {
         block.kind = kind;
         changed = true;
@@ -889,6 +948,90 @@ fn show_decoration(ui: &mut Ui, body: Rect, block: &mut Block, palette: Palette)
     changed
 }
 
+fn handle_paste(
+    ui: &mut Ui,
+    block: &mut Block,
+    editor_id: egui::Id,
+    intents: &mut Vec<Intent>,
+) -> bool {
+    if let Some(action) = crate::ui::page_transfer::take_paste(
+        ui,
+        block.page_id,
+        Some(block.position + usize::from(!block.content.is_empty())),
+        block.content.is_empty().then_some(block.id),
+    ) {
+        intents.push(Intent::Action(action));
+        return true;
+    }
+    if block.kind == BlockKind::Code {
+        return false;
+    }
+    let pasted = ui.input_mut(|input| {
+        let index = input.events.iter().position(
+            |event| matches!(event, egui::Event::Paste(text) if text.contains(['\n', '\r'])),
+        )?;
+        match input.events.remove(index) {
+            egui::Event::Paste(text) => Some(text),
+            _ => None,
+        }
+    });
+    let Some(pasted) = pasted else {
+        return false;
+    };
+    let mut state = egui::text_edit::TextEditState::load(ui.ctx(), editor_id).unwrap_or_default();
+    let selection = state.cursor.char_range().map_or_else(
+        || {
+            let end = block.content.chars().count();
+            end..end
+        },
+        |range| {
+            range.primary.index.min(range.secondary.index)
+                ..range.primary.index.max(range.secondary.index)
+        },
+    );
+    let (prefix, suffix) = split_at_selection(&block.content, selection.clone());
+    let (prefix_styles, suffix_styles) = split_text_styles(&block.text_styles, selection);
+    let mut pasted_blocks = crate::domain::markdown::parse_blocks(&pasted).into_iter();
+    let (kind, content, checked) = pasted_blocks.next().expect("parser always returns a block");
+    if prefix.is_empty() {
+        block.kind = kind;
+        block.checked = checked;
+    }
+    block.content = prefix + &content;
+    block.text_styles = prefix_styles;
+    let mut remaining: Vec<crate::domain::model::StyledBlockContent> = pasted_blocks
+        .map(|(kind, content, checked)| (kind, content, checked, Vec::new()))
+        .collect();
+    let (last_content, last_styles) = remaining.last_mut().map_or(
+        (&mut block.content, &mut block.text_styles),
+        |(_, content, _, styles)| (content, styles),
+    );
+    let cursor = last_content.chars().count();
+    last_content.push_str(&suffix);
+    last_styles.extend(suffix_styles.into_iter().map(|mut range| {
+        range.start += cursor;
+        range.end += cursor;
+        range
+    }));
+    if remaining.is_empty() {
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(cursor),
+            )));
+        state.store(ui.ctx(), editor_id);
+    } else {
+        intents.push(Intent::Action(Action::InsertBlocks {
+            column_anchor: block.column_group.map(|_| block.id),
+            page: block.page_id,
+            position: block.position + 1,
+            blocks: remaining,
+        }));
+    }
+    ui.ctx().request_repaint();
+    true
+}
+
 fn show_text(
     ui: &mut Ui,
     text_rect: Rect,
@@ -919,13 +1062,15 @@ fn show_text(
             .max_rect(text_rect),
         |ui| {
             ui.set_clip_rect(text_rect.intersect(ui.clip_rect()));
-            egui::ScrollArea::vertical()
-                .id_salt(("block-scroll", block.id))
-                .max_height(text_rect.height())
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
+            ui.scope(|ui| {
                     let editor_id = block_widget_id("block", block.id, widget_scope);
                     let was_focused = ui.ctx().memory(|m| m.has_focus(editor_id));
+                    if (was_focused || focus)
+                        && handle_paste(ui, block, editor_id, intents)
+                    {
+                        changed = true;
+                        return;
+                    }
                     let was_empty = block.content.is_empty();
 
                     let backspace_event = ui.input(|i| {
@@ -1221,7 +1366,7 @@ fn show_text(
                         }
                     }
 
-                    output.response.context_menu(|ui| {
+                    output.response.persistent_context_menu(|ui| {
                         ui.set_min_width(200.0);
                         let context_links = super::links::find_links_and_paths(&block.content);
                         for link in &context_links {
@@ -1308,7 +1453,7 @@ fn show_text(
                                     ui.ctx().memory(|m| m.area_rect(toolbar_area_id));
                                 let inside_toolbar =
                                     toolbar_rect.is_some_and(|r| r.expand(4.0).contains(pos));
-                                let any_popup = ui.ctx().memory(|m| m.any_popup_open());
+                                let any_popup = ui.ctx().memory(|m| m.any_popup_open()) || crate::ui::menus::pointer_in_menu(ui.ctx());
                                 let top_layer = ui.ctx().memory(|m| m.layer_id_at(pos));
                                 let inside_popup = any_popup
                                     && top_layer
@@ -1770,7 +1915,7 @@ fn show_text_format_toolbar(
                         changed = true;
                     }
                 }
-                ui.menu_button("Font", |ui| {
+                ui.persistent_menu_button("Font", |ui| {
                     for (label, family) in [
                         ("Default", None),
                         ("Serif", Some(InlineFontFamily::Serif)),
@@ -1791,7 +1936,7 @@ fn show_text_format_toolbar(
                         }
                     }
                 });
-                ui.menu_button(RichText::new("A").strong(), |ui| {
+                ui.persistent_menu_button(RichText::new("A").strong(), |ui| {
                     ui.label("Text color");
                     let mut color = range_color(&block.text_styles, range.clone(), true)
                         .unwrap_or(palette.text);
@@ -1809,7 +1954,7 @@ fn show_text_format_toolbar(
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("Highlight", |ui| {
+                ui.persistent_menu_button("Highlight", |ui| {
                     ui.label("Background color");
                     let mut color = range_color(&block.text_styles, range.clone(), false)
                         .unwrap_or(egui::Color32::from_rgb(255, 230, 120));
@@ -2372,6 +2517,7 @@ fn handle_enter(
             || parse_file_link(&block.content).is_some())
     {
         intents.push(Intent::Action(Action::InsertBlock {
+            column_anchor: block.column_group.map(|_| block.id),
             page: block.page_id,
             position: block.position + 1,
             kind: BlockKind::Text,
@@ -2400,6 +2546,7 @@ fn handle_enter(
     };
     // The parent persists the edited prefix before dispatching structural commands.
     intents.push(Intent::Action(Action::InsertBlock {
+        column_anchor: block.column_group.map(|_| block.id),
         page: block.page_id,
         position: block.position + 1,
         kind: next_kind,

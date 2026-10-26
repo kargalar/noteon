@@ -134,6 +134,16 @@ impl NoteonApp {
                     for row in &mut data.rows {
                         self.saves.overlay_page(&mut row.page);
                     }
+                    super::sync_database_title_drafts(
+                        self.databases.get(&data.page_id),
+                        &data,
+                        &mut self.database_title_drafts,
+                    );
+                    super::sync_database_value_drafts(
+                        self.databases.get(&data.page_id),
+                        &data,
+                        &mut self.database_value_drafts,
+                    );
                     self.database_loading.remove(&data.page_id);
                     self.touch_database(data.page_id);
                     self.databases.insert(data.page_id, data);
@@ -160,8 +170,21 @@ impl NoteonApp {
                     refresh_database,
                     created_record_document,
                     history,
+                    page_transfer,
                 } => {
                     self.busy = false;
+                    if let Some(update) = page_transfer {
+                        crate::ui::page_transfer::finish_cut(context, &update.moved_pages);
+                        for database in update.databases {
+                            self.refresh_database(database);
+                        }
+                        for document in update.documents {
+                            if let Some(editor) = self.editors.get_mut(&document.page.id) {
+                                self.generation += 1;
+                                editor.bind(document, self.generation, None);
+                            }
+                        }
+                    }
                     for page in &mut pages {
                         self.saves.overlay_page(page);
                     }

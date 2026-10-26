@@ -162,133 +162,92 @@ impl Repository {
         match placement {
             DropPlacement::Before | DropPlacement::After => {
                 let target_group = rows[target_index].1;
-                let target_members: Vec<_> = if let Some(group) = target_group {
-                    rows.iter()
-                        .filter(|row| row.1 == Some(group) && !valid_sources.contains(&row.0))
-                        .map(|row| row.0)
-                        .collect()
-                } else {
-                    vec![target]
-                };
-
-                let source_blocks = valid_sources;
-
-                order.retain(|id| !source_blocks.contains(id));
-                let target_position = order
+                order.retain(|id| !valid_sources.contains(id));
+                let members: Vec<_> = order
                     .iter()
-                    .position(|id| target_members.contains(id))
-                    .unwrap_or(order.len());
-                let insert_at = if placement == DropPlacement::After {
-                    target_position + target_members.len()
+                    .copied()
+                    .filter(|id| {
+                        *id == target
+                            || target_group.is_some_and(|group| columns[id].0 == Some(group))
+                    })
+                    .collect();
+                let anchor = if placement == DropPlacement::After {
+                    *members.last().unwrap_or(&target)
                 } else {
-                    target_position
+                    *members.first().unwrap_or(&target)
                 };
-                for (offset, id) in source_blocks.iter().enumerate() {
-                    order.insert((insert_at + offset).min(order.len()), *id);
+                let insert_at = order
+                    .iter()
+                    .position(|id| *id == anchor)
+                    .unwrap_or(order.len())
+                    + usize::from(placement == DropPlacement::After);
+                for (offset, id) in valid_sources.iter().enumerate() {
+                    order.insert(insert_at + offset, *id);
                     columns.insert(*id, (None, 0));
                 }
-
-                let mut affected_groups = std::collections::HashSet::new();
-                for id in &source_blocks {
-                    if let Some((Some(grp), _)) =
-                        rows.iter().find(|r| r.0 == *id).map(|r| (r.1, r.2))
-                    {
-                        affected_groups.insert(grp);
-                    }
+            }
+            DropPlacement::BeforeInColumn | DropPlacement::AfterInColumn => {
+                let (group, column) = columns[&target];
+                if group.is_none() {
+                    return Err(Error::Invalid("Target block is not in a column.".into()));
                 }
-                for grp in affected_groups {
-                    let remaining: Vec<BlockId> = rows
-                        .iter()
-                        .filter(|row| row.1 == Some(grp) && !source_blocks.contains(&row.0))
-                        .map(|row| row.0)
-                        .collect();
-                    if remaining.len() <= 1 {
-                        for rem_id in remaining {
-                            columns.insert(rem_id, (None, 0));
-                        }
-                    } else {
-                        let equal_w = 1.0 / remaining.len() as f32;
-                        for (col_idx, rem_id) in remaining.iter().enumerate() {
-                            columns.insert(*rem_id, (Some(grp), col_idx));
-                            widths_to_set.push((*rem_id, equal_w));
-                        }
-                    }
+                let width: f32 = transaction.query_row(
+                    "SELECT column_width FROM blocks WHERE id=?1",
+                    [target],
+                    |row| row.get(0),
+                )?;
+                order.retain(|id| !valid_sources.contains(id));
+                let insert_at = order
+                    .iter()
+                    .position(|id| *id == target)
+                    .unwrap_or(order.len())
+                    + usize::from(placement == DropPlacement::AfterInColumn);
+                for (offset, id) in valid_sources.iter().enumerate() {
+                    order.insert(insert_at + offset, *id);
+                    columns.insert(*id, (group, column));
+                    widths_to_set.push((*id, width));
                 }
             }
             DropPlacement::Left | DropPlacement::Right => {
-                let target_group = rows[target_index].1.unwrap_or(target);
-                let mut target_columns: Vec<_> = rows
-                    .iter()
-                    .filter(|row| row.1 == Some(target_group))
-                    .map(|row| (row.2, row.0))
-                    .collect();
-                if rows[target_index].1.is_none() {
-                    target_columns.push((0, target));
-                }
-                target_columns.sort_by_key(|item| item.0);
-
-                let mut affected_groups = std::collections::HashSet::new();
-                for id in &valid_sources {
-                    if let Some((Some(grp), _)) =
-                        rows.iter().find(|r| r.0 == *id).map(|r| (r.1, r.2))
-                    {
-                        if grp != target_group {
-                            affected_groups.insert(grp);
-                        }
-                    }
-                }
-                for grp in affected_groups {
-                    let remaining: Vec<BlockId> = rows
-                        .iter()
-                        .filter(|row| row.1 == Some(grp) && !valid_sources.contains(&row.0))
-                        .map(|row| row.0)
-                        .collect();
-                    if remaining.len() <= 1 {
-                        for rem_id in remaining {
-                            columns.insert(rem_id, (None, 0));
-                        }
-                    } else {
-                        let equal_w = 1.0 / remaining.len() as f32;
-                        for (col_idx, rem_id) in remaining.iter().enumerate() {
-                            columns.insert(*rem_id, (Some(grp), col_idx));
-                            widths_to_set.push((*rem_id, equal_w));
-                        }
-                    }
-                }
-
-                target_columns.retain(|(_, id)| !valid_sources.contains(id));
+                let group = rows[target_index].1.unwrap_or(target);
+                let target_column = rows[target_index].2;
                 order.retain(|id| !valid_sources.contains(id));
-
-                let target_column = target_columns
+                let members: Vec<_> = order
                     .iter()
-                    .position(|(_, id)| *id == target)
-                    .unwrap_or(0);
-                let insert_at = if placement == DropPlacement::Left {
-                    target_column
-                } else {
-                    target_column + 1
-                };
-                for (offset, id) in valid_sources.iter().enumerate() {
-                    target_columns.insert((insert_at + offset).min(target_columns.len()), (0, *id));
-                }
-                let target_member_ids: Vec<_> = target_columns
-                    .iter()
-                    .filter_map(|(_, id)| (!valid_sources.contains(id)).then_some(*id))
+                    .copied()
+                    .filter(|id| *id == target || columns[id].0 == Some(group))
                     .collect();
-                let insertion_anchor = order
+                let mut column_ids: Vec<_> = members.iter().map(|id| columns[id].1).collect();
+                column_ids.sort_unstable();
+                column_ids.dedup();
+                let boundary = column_ids
                     .iter()
-                    .position(|id| target_member_ids.contains(id))
-                    .unwrap_or(order.len());
-                let equal_width = 1.0 / target_columns.len() as f32;
-                for (column, (_, id)) in target_columns.iter().enumerate() {
-                    columns.insert(*id, (Some(target_group), column));
-                    widths_to_set.push((*id, equal_width));
-                    if let Some(pos) = order.iter().position(|candidate| candidate == id) {
-                        order.remove(pos);
-                    }
+                    .position(|col| *col == target_column)
+                    .unwrap_or(0)
+                    + usize::from(placement == DropPlacement::Right);
+                let width = 1.0 / (column_ids.len() + valid_sources.len()) as f32;
+                for id in &members {
+                    let column = column_ids
+                        .iter()
+                        .position(|col| *col == columns[id].1)
+                        .unwrap_or(0);
+                    let shifted = column
+                        + if column >= boundary {
+                            valid_sources.len()
+                        } else {
+                            0
+                        };
+                    columns.insert(*id, (Some(group), shifted));
+                    widths_to_set.push((*id, width));
                 }
-                for (offset, (_, id)) in target_columns.iter().enumerate() {
-                    order.insert((insertion_anchor + offset).min(order.len()), *id);
+                let anchor = order
+                    .iter()
+                    .position(|id| members.contains(id))
+                    .unwrap_or(order.len());
+                for (offset, id) in valid_sources.iter().enumerate() {
+                    columns.insert(*id, (Some(group), boundary + offset));
+                    widths_to_set.push((*id, width));
+                    order.insert(anchor + offset, *id);
                 }
             }
         }
@@ -546,12 +505,7 @@ impl Repository {
         &mut self,
         page: PageId,
         position: usize,
-        blocks: &[(
-            BlockKind,
-            String,
-            bool,
-            Vec<crate::domain::model::TextStyleRange>,
-        )],
+        blocks: &[crate::domain::model::StyledBlockContent],
     ) -> Result<()> {
         self.append_blocks_inner(
             page,
@@ -1023,46 +977,80 @@ pub(super) fn normalize_page_blocks(
     transaction: &rusqlite::Transaction<'_>,
     page: PageId,
 ) -> Result<()> {
-    let rows = {
+    let mut rows = {
         let mut stmt = transaction.prepare_cached(
-            "SELECT id,column_group,column_width FROM blocks WHERE page_id=?1 ORDER BY position",
+            "SELECT id,column_group,column_width,layout_column FROM blocks WHERE page_id=?1 ORDER BY position",
         )?;
-        let mapped = stmt
-            .query_map([page], |row| {
-                Ok((
-                    row.get::<_, BlockId>(0)?,
-                    row.get::<_, Option<i64>>(1)?,
-                    row.get::<_, f32>(2)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        mapped
+        stmt.query_map([page], |row| {
+            Ok((
+                row.get::<_, BlockId>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, f32>(2)?,
+                read_usize(row, 3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
     };
-    let mut group_counts = std::collections::HashMap::<i64, usize>::new();
-    for (_, group, _) in &rows {
+    let mut groups = std::collections::HashMap::<i64, Vec<usize>>::new();
+    for (index, (_, group, width, column)) in rows.iter_mut().enumerate() {
         if let Some(group) = group {
-            *group_counts.entry(*group).or_insert(0) += 1;
+            groups.entry(*group).or_default().push(index);
+        } else {
+            *width = 1.0;
+            *column = 0;
         }
     }
-    let mut group_next_col = std::collections::HashMap::<i64, usize>::new();
+    // A column may contain several blocks. Normalize column identities, not block indices.
+    for indices in groups.values() {
+        let mut columns: Vec<_> = indices.iter().map(|index| rows[*index].3).collect();
+        columns.sort_unstable();
+        columns.dedup();
+        let widths: Vec<_> = columns
+            .iter()
+            .map(|column| {
+                indices
+                    .iter()
+                    .find_map(|index| (rows[*index].3 == *column).then_some(rows[*index].2))
+                    .unwrap_or(1.0)
+                    .clamp(0.08, 1.0)
+            })
+            .collect();
+        let total = widths.iter().sum::<f32>();
+        for index in indices {
+            let row = &mut rows[*index];
+            if columns.len() < 2 {
+                row.1 = None;
+                row.2 = 1.0;
+                row.3 = 0;
+            } else {
+                row.3 = columns.binary_search(&row.3).unwrap_or(0);
+                row.2 = widths[row.3] / total;
+            }
+        }
+    }
+    let mut ordered = Vec::with_capacity(rows.len());
+    let mut emitted = std::collections::HashSet::new();
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(group) = row.1 {
+            if emitted.insert(group) {
+                let mut members = groups[&group].clone();
+                members.sort_by_key(|index| rows[*index].3);
+                ordered.extend(members);
+            }
+        } else {
+            ordered.push(index);
+        }
+    }
     let mut update = transaction.prepare_cached(
         "UPDATE blocks SET position=?1,column_group=?2,layout_column=?3,column_width=?4 WHERE id=?5 AND page_id=?6",
     )?;
-    for (position, (id, group, width)) in rows.into_iter().enumerate() {
-        let (next_group, next_col, next_width) = match group {
-            Some(g) if group_counts.get(&g).copied().unwrap_or(0) > 1 => {
-                let col = group_next_col.entry(g).or_insert(0);
-                let current_col = *col;
-                *col += 1;
-                (Some(g), current_col, width.clamp(0.08, 1.0))
-            }
-            _ => (None, 0, 1.0),
-        };
+    for (position, index) in ordered.into_iter().enumerate() {
+        let (id, group, width, column) = rows[index];
         update.execute(params![
             sql_index(position)?,
-            next_group,
-            sql_index(next_col)?,
-            next_width,
+            group,
+            sql_index(column)?,
+            width,
             id,
             page
         ])?;

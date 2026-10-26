@@ -1,3 +1,4 @@
+use crate::ui::menus::{PersistentContextMenu, PersistentMenuUi};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use eframe::egui::{self, Color32, FontId, RichText, Sense, Stroke, Ui, vec2};
 
@@ -557,7 +558,7 @@ pub fn show_property_type_selector_button(
                     .color(palette.muted),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.menu_button(
+                ui.persistent_menu_button(
                     RichText::new(format!("{icon}  {label}  ▸"))
                         .font(FontId::proportional(12.5))
                         .color(palette.text),
@@ -840,7 +841,7 @@ pub fn show(
                         });
                     }
 
-                    header_btn.context_menu(|ui| {
+                    header_btn.persistent_context_menu(|ui| {
                         show_section_context_menu(
                             ui,
                             page,
@@ -963,7 +964,7 @@ pub fn show(
                                 } else {
                                     palette.muted
                                 };
-                                let menu_resp = ui.menu_button(
+                                let menu_resp = ui.persistent_menu_button(
                                     RichText::new("+  Add property")
                                         .font(FontId::proportional(12.5))
                                         .color(text_color),
@@ -985,7 +986,7 @@ pub fn show(
                                 if menu_resp.inner.is_some() {
                                     is_now_open = true;
                                 }
-                                let ctx_resp = menu_resp.response.context_menu(|ui| {
+                                let ctx_resp = menu_resp.response.persistent_context_menu(|ui| {
                                     if let Some(ref record_ctx) = record_context {
                                         crate::ui::database::add_property_menu(
                                             ui,
@@ -1068,7 +1069,7 @@ fn show_section_context_menu(
     }
     ui.separator();
     if let Some(record_ctx) = record_context {
-        ui.menu_button("+  Add new property", |ui| {
+        ui.persistent_menu_button("+  Add new property", |ui| {
             crate::ui::database::add_property_menu(ui, record_ctx.data, intents);
         });
         if !record_ctx.data.properties.is_empty() {
@@ -1085,7 +1086,7 @@ fn show_section_context_menu(
             };
             for prop in &record_ctx.data.properties {
                 let icon = property_icon(&prop.kind);
-                ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                ui.persistent_menu_button(format!("{icon}  {}", prop.name), |ui| {
                     crate::ui::database::show_property_edit_menu(
                         ui,
                         prop,
@@ -1101,13 +1102,13 @@ fn show_section_context_menu(
             let total = properties.len();
             for (idx, prop) in properties.iter().enumerate() {
                 let icon = property_icon(&prop.kind);
-                ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                ui.persistent_menu_button(format!("{icon}  {}", prop.name), |ui| {
                     show_property_edit_panel(ui, page, prop, idx, total, busy, palette, intents);
                 });
             }
         }
     } else {
-        ui.menu_button("+  Add new property", |ui| {
+        ui.persistent_menu_button("+  Add new property", |ui| {
             show_add_property_panel(ui, page, scope_id, properties, busy, palette, intents);
         });
         if !properties.is_empty() {
@@ -1120,7 +1121,7 @@ fn show_section_context_menu(
             let total = properties.len();
             for (idx, prop) in properties.iter().enumerate() {
                 let icon = property_icon(&prop.kind);
-                ui.menu_button(format!("{icon}  {}", prop.name), |ui| {
+                ui.persistent_menu_button(format!("{icon}  {}", prop.name), |ui| {
                     show_property_edit_panel(ui, page, prop, idx, total, busy, palette, intents);
                 });
             }
@@ -1318,7 +1319,7 @@ fn show_property_header_button(
                 ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
                 ui.spacing_mut().button_padding = vec2(4.0, 3.0);
 
-                let menu_resp = ui.menu_button(
+                let menu_resp = ui.persistent_menu_button(
                     RichText::new(label_text)
                         .font(FontId::proportional(13.0))
                         .color(if row_hovered {
@@ -1339,7 +1340,7 @@ fn show_property_header_button(
                         property.name,
                         type_label(&property.kind)
                     ))
-                    .context_menu(|ui| {
+                    .persistent_context_menu(|ui| {
                         show_property_edit_panel(
                             ui, page, property, index, total, busy, palette, intents,
                         );
@@ -1449,7 +1450,7 @@ pub fn show_property_edit_panel(
                             let dot_color =
                                 option_base_color(palette, &property.kind, &opt.name, opt_color);
                             ui.horizontal(|ui| {
-                                ui.menu_button(
+                                ui.persistent_menu_button(
                                     RichText::new("●")
                                         .font(FontId::proportional(14.0))
                                         .color(dot_color),
@@ -1722,7 +1723,7 @@ fn show_single_option_editor(
         } else {
             Stroke::new(1.0, pill_border)
         };
-        ui.menu_button(
+        ui.persistent_menu_button(
             RichText::new(display_label)
                 .font(FontId::proportional(12.5))
                 .color(pill_text),
@@ -1745,7 +1746,7 @@ fn show_single_option_editor(
                         let dot_color =
                             option_base_color(palette, &property.kind, &option.name, opt_color);
                         ui.horizontal(|ui| {
-                            ui.menu_button(
+                            ui.persistent_menu_button(
                                 RichText::new("●")
                                     .font(FontId::proportional(13.0))
                                     .color(dot_color),
@@ -1891,7 +1892,7 @@ fn show_multi_option_editor(
                     updated.retain(|candidate| candidate != item);
                     set_value(intents, page, property.id, updated.join("|"));
                 }
-                resp.context_menu(|ui| {
+                resp.persistent_context_menu(|ui| {
                     show_color_palette_grid(ui, palette, item_color, |new_color| {
                         let mut opts = property.options.clone();
                         if let Some(target) = opts.iter_mut().find(|o| o.name == *item) {
@@ -1917,7 +1918,7 @@ fn show_multi_option_editor(
             ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
             ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
             ui.spacing_mut().button_padding = vec2(6.0, 2.0);
-            ui.menu_button(
+            ui.persistent_menu_button(
                 RichText::new(trigger_label)
                     .font(FontId::proportional(12.0))
                     .color(palette.muted),
@@ -1946,7 +1947,7 @@ fn show_multi_option_editor(
                             let dot_color =
                                 option_base_color(palette, "multi-select", &option.name, opt_color);
                             ui.horizontal(|ui| {
-                                ui.menu_button(
+                                ui.persistent_menu_button(
                                     RichText::new("●")
                                         .font(FontId::proportional(13.0))
                                         .color(dot_color),
@@ -2086,7 +2087,7 @@ fn show_date_editor(
         };
         ui.spacing_mut().button_padding = vec2(8.0, 3.0);
 
-        ui.menu_button(
+        ui.persistent_menu_button(
             RichText::new(btn_label)
                 .font(FontId::proportional(12.5))
                 .color(if has_date {

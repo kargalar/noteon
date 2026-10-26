@@ -94,7 +94,10 @@ pub fn normalize_web_url(raw: &str) -> String {
 
 pub fn classify_link(s: &str) -> Option<LinkType> {
     let trimmed = s.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") || trimmed.starts_with("www.") {
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("www.")
+    {
         return Some(LinkType::Web {
             url: normalize_web_url(trimmed),
         });
@@ -299,7 +302,8 @@ pub fn find_links_and_paths(text: &str) -> Vec<DetectedLink> {
             };
             let raw_token = &text[token_byte_start..token_byte_end];
 
-            if let Some((clean_token, leading_trim_bytes, link_type)) = parse_token_link(raw_token) {
+            if let Some((clean_token, leading_trim_bytes, link_type)) = parse_token_link(raw_token)
+            {
                 let leading_chars = raw_token[..leading_trim_bytes].chars().count();
                 let actual_start_char = start_scan + leading_chars;
                 let actual_end_char = actual_start_char + clean_token.chars().count();
@@ -477,4 +481,3 @@ mod tests {
         );
     }
 }
-

@@ -1,20 +1,25 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::domain::model::BlockKind;
+use crate::domain::model::{BlockKind, PROPERTY_TYPES};
 use crate::error::{Error, Result};
+
+const SCHEMA_VERSION: i32 = 15;
 
 pub fn migrate(connection: &Connection) -> Result<()> {
     let version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 14 {
+    if version > SCHEMA_VERSION {
         return Err(Error::Invalid(
             "This database was created with a newer version of Noteon.".into(),
         ));
     }
-    if version == 14 {
+    if version == SCHEMA_VERSION {
         return Ok(());
     }
     if version == 0 {
-        connection.execute_batch(include_str!("schema.sql"))?;
+        let schema = include_str!("schema.sql")
+            .replace("{{property_types}}", &property_type_values())
+            .replace("{{schema_version}}", &SCHEMA_VERSION.to_string());
+        connection.execute_batch(&schema)?;
         return Ok(());
     }
     if version == 1 {
@@ -195,6 +200,100 @@ pub fn migrate(connection: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    if version <= 14 {
+        migrate_property_types(connection)?;
+    }
+    Ok(())
+}
+
+fn property_type_values() -> String {
+    PROPERTY_TYPES
+        .iter()
+        .map(|(kind, _)| format!("'{}'", kind.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn migrate_property_types(connection: &Connection) -> Result<()> {
+    // Rebuild the parent tables with foreign keys disabled so dropping the old
+    // tables cannot cascade-delete their existing property values.
+    let foreign_keys: bool =
+        connection.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+    connection.pragma_update(None, "foreign_keys", false)?;
+    let result = (|| -> Result<()> {
+        let transaction = connection.unchecked_transaction()?;
+        for (table, owner_column, owner_table, index) in [
+            (
+                "database_properties",
+                "database_page_id",
+                "databases",
+                "database_properties_order",
+            ),
+            (
+                "custom_page_properties",
+                "page_id",
+                "pages",
+                "custom_page_properties_order",
+            ),
+        ] {
+            let exists: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                continue;
+            }
+            let sequence: i64 = transaction
+                .query_row(
+                    "SELECT seq FROM sqlite_sequence WHERE name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            let owner_key = if owner_table == "databases" {
+                "page_id"
+            } else {
+                "id"
+            };
+            transaction.execute_batch(&format!(
+                "CREATE TABLE {table}_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    {owner_column} INTEGER NOT NULL REFERENCES {owner_table}({owner_key}) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ({})),
+                    options TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL,
+                    UNIQUE({owner_column},name)
+                 );
+                 INSERT INTO {table}_new(id,{owner_column},name,kind,options,position)
+                 SELECT id,{owner_column},name,kind,options,position FROM {table};
+                 DROP TABLE {table};
+                 ALTER TABLE {table}_new RENAME TO {table};
+                 CREATE INDEX {index} ON {table}({owner_column},position);",
+                property_type_values(),
+            ))?;
+            transaction.execute(
+                "UPDATE sqlite_sequence SET seq=MAX(seq,?1) WHERE name=?2",
+                params![sequence, table],
+            )?;
+        }
+        if transaction
+            .prepare("PRAGMA foreign_key_check")?
+            .exists([])?
+        {
+            return Err(Error::Invalid(
+                "Property migration found invalid references.".into(),
+            ));
+        }
+        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        transaction.commit()?;
+        Ok(())
+    })();
+    let restore = connection.pragma_update(None, "foreign_keys", foreign_keys);
+    result?;
+    restore?;
     Ok(())
 }
 
@@ -245,6 +344,172 @@ fn imported_attachment_path(content: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_property_schema() -> String {
+        include_str!("schema.sql")
+            .replace(
+                "{{property_types}}",
+                "'text','number','date','status','select','multi-select','checkbox'",
+            )
+            .replace("{{schema_version}}", "14")
+    }
+
+    #[test]
+    fn failed_property_migration_rolls_back_and_restores_foreign_keys() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(&legacy_property_schema()).unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", false)
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO database_properties(database_page_id,name,kind,position)
+             VALUES(999,'Orphan','text',0);
+             PRAGMA foreign_keys=ON;",
+            )
+            .unwrap();
+
+        assert!(migrate(&connection).is_err());
+        let version: i32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 14);
+        let foreign_keys: bool = connection
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        assert!(foreign_keys);
+        let (schema, count): (String, i64) = connection.query_row(
+            "SELECT sql,(SELECT COUNT(*) FROM database_properties) FROM sqlite_master WHERE name='database_properties'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert!(!schema.contains("'email'"));
+        assert_eq!(count, 1);
+        let temporary_tables: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('database_properties_new','custom_page_properties_new')",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(temporary_tables, 0);
+    }
+
+    #[test]
+    fn all_property_types_work_in_new_and_migrated_workspaces_without_losing_values() {
+        use crate::storage::Repository;
+
+        for legacy in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("properties.sqlite");
+            let connection = Connection::open(&path).unwrap();
+            if legacy {
+                connection.execute_batch(&legacy_property_schema()).unwrap();
+            } else {
+                migrate(&connection).unwrap();
+            }
+            connection.execute_batch(
+                "INSERT INTO pages(id,title) VALUES(1,'Database'),(2,'Record'),(3,'Page');
+                 UPDATE pages SET parent_id=1 WHERE id=2;
+                 INSERT INTO databases(page_id) VALUES(1);
+                 INSERT INTO database_properties(id,database_page_id,name,kind,options,position)
+                 VALUES(7,1,'Existing select','select','Keep',0),(1000,1,'Deleted','text','',1);
+                 INSERT INTO page_property_values(page_id,property_id,value) VALUES(2,7,'Keep');
+                 DELETE FROM database_properties WHERE id=1000;
+                 INSERT INTO custom_page_properties(id,page_id,name,kind,position)
+                 VALUES(9,3,'Existing text','text',0),(2000,3,'Deleted','text',1);
+                 INSERT INTO custom_page_property_values(page_id,property_id,value) VALUES(3,9,'Saved text');
+                 DELETE FROM custom_page_properties WHERE id=2000;",
+            ).unwrap();
+            if legacy {
+                assert!(connection.execute(
+                    "INSERT INTO database_properties(database_page_id,name,kind,position) VALUES(1,'Email','email',1)", [],
+                ).is_err());
+            }
+            drop(connection);
+            let repository = Repository::open(&path).unwrap();
+            let database = repository.database(1).unwrap();
+            assert_eq!(database.properties[0].id, 7);
+            assert_eq!(database.properties[0].options[0].name, "Keep");
+            assert_eq!(database.rows[0].values[&7], "Keep");
+            let page_properties = repository.page_properties(3).unwrap();
+            assert_eq!(page_properties[0].id, 9);
+            assert_eq!(page_properties[0].value, "Saved text");
+
+            for (kind, label) in PROPERTY_TYPES {
+                repository
+                    .add_database_property(1, label, kind, &[])
+                    .unwrap();
+                repository.add_page_property(3, label, kind, &[]).unwrap();
+                repository.set_database_property_type(7, kind).unwrap();
+                repository.set_page_property_type(3, 9, kind).unwrap();
+            }
+            let database = repository.database(1).unwrap();
+            assert!(
+                database.properties[1..]
+                    .iter()
+                    .all(|property| property.id > 1000)
+            );
+            assert!(
+                repository.page_properties(3).unwrap()[1..]
+                    .iter()
+                    .all(|property| property.id > 2000)
+            );
+            assert!(
+                repository
+                    .add_database_property(1, "Invalid", "unknown", &[])
+                    .is_err()
+            );
+            assert!(
+                repository
+                    .connection
+                    .execute(
+                        "UPDATE database_properties SET kind='unknown' WHERE id=7",
+                        [],
+                    )
+                    .is_err()
+            );
+            assert!(
+                repository
+                    .connection
+                    .execute(
+                        "UPDATE custom_page_properties SET kind='unknown' WHERE id=9",
+                        [],
+                    )
+                    .is_err()
+            );
+            let foreign_keys: bool = repository
+                .connection
+                .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+                .unwrap();
+            assert!(foreign_keys);
+            assert!(
+                !repository
+                    .connection
+                    .prepare("PRAGMA foreign_key_check")
+                    .unwrap()
+                    .exists([])
+                    .unwrap()
+            );
+            repository.delete_database_property(7).unwrap();
+            repository.delete_page_property(3, 9).unwrap();
+            for table in ["page_property_values", "custom_page_property_values"] {
+                let count: i64 = repository
+                    .connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0);
+            }
+            drop(repository);
+            let reopened = Repository::open(&path).unwrap();
+            assert_eq!(
+                reopened.database(1).unwrap().properties.len(),
+                PROPERTY_TYPES.len()
+            );
+            assert_eq!(
+                reopened.page_properties(3).unwrap().len(),
+                PROPERTY_TYPES.len()
+            );
+        }
+    }
 
     #[test]
     fn migration_turns_existing_image_attachment_references_into_media_blocks() {

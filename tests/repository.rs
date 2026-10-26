@@ -10,6 +10,29 @@ fn database() -> (tempfile::TempDir, Repository) {
 }
 
 #[test]
+fn database_record_names_start_empty_and_persist_renames_without_another_record() {
+    let (_directory, mut repository) = database();
+    let database_id = repository.create_database(None).unwrap();
+    let record_id = repository.create_database_record(database_id).unwrap();
+    assert!(repository.page(record_id).unwrap().title.is_empty());
+
+    repository
+        .rename_database_record(record_id, "My record")
+        .unwrap();
+    let data = repository.database(database_id).unwrap();
+    assert_eq!(data.rows.len(), 1);
+    assert_eq!(data.rows[0].page.title, "My record");
+
+    repository.rename_database_record(record_id, "").unwrap();
+    assert!(
+        repository.database(database_id).unwrap().rows[0]
+            .page
+            .title
+            .is_empty()
+    );
+}
+
+#[test]
 fn databases_persist_views_properties_priorities_and_created_dates() {
     let (_directory, mut repository) = database();
     let database = repository.create_database(None).unwrap();
@@ -244,7 +267,7 @@ fn version_four_workspaces_migrate_custom_page_properties() {
     let version: i32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
 }
 
 #[test]
@@ -480,6 +503,90 @@ fn block_arrangement_detaches_only_the_requested_block_from_columns() {
             .outline
             .iter()
             .all(|block| block.column_width == 1.0)
+    );
+}
+
+#[test]
+fn columns_keep_independent_stacks_when_reordered_resized_and_reopened() {
+    let (directory, mut repository) = database();
+    let page = repository.create_page(None, "Independent columns").unwrap();
+    for position in 1..7 {
+        repository
+            .insert_block(page, position, BlockKind::Text)
+            .unwrap();
+    }
+    let ids: Vec<_> = repository
+        .blocks(page, 0, 10)
+        .unwrap()
+        .iter()
+        .map(|block| block.id)
+        .collect();
+    repository
+        .arrange_block(page, ids[1], ids[0], DropPlacement::Right)
+        .unwrap();
+    repository
+        .arrange_blocks(page, &ids[2..5], ids[1], DropPlacement::AfterInColumn)
+        .unwrap();
+    repository
+        .resize_columns(page, ids[0], 0, 0.35, 0.65)
+        .unwrap();
+    repository
+        .arrange_block(page, ids[4], ids[1], DropPlacement::BeforeInColumn)
+        .unwrap();
+    let outline = repository.document(page).unwrap().outline;
+    assert_eq!(
+        outline.iter().map(|block| block.id).collect::<Vec<_>>(),
+        [ids[0], ids[4], ids[1], ids[2], ids[3], ids[5], ids[6]]
+    );
+    assert_eq!(
+        outline
+            .iter()
+            .map(|block| block.column_index)
+            .collect::<Vec<_>>(),
+        [0, 1, 1, 1, 1, 0, 0]
+    );
+    assert!((outline[0].column_width - 0.35).abs() < 0.001);
+    assert!(
+        outline[1..5]
+            .iter()
+            .all(|block| (block.column_width - 0.65).abs() < 0.001)
+    );
+    // Adding another column must move the whole neighboring stack together.
+    repository
+        .arrange_block(page, ids[5], ids[2], DropPlacement::Right)
+        .unwrap();
+    let outline = repository.document(page).unwrap().outline;
+    assert_eq!(
+        outline
+            .iter()
+            .map(|block| block.column_index)
+            .collect::<Vec<_>>(),
+        [0, 1, 1, 1, 1, 2, 0]
+    );
+    // Removing one stacked block must not turn its siblings into separate columns.
+    repository
+        .arrange_block(page, ids[2], ids[6], DropPlacement::After)
+        .unwrap();
+    let outline = repository.document(page).unwrap().outline;
+    assert_eq!(
+        outline
+            .iter()
+            .map(|block| block.column_index)
+            .collect::<Vec<_>>(),
+        [0, 1, 1, 1, 2, 0, 0]
+    );
+    drop(repository);
+    let repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+    let reopened = repository.document(page).unwrap().outline;
+    assert_eq!(
+        reopened
+            .iter()
+            .map(|block| (block.id, block.column_group, block.column_index))
+            .collect::<Vec<_>>(),
+        outline
+            .iter()
+            .map(|block| (block.id, block.column_group, block.column_index))
+            .collect::<Vec<_>>()
     );
 }
 

@@ -248,7 +248,9 @@ impl Repository {
             let child_id_str = child_id.to_string();
 
             let has_matching_block = blocks.iter().any(|(_, _, kind, content)| {
-                if kind == "database" && content.trim() == child_id_str {
+                if matches!(kind.as_str(), "database" | "page_link")
+                    && content.trim() == child_id_str
+                {
                     true
                 } else if kind == "text" && content.trim_start().starts_with('↗') {
                     let block_target = content

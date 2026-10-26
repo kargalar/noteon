@@ -181,7 +181,7 @@ impl Repository {
             return Err(Error::Invalid("Database not found.".into()));
         }
         transaction.execute(
-            "INSERT INTO pages(parent_id,title,sort_order,created_at,updated_at) SELECT ?1,'New record',COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS ?1",
+            "INSERT INTO pages(parent_id,title,sort_order,created_at,updated_at) SELECT ?1,'',COALESCE(MAX(sort_order)+1,0),unixepoch(),unixepoch() FROM pages WHERE parent_id IS ?1",
             [database],
         )?;
         let page_id = transaction.last_insert_rowid();

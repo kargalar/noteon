@@ -3,6 +3,15 @@ use super::model::{Block, BlockKind};
 pub type MarkdownBlock = (BlockKind, String, bool);
 
 pub fn parse(source: &str) -> (String, Vec<MarkdownBlock>) {
+    parse_source(source, true)
+}
+
+/// Clipboard headings belong to the document body, including the first heading.
+pub fn parse_blocks(source: &str) -> Vec<MarkdownBlock> {
+    parse_source(source, false).1
+}
+
+fn parse_source(source: &str, extract_title: bool) -> (String, Vec<MarkdownBlock>) {
     let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
     let mut title = String::new();
     let mut blocks = Vec::new();
@@ -22,7 +31,8 @@ pub fn parse(source: &str) -> (String, Vec<MarkdownBlock>) {
             code = Some((fence_len, Vec::new()));
             continue;
         }
-        if blocks.is_empty()
+        if extract_title
+            && blocks.is_empty()
             && title.is_empty()
             && let Some(value) = line.strip_prefix("# ")
         {
@@ -98,6 +108,7 @@ pub fn render_block(block: &Block, numbered_index: usize) -> String {
             format!("{fence}\n{}\n{fence}\n\n", block.content)
         }
         BlockKind::Divider => "---\n\n".into(),
+        BlockKind::PageLink => format!("[Page](noteon://page/{})\n\n", block.content),
         BlockKind::Numbered => format!("{numbered_index}. {}\n\n", block.content),
         BlockKind::Quote | BlockKind::Callout => {
             let continuation = block.content.replace('\n', "\n> ");

@@ -96,6 +96,7 @@ impl Editor {
         }
         self.title_focus = !same_page && document.page.title.is_empty();
         self.document = Some(document);
+        self.column_resize_preview.clear();
         self.cache = BlockCache::default();
         self.generation = generation;
         self.focus_position = focus;
@@ -233,6 +234,17 @@ impl Editor {
             return empty_workspace(ui, palette);
         };
         let page_id = document.page.id;
+        if crate::ui::selection::select_all(
+            ui,
+            ui.id()
+                .with(("page-block-selection", page_id, widget_scope)),
+            false,
+        ) {
+            self.selected_blocks = document.outline.iter().map(|stub| stub.id).collect();
+            self.anchor_block = document.outline.first().map(|stub| stub.id);
+            self.focus_position = None;
+            self.title_focus = false;
+        }
         let record_properties = context
             .record_database_id
             .and_then(|database_id| context.databases.get(&database_id))
@@ -261,6 +273,33 @@ impl Editor {
             &self.history,
         );
         intents.extend(self.show_blocks(ui, canvas, palette, context));
+        if !ui.ctx().wants_keyboard_input()
+            && crate::ui::selection::is_active(
+                ui,
+                ui.id()
+                    .with(("page-block-selection", page_id, widget_scope)),
+            )
+            && let Some(document) = &self.document
+        {
+            let position = document
+                .outline
+                .iter()
+                .position(|stub| self.selected_blocks.contains(&stub.id))
+                .unwrap_or(document.outline.len());
+            let replace_block = self
+                .cache
+                .blocks
+                .get(&position)
+                .filter(|block| {
+                    block.kind == crate::domain::model::BlockKind::Text && block.content.is_empty()
+                })
+                .map(|block| block.id);
+            if let Some(action) =
+                crate::ui::page_transfer::take_paste(ui, page_id, Some(position), replace_block)
+            {
+                intents.push(Intent::Action(action));
+            }
+        }
         self.find.show_bar(
             ui,
             page_id,

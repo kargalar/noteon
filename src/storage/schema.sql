@@ -48,7 +48,7 @@ CREATE TABLE database_properties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     database_page_id INTEGER NOT NULL REFERENCES databases(page_id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('text','number','date','status','select','multi-select','checkbox')),
+    kind TEXT NOT NULL CHECK(kind IN ({{property_types}})),
     options TEXT NOT NULL DEFAULT '',
     position INTEGER NOT NULL,
     UNIQUE(database_page_id, name)
@@ -65,7 +65,7 @@ CREATE TABLE custom_page_properties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('text','number','date','status','select','multi-select','checkbox')),
+    kind TEXT NOT NULL CHECK(kind IN ({{property_types}})),
     options TEXT NOT NULL DEFAULT '',
     position INTEGER NOT NULL,
     UNIQUE(page_id, name)
@@ -103,5 +103,5 @@ CREATE TRIGGER blocks_au AFTER UPDATE OF content ON blocks WHEN old.content != n
     INSERT INTO block_search(block_search,rowid,content) VALUES('delete',old.id,old.content);
     INSERT INTO block_search(rowid,content) VALUES(new.id,new.content);
 END;
-PRAGMA user_version=14;
+PRAGMA user_version={{schema_version}};
 COMMIT;

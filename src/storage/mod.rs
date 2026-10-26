@@ -5,6 +5,7 @@ mod page_properties;
 mod pages;
 mod schema;
 mod search;
+mod transfers;
 
 use std::path::Path;
 use std::time::Duration;

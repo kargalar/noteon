@@ -2,6 +2,7 @@ use crate::config::UNTITLED;
 
 pub type PageId = i64;
 pub type BlockId = i64;
+pub type StyledBlockContent = (BlockKind, String, bool, Vec<TextStyleRange>);
 
 pub const PRIORITY_LABELS: [&str; 4] = ["None", "Low", "Medium", "High"];
 pub const DEFAULT_DATABASE_STATUS_OPTIONS: [&str; 3] = ["To do", "In progress", "Done"];
@@ -78,6 +79,7 @@ pub enum BlockKind {
     Database,
     Image,
     Video,
+    PageLink,
 }
 
 impl BlockKind {
@@ -111,10 +113,14 @@ impl BlockKind {
             Self::Database => "database",
             Self::Image => "image",
             Self::Video => "video",
+            Self::PageLink => "page_link",
         }
     }
 
     pub fn from_db(value: &str) -> Self {
+        if value == "page_link" {
+            return Self::PageLink;
+        }
         if value == "database" {
             return Self::Database;
         }
@@ -154,6 +160,7 @@ impl BlockKind {
             Self::Database => "Database",
             Self::Image => "Image",
             Self::Video => "Video",
+            Self::PageLink => "Page",
         }
     }
 
@@ -634,6 +641,8 @@ pub struct BlockStub {
 pub enum DropPlacement {
     Before,
     After,
+    BeforeInColumn,
+    AfterInColumn,
     Left,
     Right,
 }

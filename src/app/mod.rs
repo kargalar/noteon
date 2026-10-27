@@ -556,6 +556,15 @@ impl NoteonApp {
                 }
                 self.trashed_pages_history.retain(|group| !group.is_empty());
             }
+            Action::Undo
+            | Action::Redo => {
+                for page_id in self.editors.keys().copied().collect::<Vec<_>>() {
+                    self.saves.clear_page(page_id);
+                }
+                for editor in self.editors.values_mut() {
+                    editor.cache = crate::ui::editor::BlockCache::default();
+                }
+            }
             Action::UndoPage(page_id)
             | Action::RedoPage(page_id)
             | Action::RestorePageHistory { page: page_id, .. } => {
@@ -632,10 +641,8 @@ impl NoteonApp {
             for property in &database.properties {
                 self.database_property_drafts.remove(&property.id);
             }
-            if self.database_loading.insert(page) && !self.send(Request::Database(page)) {
-                self.database_loading.remove(&page);
-            }
-        } else {
+        }
+        if self.database_loading.insert(page) && !self.send(Request::Database(page)) {
             self.database_loading.remove(&page);
         }
     }
@@ -932,28 +939,12 @@ impl NoteonApp {
                 Intent::Back => self.navigate(-1),
                 Intent::Forward => self.navigate(1),
                 Intent::Undo => {
-                    let active_target = self.page_dialog.or(self.selected);
-                    if self.trash || active_target.is_none() {
-                        if let Some(trashed_ids) = self.trashed_pages_history.pop() {
-                            self.trashed_pages_redo.push(trashed_ids.clone());
-                            self.action(Action::RestorePages(trashed_ids));
-                        }
-                    } else if let Some(target) = active_target {
-                        self.flush(true);
-                        self.action(Action::UndoPage(target));
-                    }
+                    self.flush(true);
+                    self.action(Action::Undo);
                 }
                 Intent::Redo => {
-                    let active_target = self.page_dialog.or(self.selected);
-                    if self.trash || active_target.is_none() {
-                        if let Some(trashed_ids) = self.trashed_pages_redo.pop() {
-                            self.trashed_pages_history.push(trashed_ids.clone());
-                            self.action(Action::TrashPages(trashed_ids));
-                        }
-                    } else if let Some(target) = active_target {
-                        self.flush(true);
-                        self.action(Action::RedoPage(target));
-                    }
+                    self.flush(true);
+                    self.action(Action::Redo);
                 }
             }
         }

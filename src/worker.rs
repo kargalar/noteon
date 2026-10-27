@@ -30,6 +30,8 @@ pub enum Action {
     EmptyTrash,
     Restore(PageId),
     RestorePages(Vec<PageId>),
+    Undo,
+    Redo,
     UndoPage(PageId),
     RedoPage(PageId),
     RestorePageHistory {
@@ -375,6 +377,8 @@ pub enum Event {
     PageRedoEmpty {
         page_id: PageId,
     },
+    UndoEmpty,
+    RedoEmpty,
     Failed {
         operation: FailedOperation,
         message: String,
@@ -463,6 +467,7 @@ impl Worker {
                 }
                 let mut write_failed = false;
                 let mut page_histories: HashMap<PageId, PageHistory> = HashMap::new();
+                let mut global_history = GlobalHistory::default();
                 for request in requests {
                     let (operation, result) = match request {
                         Request::Shutdown => break,
@@ -543,7 +548,10 @@ impl Worker {
                                         } else {
                                             "Metin düzenlendi"
                                         };
-                                        history.push_undo(current_snap, desc);
+                                        if history.push_undo(current_snap, desc) {
+                                            global_history
+                                                .push_undo(GlobalUndoEntry::Page(page_id));
+                                        }
                                     }
                                 }
                                 history.last_save_time = Some(std::time::Instant::now());
@@ -579,7 +587,12 @@ impl Worker {
                                     "Save pending changes before continuing.".into(),
                                 ))
                             } else {
-                                perform_action(&mut repository, &mut page_histories, action)
+                                perform_action(
+                                    &mut repository,
+                                    &mut page_histories,
+                                    &mut global_history,
+                                    action,
+                                )
                             };
                             (FailedOperation::Action, result)
                         }
@@ -626,6 +639,90 @@ impl Drop for Worker {
 }
 
 const MAX_PAGE_HISTORY: usize = 10;
+const MAX_GLOBAL_HISTORY: usize = 50;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum GlobalUndoEntry {
+    Page(PageId),
+    Trash(Vec<PageId>),
+    Restore(Vec<PageId>),
+    CreateRecord(PageId),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GlobalUndoRecord {
+    pub(crate) entry: GlobalUndoEntry,
+    pub(crate) time: std::time::Instant,
+}
+
+#[derive(Default)]
+pub(crate) struct GlobalHistory {
+    pub(crate) undo_stack: Vec<GlobalUndoRecord>,
+    pub(crate) redo_stack: Vec<GlobalUndoRecord>,
+}
+
+impl GlobalHistory {
+    pub(crate) fn push_undo(&mut self, entry: GlobalUndoEntry) {
+        let now = std::time::Instant::now();
+        if let GlobalUndoEntry::Trash(new_ids) = &entry {
+            if let Some(last) = self.undo_stack.last_mut() {
+                if let GlobalUndoEntry::Trash(last_ids) = &mut last.entry {
+                    if last.time.elapsed() < std::time::Duration::from_millis(200) {
+                        for id in new_ids {
+                            if !last_ids.contains(id) {
+                                last_ids.push(*id);
+                            }
+                        }
+                        last.time = now;
+                        self.redo_stack.clear();
+                        return;
+                    }
+                }
+            }
+        }
+        self.undo_stack.push(GlobalUndoRecord { entry, time: now });
+        while self.undo_stack.len() > MAX_GLOBAL_HISTORY {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    pub(crate) fn push_redo(&mut self, entry: GlobalUndoEntry) {
+        self.redo_stack.push(GlobalUndoRecord {
+            entry,
+            time: std::time::Instant::now(),
+        });
+        while self.redo_stack.len() > MAX_GLOBAL_HISTORY {
+            self.redo_stack.remove(0);
+        }
+    }
+
+    pub(crate) fn push_undo_record(&mut self, entry: GlobalUndoEntry) {
+        self.undo_stack.push(GlobalUndoRecord {
+            entry,
+            time: std::time::Instant::now(),
+        });
+        while self.undo_stack.len() > MAX_GLOBAL_HISTORY {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    pub(crate) fn prune_page(&mut self, id: PageId) {
+        self.undo_stack.retain(|record| match &record.entry {
+            GlobalUndoEntry::Page(p) | GlobalUndoEntry::CreateRecord(p) => *p != id,
+            GlobalUndoEntry::Trash(ids) | GlobalUndoEntry::Restore(ids) => !ids.contains(&id),
+        });
+        self.redo_stack.retain(|record| match &record.entry {
+            GlobalUndoEntry::Page(p) | GlobalUndoEntry::CreateRecord(p) => *p != id,
+            GlobalUndoEntry::Trash(ids) | GlobalUndoEntry::Restore(ids) => !ids.contains(&id),
+        });
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+}
 
 #[derive(Clone, Debug)]
 struct PageHistoryEntry {
@@ -644,10 +741,10 @@ struct PageHistory {
 }
 
 impl PageHistory {
-    fn push_undo(&mut self, snapshot: PageSnapshot, description: impl Into<String>) {
+    fn push_undo(&mut self, snapshot: PageSnapshot, description: impl Into<String>) -> bool {
         if let Some(top) = self.undo_stack.last() {
             if top.snapshot == snapshot {
-                return;
+                return false;
             }
         }
         self.next_id += 1;
@@ -662,6 +759,7 @@ impl PageHistory {
             self.undo_stack.remove(0);
         }
         self.redo_stack.clear();
+        true
     }
 
     fn summaries(&self) -> Vec<crate::domain::model::PageHistorySummary> {
@@ -680,11 +778,14 @@ impl PageHistory {
 fn perform_action(
     repository: &mut Repository,
     page_histories: &mut HashMap<PageId, PageHistory>,
+    global_history: &mut GlobalHistory,
     action: Action,
 ) -> Result<Event> {
     let preserve_view = matches!(
         &action,
         Action::RestorePages(_)
+            | Action::Undo
+            | Action::Redo
             | Action::UndoPage(_)
             | Action::RedoPage(_)
             | Action::RestorePageHistory { .. }
@@ -725,13 +826,16 @@ fn perform_action(
         | Action::SetPagePropertyOptions { page, .. }
         | Action::DeletePageProperty { page, .. }
         | Action::SetPagePropertyValue { page, .. } => Some((*page, "Özellik düzenlendi")),
+        Action::RenameDatabaseRecord { page, .. } => Some((*page, "Kayıt adı değiştirildi")),
         _ => None,
     };
     if let Some((page_id, desc)) = action_info {
         let history = page_histories.entry(page_id).or_default();
         history.last_save_time = None;
         if let Ok(snapshot) = repository.page_snapshot(page_id) {
-            history.push_undo(snapshot, desc);
+            if history.push_undo(snapshot, desc) {
+                global_history.push_undo(GlobalUndoEntry::Page(page_id));
+            }
         }
     }
 
@@ -768,6 +872,7 @@ fn perform_action(
             let record = repository.create_database_record(database)?;
             refresh_database = Some(database);
             created_record = Some(record);
+            global_history.push_undo(GlobalUndoEntry::CreateRecord(record));
             None
         }
         Action::CreateDatabaseRecordWithProperty {
@@ -779,6 +884,7 @@ fn perform_action(
                 .create_database_record_with_property(database, Some((property, &value)))?;
             refresh_database = Some(database);
             created_record = Some(record);
+            global_history.push_undo(GlobalUndoEntry::CreateRecord(record));
             None
         }
         Action::ReorderDatabaseRecords {
@@ -1008,6 +1114,7 @@ fn perform_action(
             {
                 refresh_database = Some(parent_id);
             }
+            global_history.push_undo(GlobalUndoEntry::Trash(vec![id]));
             None
         }
         Action::TrashPages(ids) => {
@@ -1022,27 +1129,263 @@ fn perform_action(
             {
                 refresh_database = Some(parent_id);
             }
+            if !ids.is_empty() {
+                global_history.push_undo(GlobalUndoEntry::Trash(ids.clone()));
+            }
             None
         }
         Action::DeletePermanently(id) => {
             repository.delete_pages_permanently(&[id])?;
+            global_history.prune_page(id);
             None
         }
         Action::DeletePagesPermanently(ids) => {
             repository.delete_pages_permanently(&ids)?;
+            for &id in &ids {
+                global_history.prune_page(id);
+            }
             None
         }
         Action::EmptyTrash => {
             repository.empty_trash()?;
+            global_history.clear();
             None
         }
         Action::Restore(id) => {
             repository.restore_pages(&[id])?;
+            let parent = repository.page(id).ok().and_then(|p| p.parent_id);
+            if let Some(parent_id) = parent
+                && repository.page(parent_id).is_ok_and(|p| p.is_database)
+            {
+                refresh_database = Some(parent_id);
+            }
+            global_history.push_undo(GlobalUndoEntry::Restore(vec![id]));
             Some(id)
         }
         Action::RestorePages(ids) => {
             repository.restore_pages(&ids)?;
+            let parent = ids
+                .first()
+                .copied()
+                .and_then(|id| repository.page(id).ok())
+                .and_then(|p| p.parent_id);
+            if let Some(parent_id) = parent
+                && repository.page(parent_id).is_ok_and(|p| p.is_database)
+            {
+                refresh_database = Some(parent_id);
+            }
+            if !ids.is_empty() {
+                global_history.push_undo(GlobalUndoEntry::Restore(ids.clone()));
+            }
             ids.last().copied()
+        }
+        Action::Undo => {
+            let mut undone_page = None;
+            while let Some(record) = global_history.undo_stack.pop() {
+                match record.entry {
+                    GlobalUndoEntry::Page(page_id) => {
+                        let history = page_histories.entry(page_id).or_default();
+                        if let Some(prev) = history.undo_stack.pop() {
+                            if let Ok(current) = repository.page_snapshot(page_id) {
+                                history.next_id += 1;
+                                let now = chrono::Local::now().timestamp();
+                                history.redo_stack.push(PageHistoryEntry {
+                                    id: history.next_id,
+                                    description: prev.description.clone(),
+                                    timestamp: now,
+                                    snapshot: current,
+                                });
+                                while history.redo_stack.len() > MAX_PAGE_HISTORY {
+                                    history.redo_stack.remove(0);
+                                }
+                            }
+                            history.last_save_time = None;
+                            let _ = repository.restore_page_snapshot(&prev.snapshot)?;
+                            global_history.push_redo(GlobalUndoEntry::Page(page_id));
+                            if let Ok(p) = repository.page(page_id) {
+                                if p.is_database {
+                                    refresh_database = Some(page_id);
+                                } else if let Some(parent) = p.parent_id {
+                                    if repository.page(parent).is_ok_and(|pp| pp.is_database) {
+                                        refresh_database = Some(parent);
+                                    }
+                                }
+                            }
+                            undone_page = Some(page_id);
+                            break;
+                        }
+                    }
+                    GlobalUndoEntry::Trash(ids) => {
+                        let valid_ids: Vec<PageId> = ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| repository.page(id).is_ok())
+                            .collect();
+                        if !valid_ids.is_empty() {
+                            repository.restore_pages(&valid_ids)?;
+                            for &id in &valid_ids {
+                                if let Ok(p) = repository.page(id) {
+                                    if p.is_database {
+                                        refresh_database = Some(id);
+                                    } else if let Some(parent) = p.parent_id {
+                                        if repository.page(parent).is_ok_and(|pp| pp.is_database) {
+                                            refresh_database = Some(parent);
+                                        }
+                                    }
+                                }
+                            }
+                            undone_page = valid_ids.last().copied();
+                            global_history.push_redo(GlobalUndoEntry::Trash(valid_ids));
+                            break;
+                        }
+                    }
+                    GlobalUndoEntry::Restore(ids) => {
+                        let valid_ids: Vec<PageId> = ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| repository.page(id).is_ok())
+                            .collect();
+                        if !valid_ids.is_empty() {
+                            for &id in &valid_ids {
+                                if let Ok(p) = repository.page(id) {
+                                    if p.is_database {
+                                        refresh_database = Some(id);
+                                    } else if let Some(parent) = p.parent_id {
+                                        if repository.page(parent).is_ok_and(|pp| pp.is_database) {
+                                            refresh_database = Some(parent);
+                                        }
+                                    }
+                                }
+                            }
+                            repository.trash_pages(&valid_ids)?;
+                            global_history.push_redo(GlobalUndoEntry::Restore(valid_ids));
+                            undone_page = None;
+                            break;
+                        }
+                    }
+                    GlobalUndoEntry::CreateRecord(record_id) => {
+                        if let Ok(p) = repository.page(record_id) {
+                            if let Some(parent_id) = p.parent_id
+                                && repository.page(parent_id).is_ok_and(|pp| pp.is_database)
+                            {
+                                refresh_database = Some(parent_id);
+                            }
+                            repository.trash_pages(&[record_id])?;
+                            global_history.push_redo(GlobalUndoEntry::CreateRecord(record_id));
+                            undone_page = None;
+                            break;
+                        }
+                    }
+                }
+            }
+            if undone_page.is_none() && refresh_database.is_none() {
+                return Ok(Event::UndoEmpty);
+            }
+            undone_page
+        }
+        Action::Redo => {
+            let mut redone_page = None;
+            while let Some(record) = global_history.redo_stack.pop() {
+                match record.entry {
+                    GlobalUndoEntry::Page(page_id) => {
+                        let history = page_histories.entry(page_id).or_default();
+                        if let Some(next) = history.redo_stack.pop() {
+                            if let Ok(current) = repository.page_snapshot(page_id) {
+                                history.next_id += 1;
+                                let now = chrono::Local::now().timestamp();
+                                history.undo_stack.push(PageHistoryEntry {
+                                    id: history.next_id,
+                                    description: next.description.clone(),
+                                    timestamp: now,
+                                    snapshot: current,
+                                });
+                                while history.undo_stack.len() > MAX_PAGE_HISTORY {
+                                    history.undo_stack.remove(0);
+                                }
+                            }
+                            history.last_save_time = None;
+                            let _ = repository.restore_page_snapshot(&next.snapshot)?;
+                            global_history.push_undo_record(GlobalUndoEntry::Page(page_id));
+                            if let Ok(p) = repository.page(page_id) {
+                                if p.is_database {
+                                    refresh_database = Some(page_id);
+                                } else if let Some(parent) = p.parent_id {
+                                    if repository.page(parent).is_ok_and(|pp| pp.is_database) {
+                                        refresh_database = Some(parent);
+                                    }
+                                }
+                            }
+                            redone_page = Some(page_id);
+                            break;
+                        }
+                    }
+                    GlobalUndoEntry::Trash(ids) => {
+                        let valid_ids: Vec<PageId> = ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| repository.page(id).is_ok())
+                            .collect();
+                        if !valid_ids.is_empty() {
+                            for &id in &valid_ids {
+                                if let Ok(p) = repository.page(id) {
+                                    if p.is_database {
+                                        refresh_database = Some(id);
+                                    } else if let Some(parent) = p.parent_id {
+                                        if repository.page(parent).is_ok_and(|pp| pp.is_database) {
+                                            refresh_database = Some(parent);
+                                        }
+                                    }
+                                }
+                            }
+                            repository.trash_pages(&valid_ids)?;
+                            global_history.push_undo_record(GlobalUndoEntry::Trash(valid_ids));
+                            redone_page = None;
+                            break;
+                        }
+                    }
+                    GlobalUndoEntry::Restore(ids) => {
+                        let valid_ids: Vec<PageId> = ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| repository.page(id).is_ok())
+                            .collect();
+                        if !valid_ids.is_empty() {
+                            repository.restore_pages(&valid_ids)?;
+                            for &id in &valid_ids {
+                                if let Ok(p) = repository.page(id) {
+                                    if p.is_database {
+                                        refresh_database = Some(id);
+                                    } else if let Some(parent) = p.parent_id {
+                                        if repository.page(parent).is_ok_and(|pp| pp.is_database) {
+                                            refresh_database = Some(parent);
+                                        }
+                                    }
+                                }
+                            }
+                            redone_page = valid_ids.last().copied();
+                            global_history.push_undo_record(GlobalUndoEntry::Restore(valid_ids));
+                            break;
+                        }
+                    }
+                    GlobalUndoEntry::CreateRecord(record_id) => {
+                        if let Ok(p) = repository.page(record_id) {
+                            if let Some(parent_id) = p.parent_id
+                                && repository.page(parent_id).is_ok_and(|pp| pp.is_database)
+                            {
+                                refresh_database = Some(parent_id);
+                            }
+                            repository.restore_pages(&[record_id])?;
+                            global_history.push_undo_record(GlobalUndoEntry::CreateRecord(record_id));
+                            redone_page = Some(record_id);
+                            break;
+                        }
+                    }
+                }
+            }
+            if redone_page.is_none() && refresh_database.is_none() {
+                return Ok(Event::RedoEmpty);
+            }
+            redone_page
         }
         Action::UndoPage(page_id) => {
             let history = page_histories.entry(page_id).or_default();
@@ -1351,6 +1694,7 @@ fn perform_action(
         Action::RestoreSnapshot(path) => {
             repository.restore_from(&path)?;
             page_histories.clear();
+            global_history.clear();
             notice = Some("AI changes undone.".into());
             None
         }
@@ -1465,9 +1809,11 @@ mod tests {
         let database = repository.create_database(None).unwrap();
         let first = repository.create_database_record(database).unwrap();
         let mut histories = HashMap::new();
+        let mut global_history = GlobalHistory::default();
         let event = perform_action(
             &mut repository,
             &mut histories,
+            &mut global_history,
             Action::CreateDatabaseRecordInline(database),
         )
         .unwrap();
@@ -1487,6 +1833,7 @@ mod tests {
         let event = perform_action(
             &mut repository,
             &mut histories,
+            &mut global_history,
             Action::ReorderDatabaseRecords {
                 database,
                 records: vec![record.page.id],
@@ -1512,6 +1859,7 @@ mod tests {
         let first = repository.create_database_record(database).unwrap();
         let second = repository.create_database_record(database).unwrap();
         let mut histories = HashMap::new();
+        let mut global_history = GlobalHistory::default();
 
         for records in [vec![first], vec![first, second]] {
             for action in [
@@ -1521,7 +1869,13 @@ mod tests {
                 Action::RestorePages(records.clone()),
             ] {
                 let restoring = matches!(&action, Action::RestorePages(_));
-                let event = perform_action(&mut repository, &mut histories, action).unwrap();
+                let event = perform_action(
+                    &mut repository,
+                    &mut histories,
+                    &mut global_history,
+                    action,
+                )
+                .unwrap();
                 let Event::ActionDone {
                     preserve_view,
                     refresh_database,
@@ -1561,6 +1915,7 @@ mod tests {
             let mut history = PageHistory::default();
             history.push_undo(original, "Title changed");
             let mut histories = HashMap::from([(page, history)]);
+            let mut global_history = GlobalHistory::default();
             repository
                 .rename_database_record(page, "Changed title")
                 .unwrap();
@@ -1577,7 +1932,13 @@ mod tests {
                         original_title.as_str(),
                     ),
                 };
-                let event = perform_action(&mut repository, &mut histories, action).unwrap();
+                let event = perform_action(
+                    &mut repository,
+                    &mut histories,
+                    &mut global_history,
+                    action,
+                )
+                .unwrap();
                 let Event::ActionDone {
                     document: Some(document),
                     preserve_view,
@@ -1623,10 +1984,12 @@ mod tests {
             .unwrap()
             .id;
         let mut histories = HashMap::new();
+        let mut global_history = GlobalHistory::default();
         for value in ["1", "12", "-4", ""] {
             let event = perform_action(
                 &mut repository,
                 &mut histories,
+                &mut global_history,
                 Action::SetDatabaseProperty {
                     page,
                     property,
@@ -1733,5 +2096,116 @@ mod tests {
         history.push_undo(snapshot, "Change 2");
         assert_eq!(history.undo_stack.len(), 1);
         assert_eq!(history.undo_stack[0].description, "Change 1");
+    }
+
+    #[test]
+    fn global_undo_redo_handles_block_move_and_table_deletion() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+        let page = repository.create_page(None, "My Page").unwrap();
+        let block1 = repository.insert_block(page, 0, BlockKind::Text).unwrap();
+        let block2 = repository.insert_block(page, 1, BlockKind::Text).unwrap();
+
+        let database = repository.create_database(Some(page)).unwrap();
+        let record = repository.create_database_record(database).unwrap();
+
+        let mut histories = HashMap::new();
+        let mut global_history = GlobalHistory::default();
+
+        // Step 1: Move block1 after block2
+        let event = perform_action(
+            &mut repository,
+            &mut histories,
+            &mut global_history,
+            Action::ArrangeBlock {
+                page,
+                source: block1,
+                target: block2,
+                placement: DropPlacement::After,
+            },
+        )
+        .unwrap();
+        assert!(matches!(event, Event::ActionDone { .. }));
+        assert_eq!(repository.block_position(block1).unwrap(), Some(1));
+
+        // Step 2: Delete/trash record from database table
+        let event = perform_action(
+            &mut repository,
+            &mut histories,
+            &mut global_history,
+            Action::Trash(record),
+        )
+        .unwrap();
+        assert!(matches!(event, Event::ActionDone { .. }));
+        assert_eq!(repository.database(database).unwrap().rows.len(), 0);
+
+        // Step 3: 1st Undo -> restores the table item!
+        let event = perform_action(
+            &mut repository,
+            &mut histories,
+            &mut global_history,
+            Action::Undo,
+        )
+        .unwrap();
+        let Event::ActionDone {
+            refresh_database,
+            ..
+        } = event else {
+            panic!("expected ActionDone on undo");
+        };
+        assert_eq!(refresh_database, Some(database));
+        assert_eq!(repository.database(database).unwrap().rows.len(), 1);
+        assert_eq!(repository.database(database).unwrap().rows[0].page.id, record);
+        // Block is still at position 1 (not yet undone)
+        assert_eq!(repository.block_position(block1).unwrap(), Some(1));
+
+        // Step 4: 2nd Undo -> undoes the block move!
+        let event = perform_action(
+            &mut repository,
+            &mut histories,
+            &mut global_history,
+            Action::Undo,
+        )
+        .unwrap();
+        let Event::ActionDone {
+            document: Some(doc),
+            ..
+        } = event else {
+            panic!("expected ActionDone with document on second undo");
+        };
+        assert_eq!(doc.page.id, page);
+        // Block1 is back at position 0!
+        assert_eq!(repository.block_position(block1).unwrap(), Some(0));
+        // Table item is still present!
+        assert_eq!(repository.database(database).unwrap().rows.len(), 1);
+
+        // Step 5: 1st Redo -> re-applies the block move!
+        let event = perform_action(
+            &mut repository,
+            &mut histories,
+            &mut global_history,
+            Action::Redo,
+        )
+        .unwrap();
+        assert!(matches!(event, Event::ActionDone { .. }));
+        assert_eq!(repository.block_position(block1).unwrap(), Some(1));
+        assert_eq!(repository.database(database).unwrap().rows.len(), 1);
+
+        // Step 6: 2nd Redo -> re-trashes the table record!
+        let event = perform_action(
+            &mut repository,
+            &mut histories,
+            &mut global_history,
+            Action::Redo,
+        )
+        .unwrap();
+        let Event::ActionDone {
+            refresh_database,
+            ..
+        } = event else {
+            panic!("expected ActionDone on second redo");
+        };
+        assert_eq!(refresh_database, Some(database));
+        assert_eq!(repository.database(database).unwrap().rows.len(), 0);
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::ui::palette::Palette;
-use crate::worker::{Action, Event, FailedOperation};
+use crate::worker::{Event, FailedOperation};
 use eframe::egui;
 
 use super::NoteonApp;
@@ -382,19 +382,11 @@ impl NoteonApp {
                     }
                     self.error = Some(message);
                 }
-                Event::PageUndoEmpty { page_id: _ } => {
+                Event::UndoEmpty
+                | Event::RedoEmpty
+                | Event::PageUndoEmpty { page_id: _ }
+                | Event::PageRedoEmpty { page_id: _ } => {
                     self.busy = false;
-                    if let Some(trashed_ids) = self.trashed_pages_history.pop() {
-                        self.trashed_pages_redo.push(trashed_ids.clone());
-                        self.action(Action::RestorePages(trashed_ids));
-                    }
-                }
-                Event::PageRedoEmpty { page_id: _ } => {
-                    self.busy = false;
-                    if let Some(trashed_ids) = self.trashed_pages_redo.pop() {
-                        self.trashed_pages_history.push(trashed_ids.clone());
-                        self.action(Action::TrashPages(trashed_ids));
-                    }
                 }
                 _ => {}
             }

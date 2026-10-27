@@ -386,9 +386,11 @@ fn delete_selected_table_rows(ui: &Ui, data: &DatabaseData, intents: &mut Vec<In
     } else {
         focused_row.or(hovered_row).into_iter().collect()
     };
-    if !targets.is_empty()
-        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
-    {
+    let delete_pressed = ui.input_mut(|input| {
+        input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+    });
+    if !targets.is_empty() && delete_pressed {
         for page in targets {
             intents.push(Intent::Action(Action::Trash(page)));
         }

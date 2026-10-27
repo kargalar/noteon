@@ -17,7 +17,9 @@ const SETTINGS_FILE: &str = "assistant.json";
 const HISTORY_LIMIT: usize = 12;
 const LIVE_REFRESH_INTERVAL: Duration = Duration::from_millis(2000);
 const READ_ONLY_TOOLS: [&str; 4] = ["list_pages", "search_notes", "read_page", "get_database"];
-pub const EFFORT_LEVELS: [&str; 4] = ["", "low", "medium", "high"];
+pub const DEFAULT_MODEL: &str = "gpt-6-luna";
+pub const DEFAULT_EFFORT: &str = "high";
+pub const EFFORT_LEVELS: [&str; 3] = ["low", "medium", "high"];
 
 const SYSTEM_PREAMBLE: &str = "You are the Noteon Assistant, built into the user's local notes app Noteon. \
 Use ONLY the `noteon` MCP tools to read and change the workspace (pages, blocks, tables/databases). \
@@ -44,11 +46,53 @@ pub struct ChatMessage {
     pub text: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AssistantSettings {
     pub model: String,
     pub effort: String,
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        Self {
+            model: DEFAULT_MODEL.to_string(),
+            effort: DEFAULT_EFFORT.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodexQuota {
+    pub remaining_percent: f32,
+    pub resets_at: Option<i64>,
+    pub plan_type: Option<String>,
+}
+
+impl CodexQuota {
+    pub fn compact_label(&self) -> String {
+        let remaining = self.remaining_percent.round().clamp(0.0, 100.0) as u32;
+        match self.reset_countdown() {
+            Some(countdown) => format!("Codex {remaining}% left · resets in {countdown}"),
+            None => format!("Codex {remaining}% left"),
+        }
+    }
+
+    fn reset_countdown(&self) -> Option<String> {
+        let resets_at = self.resets_at?;
+        let now = chrono::Utc::now().timestamp();
+        let remaining_secs = (resets_at - now).max(0);
+        let days = remaining_secs / 86_400;
+        let hours = (remaining_secs % 86_400) / 3600;
+        let minutes = (remaining_secs % 3600) / 60;
+        if days > 0 {
+            Some(format!("{days}d {hours}h"))
+        } else if hours > 0 {
+            Some(format!("{hours}h {minutes}m"))
+        } else {
+            Some(format!("{minutes}m"))
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +110,7 @@ pub struct Assistant {
     pub input: String,
     pub messages: Vec<ChatMessage>,
     pub settings: AssistantSettings,
+    pub quota: Option<CodexQuota>,
     handle: Option<RunHandle>,
     snapshots: Vec<PathBuf>,
     current_snapshot: Option<PathBuf>,
@@ -76,12 +121,20 @@ pub struct Assistant {
 
 impl Assistant {
     pub fn load(data_directory: &Path) -> Self {
-        let settings = std::fs::read_to_string(data_directory.join(SETTINGS_FILE))
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default();
+        let mut settings: AssistantSettings =
+            std::fs::read_to_string(data_directory.join(SETTINGS_FILE))
+                .ok()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default();
+        if settings.model.trim().is_empty() {
+            settings.model = DEFAULT_MODEL.to_string();
+        }
+        if settings.effort.trim().is_empty() {
+            settings.effort = DEFAULT_EFFORT.to_string();
+        }
         Self {
             settings,
+            quota: runner::read_latest_quota(),
             ..Self::default()
         }
     }
@@ -198,8 +251,14 @@ impl Assistant {
             RunEvent::Thinking => {}
             RunEvent::ToolCall(name) => self.record_tool_call(&name),
             RunEvent::Message(text) => self.note(Role::Assistant, text),
+            RunEvent::Quota(quota) => self.quota = Some(quota),
             RunEvent::Finished(result) => {
                 self.finish_run(result);
+                if self.quota.is_none()
+                    && let Some(quota) = runner::read_latest_quota()
+                {
+                    self.quota = Some(quota);
+                }
                 return true;
             }
         }

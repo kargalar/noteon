@@ -21,6 +21,7 @@ pub enum RunEvent {
     Thinking,
     ToolCall(String),
     Message(String),
+    Quota(super::CodexQuota),
     Finished(std::result::Result<(), String>),
 }
 
@@ -83,7 +84,11 @@ fn run(
     *shared.lock().map_err(|_| Error::WorkerUnavailable)? = Some(child);
     let outcome = read_events(stdout, sender, &request.context);
     let status = wait_for_exit(shared)?;
-    match (outcome, status) {
+    if let Some(quota) = outcome.thread_id.as_deref().and_then(consume_thread_quota) {
+        let _ = sender.send(RunEvent::Quota(quota));
+        request.context.request_repaint();
+    }
+    match (outcome.failure, status) {
         (Some(message), _) => Err(Error::Invalid(message)),
         (None, false) => Err(Error::Invalid("Codex stopped before finishing.".into())),
         (None, true) => Ok(()),
@@ -135,20 +140,24 @@ fn spawn_codex(request: &RunRequest) -> Result<Child> {
             "--skip-git-repo-check",
             "--ignore-user-config",
         ])
-        .args(["--ignore-rules", "--ephemeral", "-s", "read-only"])
+        .args(["--ignore-rules", "-s", "read-only"])
         .args(["--disable", "apps", "--disable", "plugins"])
         .arg("-C")
         .arg(&request.data_directory)
         .args(config_overrides(&executable, &request.data_directory));
-    if !request.model.trim().is_empty() {
-        command.args(["-m", request.model.trim()]);
-    }
-    if !request.effort.trim().is_empty() {
-        command.args([
-            "-c",
-            &format!("model_reasoning_effort=\"{}\"", request.effort.trim()),
-        ]);
-    }
+    let model = if request.model.trim().is_empty() {
+        super::DEFAULT_MODEL
+    } else {
+        request.model.trim()
+    };
+    let effort = if request.effort.trim().is_empty() {
+        super::DEFAULT_EFFORT
+    } else {
+        request.effort.trim()
+    };
+    command
+        .args(["-m", model])
+        .args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
     command
         .arg("-")
         .stdin(Stdio::piped())
@@ -195,6 +204,9 @@ pub fn locate_codex() -> PathBuf {
     if let Some(path) = std::env::var_os(CODEX_OVERRIDE_ENV) {
         return PathBuf::from(path);
     }
+    if let Some(desktop) = find_desktop_codex() {
+        return desktop;
+    }
     let directories: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).collect())
         .unwrap_or_default();
@@ -208,6 +220,22 @@ pub fn locate_codex() -> PathBuf {
         }
     }
     PathBuf::from("codex")
+}
+
+fn find_desktop_codex() -> Option<PathBuf> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+    let bin_root = PathBuf::from(local_app_data).join("OpenAI/Codex/bin");
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(bin_root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let binary = entry.path().join("codex.exe");
+            let modified = binary.metadata().ok()?.modified().ok()?;
+            Some((modified, binary))
+        })
+        .collect();
+    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.into_iter().map(|(_, path)| path).next()
 }
 
 fn find_npm_native(npm_directory: &Path) -> Option<PathBuf> {
@@ -227,12 +255,20 @@ fn find_npm_native(npm_directory: &Path) -> Option<PathBuf> {
         })
 }
 
+struct StreamOutcome {
+    failure: Option<String>,
+    thread_id: Option<String>,
+}
+
 fn read_events(
     stdout: impl std::io::Read,
     sender: &Sender<RunEvent>,
     context: &egui::Context,
-) -> Option<String> {
-    let mut failure = None;
+) -> StreamOutcome {
+    let mut outcome = StreamOutcome {
+        failure: None,
+        thread_id: None,
+    };
     for line in BufReader::new(stdout)
         .lines()
         .map_while(std::result::Result::ok)
@@ -240,15 +276,104 @@ fn read_events(
         let Ok(event) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if event.get("type").and_then(Value::as_str) == Some("thread.started")
+            && let Some(id) = event.get("thread_id").and_then(Value::as_str)
+        {
+            outcome.thread_id = Some(id.to_string());
+        }
         if let Some(message) = failure_message(&event) {
-            failure = Some(message);
+            outcome.failure = Some(message);
         }
         if let Some(run_event) = translate_event(&event) {
             let _ = sender.send(run_event);
             context.request_repaint();
         }
     }
-    failure
+    outcome
+}
+
+pub fn read_latest_quota() -> Option<super::CodexQuota> {
+    let sessions = codex_sessions_dir()?;
+    let mut files = collect_jsonl_files(&sessions);
+    files.sort_by(|left, right| right.0.cmp(&left.0));
+    files
+        .into_iter()
+        .take(5)
+        .find_map(|(_, path)| parse_quota_from_file(&path))
+}
+
+fn consume_thread_quota(thread_id: &str) -> Option<super::CodexQuota> {
+    let sessions = codex_sessions_dir()?;
+    let path = collect_jsonl_files(&sessions)
+        .into_iter()
+        .map(|(_, path)| path)
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(thread_id))
+        })?;
+    let quota = parse_quota_from_file(&path);
+    let _ = std::fs::remove_file(path);
+    quota
+}
+
+fn codex_sessions_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(|dir| PathBuf::from(dir).join(".codex"))
+        })?;
+    Some(home.join("sessions"))
+}
+
+fn collect_jsonl_files(root: &Path) -> Vec<(std::time::SystemTime, PathBuf)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                && let Ok(meta) = entry.metadata()
+                && let Ok(modified) = meta.modified()
+            {
+                out.push((modified, path));
+            }
+        }
+    }
+    out
+}
+
+fn parse_quota_from_file(path: &Path) -> Option<super::CodexQuota> {
+    let content = std::fs::read_to_string(path).ok()?;
+    content
+        .lines()
+        .rev()
+        .find(|line| line.contains("\"rate_limits\""))
+        .and_then(parse_quota_line)
+}
+
+fn parse_quota_line(line: &str) -> Option<super::CodexQuota> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let limits = value.pointer("/payload/rate_limits")?;
+    let primary = limits.get("primary")?;
+    let used = primary.get("used_percent")?.as_f64()? as f32;
+    let resets_at = primary.get("resets_at").and_then(Value::as_i64);
+    let plan_type = limits
+        .get("plan_type")
+        .and_then(Value::as_str)
+        .map(String::from);
+    Some(super::CodexQuota {
+        remaining_percent: (100.0 - used).clamp(0.0, 100.0),
+        resets_at,
+        plan_type,
+    })
 }
 
 fn failure_message(event: &Value) -> Option<String> {
@@ -303,5 +428,14 @@ mod tests {
     fn extracts_readable_failure() {
         let event = json!({ "type": "turn.failed", "error": { "message": "{\"error\":{\"message\":\"nope\"}}" } });
         assert_eq!(failure_message(&event).as_deref(), Some("nope"));
+    }
+
+    #[test]
+    fn parses_quota_from_rollout_event() {
+        let line = r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"plan_type":"plus","primary":{"used_percent":94.0,"resets_at":1793603402}}}}"#;
+        let quota = parse_quota_line(line).unwrap();
+        assert_eq!(quota.remaining_percent, 6.0);
+        assert_eq!(quota.resets_at, Some(1793603402));
+        assert_eq!(quota.plan_type.as_deref(), Some("plus"));
     }
 }

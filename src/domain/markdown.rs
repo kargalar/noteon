@@ -1,4 +1,6 @@
-use super::model::{Block, BlockKind};
+use super::model::{
+    Block, BlockKind, InlineFontFamily, InlineTextStyle, StyledBlockContent, TextStyleRange,
+};
 
 pub type MarkdownBlock = (BlockKind, String, bool);
 
@@ -9,6 +11,174 @@ pub fn parse(source: &str) -> (String, Vec<MarkdownBlock>) {
 /// Clipboard headings belong to the document body, including the first heading.
 pub fn parse_blocks(source: &str) -> Vec<MarkdownBlock> {
     parse_source(source, false).1
+}
+
+pub fn parse_styled_blocks(source: &str) -> Vec<StyledBlockContent> {
+    parse_blocks(source)
+        .into_iter()
+        .map(|(kind, content, checked)| {
+            if kind == BlockKind::Code {
+                (kind, content, checked, Vec::new())
+            } else {
+                let (plain, styles) = parse_inline_styles(&content);
+                (kind, plain, checked, styles)
+            }
+        })
+        .collect()
+}
+
+pub fn parse_inline_styles(source: &str) -> (String, Vec<TextStyleRange>) {
+    let chars: Vec<char> = source.chars().collect();
+    let mut plain = String::new();
+    let mut plain_len = 0usize;
+    let mut ranges = Vec::new();
+    let mut index = 0usize;
+    while index < chars.len() {
+        if let Some((marker_len, end_idx, style)) = match_inline_token(&chars, index) {
+            let inner: String = chars[index + marker_len..end_idx].iter().collect();
+            let (inner_plain, inner_ranges) =
+                if style.font_family == Some(InlineFontFamily::Monospace) {
+                    (inner, Vec::new())
+                } else {
+                    parse_inline_styles(&inner)
+                };
+            let span_len = inner_plain.chars().count();
+            if span_len > 0 {
+                let start = plain_len;
+                plain.push_str(&inner_plain);
+                plain_len += span_len;
+                ranges.push(TextStyleRange {
+                    start,
+                    end: plain_len,
+                    style: style.clone(),
+                });
+                for mut nested in inner_ranges {
+                    nested.start += start;
+                    nested.end += start;
+                    nested.style = merge_style(&style, &nested.style);
+                    ranges.push(nested);
+                }
+            }
+            index = end_idx + marker_len;
+        } else {
+            plain.push(chars[index]);
+            plain_len += 1;
+            index += 1;
+        }
+    }
+    (plain, ranges)
+}
+
+fn merge_style(base: &InlineTextStyle, nested: &InlineTextStyle) -> InlineTextStyle {
+    InlineTextStyle {
+        bold: base.bold || nested.bold,
+        italic: base.italic || nested.italic,
+        underline: base.underline || nested.underline,
+        strikethrough: base.strikethrough || nested.strikethrough,
+        font_family: nested.font_family.or(base.font_family),
+        foreground: nested.foreground.or(base.foreground),
+        background: nested.background.or(base.background),
+    }
+}
+
+fn match_inline_token(chars: &[char], start: usize) -> Option<(usize, usize, InlineTextStyle)> {
+    const TOKENS: &[(&[char], InlineTextStyle)] = &[
+        (
+            &['*', '*', '*'],
+            InlineTextStyle {
+                bold: true,
+                italic: true,
+                underline: false,
+                strikethrough: false,
+                font_family: None,
+                foreground: None,
+                background: None,
+            },
+        ),
+        (
+            &['*', '*'],
+            InlineTextStyle {
+                bold: true,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+                font_family: None,
+                foreground: None,
+                background: None,
+            },
+        ),
+        (
+            &['_', '_'],
+            InlineTextStyle {
+                bold: true,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+                font_family: None,
+                foreground: None,
+                background: None,
+            },
+        ),
+        (
+            &['~', '~'],
+            InlineTextStyle {
+                bold: false,
+                italic: false,
+                underline: false,
+                strikethrough: true,
+                font_family: None,
+                foreground: None,
+                background: None,
+            },
+        ),
+        (
+            &['`'],
+            InlineTextStyle {
+                bold: false,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+                font_family: Some(InlineFontFamily::Monospace),
+                foreground: None,
+                background: None,
+            },
+        ),
+        (
+            &['*'],
+            InlineTextStyle {
+                bold: false,
+                italic: true,
+                underline: false,
+                strikethrough: false,
+                font_family: None,
+                foreground: None,
+                background: None,
+            },
+        ),
+    ];
+    for (marker, style) in TOKENS {
+        if chars[start..].starts_with(marker) {
+            let after = start + marker.len();
+            if after >= chars.len() || chars[after] == marker[0] || chars[after].is_whitespace() {
+                continue;
+            }
+            if let Some(end) = find_closing(chars, after, marker) {
+                return Some((marker.len(), end, style.clone()));
+            }
+        }
+    }
+    None
+}
+
+fn find_closing(chars: &[char], from: usize, marker: &[char]) -> Option<usize> {
+    let mut index = from;
+    while index + marker.len() <= chars.len() {
+        if chars[index..].starts_with(marker) && !chars[index - 1].is_whitespace() {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
 }
 
 fn parse_source(source: &str, extract_title: bool) -> (String, Vec<MarkdownBlock>) {

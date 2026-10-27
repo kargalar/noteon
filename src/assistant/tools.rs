@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use crate::domain::markdown;
 use crate::domain::model::{
     Block, BlockKind, DatabaseData, DatabaseProperty, DatabaseView, PROPERTY_TYPES, Page, PageEdit,
-    PageId, PropertyOption,
+    PageId, PropertyOption, StyledBlockContent,
 };
 use crate::error::{Error, Result};
 use crate::storage::Repository;
@@ -127,7 +127,7 @@ impl ToolHost {
             self.repository.set_page_icon(id, &icon)?;
         }
         if let Some(source) = opt_str(args, "markdown") {
-            self.fill_page(id, &markdown::parse_blocks(&source), true)?;
+            self.fill_page(id, &markdown::parse_styled_blocks(&source), true)?;
         }
         Ok(json!({ "page_id": id, "title": title }))
     }
@@ -178,21 +178,21 @@ impl ToolHost {
     fn insert_content(&mut self, args: &Value) -> Result<Value> {
         let id = req_i64(args, "page_id")?;
         let blocks = if let Some(source) = opt_str(args, "markdown") {
-            markdown::parse_blocks(&source)
+            markdown::parse_styled_blocks(&source)
         } else {
             parse_block_specs(args.get("blocks"))?
         };
         let count = self.repository.page(id)?.block_count;
         let position = opt_i64(args, "position").map_or(count, |value| value.max(0) as usize);
         self.repository
-            .append_blocks(id, position.min(count), &blocks)?;
+            .append_blocks_with_styles(id, position.min(count), &blocks)?;
         self.drop_leading_empty_block(id, !blocks.is_empty())?;
         Ok(json!({ "inserted": blocks.len() }))
     }
 
     fn replace_page_content(&mut self, args: &Value) -> Result<Value> {
         let id = req_i64(args, "page_id")?;
-        let blocks = markdown::parse_blocks(&req_str(args, "markdown")?);
+        let blocks = markdown::parse_styled_blocks(&req_str(args, "markdown")?);
         self.fill_page(id, &blocks, true)?;
         Ok(json!({ "blocks": blocks.len() }))
     }
@@ -387,7 +387,7 @@ impl ToolHost {
                 .set_page_priority(record, priority.clamp(0, 3) as u8)?;
         }
         if let Some(body) = opt_str(row, "markdown") {
-            self.fill_page(record, &markdown::parse_blocks(&body), true)?;
+            self.fill_page(record, &markdown::parse_styled_blocks(&body), true)?;
         }
         if opt_bool(row, "trashed") == Some(true) {
             return self.repository.trash_pages(&[record]);
@@ -466,12 +466,13 @@ impl ToolHost {
     fn fill_page(
         &mut self,
         page: PageId,
-        blocks: &[(BlockKind, String, bool)],
+        blocks: &[StyledBlockContent],
         replace: bool,
     ) -> Result<()> {
         let existing = self.all_blocks(page)?;
         let count = self.repository.page(page)?.block_count;
-        self.repository.append_blocks(page, count, blocks)?;
+        self.repository
+            .append_blocks_with_styles(page, count, blocks)?;
         if replace && !blocks.is_empty() {
             let removable: Vec<i64> = existing
                 .iter()
@@ -501,12 +502,18 @@ fn is_subpage_marker(block: &Block) -> bool {
 }
 
 fn apply_block_edit(block: &mut Block, edit: &Value) -> Result<()> {
-    if let Some(content) = opt_str(edit, "content") {
-        block.content = content;
-        block.text_styles.clear();
-    }
     if let Some(kind) = opt_str(edit, "kind") {
         block.kind = parse_kind(&kind)?;
+    }
+    if let Some(content) = opt_str(edit, "content") {
+        if block.kind == BlockKind::Code {
+            block.content = content;
+            block.text_styles.clear();
+        } else {
+            let (plain, styles) = markdown::parse_inline_styles(&content);
+            block.content = plain;
+            block.text_styles = styles;
+        }
     }
     if let Some(checked) = opt_bool(edit, "checked") {
         block.checked = checked;
@@ -523,7 +530,7 @@ fn parse_kind(raw: &str) -> Result<BlockKind> {
     }
 }
 
-fn parse_block_specs(value: Option<&Value>) -> Result<Vec<(BlockKind, String, bool)>> {
+fn parse_block_specs(value: Option<&Value>) -> Result<Vec<StyledBlockContent>> {
     let specs = value
         .and_then(Value::as_array)
         .ok_or_else(|| Error::Invalid("Provide `markdown` or a `blocks` array.".into()))?;
@@ -532,7 +539,17 @@ fn parse_block_specs(value: Option<&Value>) -> Result<Vec<(BlockKind, String, bo
         .map(|spec| {
             let kind = parse_kind(&opt_str(spec, "kind").unwrap_or_else(|| "text".into()))?;
             let content = opt_str(spec, "content").unwrap_or_default();
-            Ok((kind, content, opt_bool(spec, "checked").unwrap_or(false)))
+            let (plain, styles) = if kind == BlockKind::Code {
+                (content, Vec::new())
+            } else {
+                markdown::parse_inline_styles(&content)
+            };
+            Ok((
+                kind,
+                plain,
+                opt_bool(spec, "checked").unwrap_or(false),
+                styles,
+            ))
         })
         .collect()
 }
@@ -775,5 +792,24 @@ mod tests {
             .unwrap();
         assert_eq!(data["rows"][0]["values"]["Puan"], "9");
         assert_eq!(data["rows"][0]["values"]["Durum"], "Bitti");
+    }
+
+    #[test]
+    fn inline_markdown_styles_are_parsed_into_block_styles() {
+        let (_directory, mut host) = host();
+        let created = host
+            .call(
+                "create_page",
+                &json!({ "title": "Bütçe", "markdown": "- **Maaş:** 70.000 (`net`)" }),
+            )
+            .unwrap();
+        let page = created["page_id"].as_i64().unwrap();
+        let blocks = host.repository.blocks(page, 0, 10).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].content, "Maaş: 70.000 (net)");
+        assert_eq!(blocks[0].text_styles.len(), 2);
+        assert!(blocks[0].text_styles[0].style.bold);
+        assert_eq!(blocks[0].text_styles[0].start, 0);
+        assert_eq!(blocks[0].text_styles[0].end, 5);
     }
 }

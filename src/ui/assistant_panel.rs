@@ -1,6 +1,8 @@
-use eframe::egui::{self, RichText, ScrollArea, TextEdit};
+use eframe::egui::{self, FontFamily, FontId, RichText, ScrollArea, Stroke, TextEdit, TextFormat};
 
 use crate::assistant::{Assistant, ChatMessage, EFFORT_LEVELS, Role};
+use crate::domain::markdown;
+use crate::domain::model::{BlockKind, InlineFontFamily, InlineTextStyle, TextStyleRange};
 use crate::ui::palette::Palette;
 use crate::ui::{quiet_button, small_label};
 
@@ -97,19 +99,18 @@ fn show_settings(
         .corner_radius(6.0)
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
-            small_label(ui, "Model (empty = Codex default)", palette.muted);
+            small_label(ui, "Model", palette.muted);
             let model = ui.add(
                 TextEdit::singleline(&mut assistant.settings.model)
-                    .hint_text("e.g. gpt-5-codex")
+                    .hint_text("gpt-6-luna")
                     .desired_width(f32::INFINITY),
             );
             small_label(ui, "Reasoning effort", palette.muted);
             let mut effort_changed = false;
             ui.horizontal(|ui| {
                 for level in EFFORT_LEVELS {
-                    let label = if level.is_empty() { "default" } else { level };
                     let selected = assistant.settings.effort == level;
-                    if ui.selectable_label(selected, label).clicked() {
+                    if ui.selectable_label(selected, level).clicked() {
                         assistant.settings.effort = level.to_string();
                         effort_changed = true;
                     }
@@ -172,8 +173,175 @@ fn show_bubble(ui: &mut egui::Ui, text: &str, fill: egui::Color32, palette: Pale
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.add(egui::Label::new(RichText::new(text).color(palette.text)).selectable(true));
+            show_markdown(ui, text, palette);
         });
+}
+
+fn show_markdown(ui: &mut egui::Ui, source: &str, palette: Palette) {
+    let blocks = markdown::parse_styled_blocks(source);
+    let mut numbered_index = 0usize;
+    for (index, (kind, content, checked, styles)) in blocks.iter().enumerate() {
+        if index > 0 {
+            ui.add_space(4.0);
+        }
+        if *kind == BlockKind::Numbered {
+            numbered_index += 1;
+        } else {
+            numbered_index = 0;
+        }
+        show_markdown_block(
+            ui,
+            *kind,
+            content,
+            *checked,
+            numbered_index,
+            styles,
+            palette,
+        );
+    }
+}
+
+fn show_markdown_block(
+    ui: &mut egui::Ui,
+    kind: BlockKind,
+    content: &str,
+    checked: bool,
+    numbered_index: usize,
+    styles: &[TextStyleRange],
+    palette: Palette,
+) {
+    match kind {
+        BlockKind::Divider => {
+            ui.separator();
+        }
+        BlockKind::Code => {
+            egui::Frame::new()
+                .fill(palette.code)
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(content)
+                                .font(FontId::monospace(12.5))
+                                .color(palette.text),
+                        )
+                        .selectable(true),
+                    );
+                });
+        }
+        BlockKind::Quote | BlockKind::Callout => {
+            egui::Frame::new()
+                .fill(palette.hover)
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(8, 5))
+                .stroke(Stroke::new(1.0, palette.border))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    show_styled_line(ui, content, styles, 13.5, true, palette);
+                });
+        }
+        BlockKind::Bullet | BlockKind::Numbered | BlockKind::Todo => {
+            let marker = match kind {
+                BlockKind::Bullet => "•".to_string(),
+                BlockKind::Numbered => format!("{numbered_index}."),
+                BlockKind::Todo if checked => "☑".to_string(),
+                _ => "☐".to_string(),
+            };
+            ui.horizontal_top(|ui| {
+                ui.label(RichText::new(marker).color(palette.muted));
+                ui.vertical(|ui| {
+                    show_styled_line(ui, content, styles, 13.5, false, palette);
+                });
+            });
+        }
+        BlockKind::Heading1 | BlockKind::Heading2 | BlockKind::Heading3 => {
+            let size = match kind {
+                BlockKind::Heading1 => 17.5,
+                BlockKind::Heading2 => 15.5,
+                _ => 14.2,
+            };
+            let bold_all = [TextStyleRange {
+                start: 0,
+                end: content.chars().count(),
+                style: InlineTextStyle {
+                    bold: true,
+                    ..Default::default()
+                },
+            }];
+            show_styled_line(ui, content, &bold_all, size, false, palette);
+        }
+        _ => {
+            show_styled_line(ui, content, styles, 13.5, false, palette);
+        }
+    }
+}
+
+fn show_styled_line(
+    ui: &mut egui::Ui,
+    text: &str,
+    styles: &[TextStyleRange],
+    font_size: f32,
+    force_italic: bool,
+    palette: Palette,
+) {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = ui.available_width();
+    let style_at = |char_idx: usize| -> InlineTextStyle {
+        let mut merged = InlineTextStyle {
+            italic: force_italic,
+            ..Default::default()
+        };
+        for range in styles {
+            if range.start <= char_idx && char_idx < range.end {
+                merged.bold |= range.style.bold;
+                merged.italic |= range.style.italic;
+                merged.strikethrough |= range.style.strikethrough;
+                merged.font_family = range.style.font_family.or(merged.font_family);
+            }
+        }
+        merged
+    };
+    let mut start = 0usize;
+    while start < chars.len() {
+        let style = style_at(start);
+        let mut end = start + 1;
+        while end < chars.len() && style_at(end) == style {
+            end += 1;
+        }
+        let byte_start = chars[start].0;
+        let byte_end = chars.get(end).map_or(text.len(), |(idx, _)| *idx);
+        job.append(
+            &text[byte_start..byte_end],
+            0.0,
+            text_format_for(&style, font_size, palette),
+        );
+        start = end;
+    }
+    ui.add(egui::Label::new(job).selectable(true));
+}
+
+fn text_format_for(style: &InlineTextStyle, font_size: f32, palette: Palette) -> TextFormat {
+    let is_code = style.font_family == Some(InlineFontFamily::Monospace);
+    let family = if is_code {
+        FontFamily::Monospace
+    } else if style.bold {
+        FontFamily::Name("noteon-bold".into())
+    } else {
+        FontFamily::Proportional
+    };
+    let size = if is_code { font_size - 1.0 } else { font_size };
+    let mut format = TextFormat::simple(FontId::new(size, family), palette.text);
+    format.italics = style.italic;
+    if style.strikethrough {
+        format.strikethrough = Stroke::new(1.0, palette.muted);
+    }
+    if is_code {
+        format.background = palette.code;
+    }
+    format
 }
 
 fn show_input(
@@ -214,6 +382,19 @@ fn show_input(
         {
             actions.push(AssistantAction::Send);
         }
-        small_label(ui, "Uses your Codex plan", palette.muted);
+        let status = assistant.quota.as_ref().map_or_else(
+            || "Uses your Codex plan".to_string(),
+            |quota| quota.compact_label(),
+        );
+        let color = if assistant
+            .quota
+            .as_ref()
+            .is_some_and(|quota| quota.remaining_percent <= 10.0)
+        {
+            palette.danger
+        } else {
+            palette.muted
+        };
+        small_label(ui, &status, color);
     });
 }

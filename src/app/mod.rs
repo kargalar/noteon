@@ -744,10 +744,23 @@ impl NoteonApp {
                 Intent::Search => self.search.open(),
                 Intent::FindInPage => {
                     let target_id = self.page_dialog.or(self.selected);
-                    if let Some(page_id) = target_id
-                        && let Some(editor) = self.editors.get_mut(&page_id)
-                    {
-                        editor.open_find();
+                    if let Some(page_id) = target_id {
+                        if self.databases.get(&page_id).is_some_and(|database| {
+                            database.view == crate::domain::model::DatabaseView::Table
+                        }) {
+                            context.data_mut(|data| {
+                                data.insert_temp(
+                                    egui::Id::new(("database-table-find-open", page_id)),
+                                    true,
+                                );
+                                data.insert_temp(
+                                    egui::Id::new(("database-table-find-focus", page_id)),
+                                    true,
+                                );
+                            });
+                        } else if let Some(editor) = self.editors.get_mut(&page_id) {
+                            editor.open_find();
+                        }
                     }
                 }
                 Intent::ToggleSidebarPin => {

@@ -443,15 +443,19 @@ fn show_inner(
             .iter()
             .filter(|row| selected.contains(&row.page.id))
             .collect();
-        crate::ui::page_transfer::copy_pages(
-            ui.ctx(),
-            rows.iter().map(|row| row.page.id).collect(),
-            &rows
-                .iter()
-                .map(|row| row.page.display_title().to_owned())
-                .collect::<Vec<_>>(),
-            cut,
-        );
+        if cut {
+            crate::ui::page_transfer::copy_pages(
+                ui.ctx(),
+                rows.iter().map(|row| row.page.id).collect(),
+                &rows
+                    .iter()
+                    .map(|row| row.page.display_title().to_owned())
+                    .collect::<Vec<_>>(),
+                true,
+            );
+        } else {
+            ui.ctx().copy_text(selected_rows_as_tsv(&rows, &data.properties));
+        }
     }
     if !ui.ctx().wants_keyboard_input()
         && crate::ui::selection::is_active(ui, selection_scope)
@@ -724,6 +728,10 @@ fn show_inner(
                         });
                     });
 
+                    if data.view == DatabaseView::Table {
+                        show_table_find_bar(ui, data, palette);
+                    }
+
                     ui.add_space(8.0);
                     let divider_stroke =
                         egui::Stroke::new(1.0, palette.border.linear_multiply(0.4));
@@ -760,6 +768,32 @@ fn show_inner(
             intents,
         );
     }
+}
+
+fn selected_rows_as_tsv(rows: &[&DatabaseRow], properties: &[DatabaseProperty]) -> String {
+    let mut lines = Vec::with_capacity(rows.len() + 1);
+    let mut header = vec!["Name".to_owned()];
+    header.extend(properties.iter().map(|property| property.name.clone()));
+    lines.push(header.join("\t"));
+
+    for row in rows {
+        let mut cells = vec![row.page.display_title().to_owned()];
+        cells.extend(properties.iter().map(|property| {
+            row.values
+                .get(&property.id)
+                .cloned()
+                .unwrap_or_default()
+        }));
+        lines.push(
+            cells
+                .iter()
+                .map(|cell| cell.replace(['\t', '\r', '\n'], " "))
+                .collect::<Vec<_>>()
+                .join("\t"),
+        );
+    }
+
+    lines.join("\n")
 }
 
 fn show_title(
@@ -1560,6 +1594,85 @@ fn live_column_width(ui: &Ui, id_salt: impl std::hash::Hash, stored_width: f32) 
         .unwrap_or(stored_width)
 }
 
+fn show_table_find_bar(ui: &mut Ui, data: &DatabaseData, palette: Palette) {
+    let open_id = egui::Id::new(("database-table-find-open", data.page_id));
+    if !ui
+        .ctx()
+        .data(|state| state.get_temp::<bool>(open_id).unwrap_or(false))
+    {
+        return;
+    }
+
+    let query_id = egui::Id::new(("database-table-find-query", data.page_id));
+    let focus_id = egui::Id::new(("database-table-find-focus", data.page_id));
+    let mut query = ui
+        .ctx()
+        .data(|state| state.get_temp::<String>(query_id))
+        .unwrap_or_default();
+    let mut close = false;
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("⌕").color(palette.muted));
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut query)
+                .id(query_id)
+                .hint_text("Tabloda ara…")
+                .desired_width(240.0),
+        );
+        if ui
+            .ctx()
+            .data(|state| state.get_temp::<bool>(focus_id).unwrap_or(false))
+        {
+            response.request_focus();
+            ui.ctx().data_mut(|state| state.remove::<bool>(focus_id));
+        }
+        if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
+        let matching_rows = data
+            .rows
+            .iter()
+            .filter(|row| table_row_matches(row, &data.properties, &query))
+            .count();
+        if !query.trim().is_empty() {
+            ui.label(
+                RichText::new(format!("{matching_rows}/{}", data.rows.len()))
+                    .size(11.5)
+                    .color(palette.muted),
+            );
+        }
+        if ui
+            .add(egui::Button::new(RichText::new("×").color(palette.muted)).frame(false))
+            .on_hover_text("Kapat (Esc)")
+            .clicked()
+        {
+            close = true;
+        }
+    });
+
+    ui.ctx().data_mut(|state| {
+        state.insert_temp(query_id, query);
+        if close {
+            state.insert_temp(open_id, false);
+        }
+    });
+}
+
+fn table_row_matches(row: &DatabaseRow, properties: &[DatabaseProperty], query: &str) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+    let query = query.to_lowercase();
+    row.page.display_title().to_lowercase().contains(&query)
+        || row.preview.to_lowercase().contains(&query)
+        || properties.iter().any(|property| {
+            row.values
+                .get(&property.id)
+                .is_some_and(|value| value.to_lowercase().contains(&query))
+        })
+}
+
 fn show_table(
     ui: &mut Ui,
     data: &mut DatabaseData,
@@ -1568,7 +1681,18 @@ fn show_table(
     intents: &mut Vec<Intent>,
     drafts: &mut Drafts<'_>,
 ) {
-    let rows: Vec<DatabaseRow> = data.rows.clone();
+    let query = ui
+        .ctx()
+        .data(|state| {
+            state.get_temp::<String>(egui::Id::new(("database-table-find-query", data.page_id)))
+        })
+        .unwrap_or_default();
+    let rows: Vec<DatabaseRow> = data
+        .rows
+        .iter()
+        .filter(|row| table_row_matches(row, &data.properties, &query))
+        .cloned()
+        .collect();
     let row_refs: Vec<&DatabaseRow> = rows.iter().collect();
     let visible_properties: Vec<DatabaseProperty> = data
         .properties

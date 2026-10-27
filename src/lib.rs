@@ -1,4 +1,5 @@
 pub mod app;
+pub mod assistant;
 pub mod config;
 pub mod domain;
 pub mod error;

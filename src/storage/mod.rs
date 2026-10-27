@@ -138,6 +138,15 @@ impl Repository {
         Ok(())
     }
 
+    pub fn restore_from(&mut self, path: &Path) -> Result<()> {
+        self.connection.restore(
+            rusqlite::MAIN_DB,
+            path,
+            None::<fn(rusqlite::backup::Progress)>,
+        )?;
+        Ok(())
+    }
+
     pub fn setting(&self, key: SettingKey) -> Result<Option<String>> {
         use rusqlite::OptionalExtension;
         Ok(self

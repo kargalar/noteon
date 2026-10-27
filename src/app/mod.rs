@@ -1,3 +1,4 @@
+mod assistant;
 mod events;
 mod saves;
 mod tabs;
@@ -34,6 +35,7 @@ pub struct NoteonApp {
     next_tab_instance_id: u64,
     saved_dock_layout: Option<String>,
     search: Search,
+    assistant: crate::assistant::Assistant,
     saves: Saves,
     generation: u64,
     selected: Option<PageId>,
@@ -77,6 +79,7 @@ impl NoteonApp {
         theme::configure(&creation.egui_ctx);
         let directory = config::data_directory();
         let data_directory = directory.as_ref().cloned().unwrap_or_default();
+        let assistant = crate::assistant::Assistant::load(&data_directory);
         let worker = directory.and_then(|path| {
             Worker::start(path.join(config::DATABASE_FILE), creation.egui_ctx.clone())
         });
@@ -91,6 +94,7 @@ impl NoteonApp {
             next_tab_instance_id: 1,
             saved_dock_layout: None,
             search: Search::default(),
+            assistant,
             saves: Saves::default(),
             generation: 0,
             selected: None,
@@ -742,6 +746,7 @@ impl NoteonApp {
                     }
                 }
                 Intent::Search => self.search.open(),
+                Intent::ToggleAssistant => self.assistant.toggle(),
                 Intent::FindInPage => {
                     let target_id = self.page_dialog.or(self.selected);
                     if let Some(page_id) = target_id {
@@ -1031,6 +1036,9 @@ impl NoteonApp {
             if input.consume_key(egui::Modifiers::CTRL, egui::Key::K) {
                 intents.push(Intent::Search);
             }
+            if input.consume_key(egui::Modifiers::CTRL, egui::Key::J) {
+                intents.push(Intent::ToggleAssistant);
+            }
             if input.consume_key(egui::Modifiers::CTRL, egui::Key::F)
                 || input.consume_key(egui::Modifiers::COMMAND, egui::Key::F)
             {
@@ -1117,6 +1125,7 @@ impl NoteonApp {
 impl eframe::App for NoteonApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.receive_events(context);
+        self.poll_assistant();
         self.shortcuts(context);
         if let Some((query, generation)) = self.search.take_request() {
             self.flush(true);

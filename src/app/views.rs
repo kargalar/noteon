@@ -73,9 +73,44 @@ impl NoteonApp {
                             ),
                             palette.muted,
                         );
+                        let label = if self.assistant.is_running() {
+                            "✦ Assistant…"
+                        } else {
+                            "✦ Assistant"
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(label).small().color(palette.accent),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Ask the AI assistant (Ctrl+J)")
+                            .clicked()
+                        {
+                            intents.push(Intent::ToggleAssistant);
+                        }
                     });
                 });
             });
+        let mut assistant_actions = Vec::new();
+        if self.assistant.open {
+            egui::SidePanel::right("assistant")
+                .default_width(config::ASSISTANT_PANEL_WIDTH)
+                .min_width(config::ASSISTANT_PANEL_MIN_WIDTH)
+                .resizable(true)
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.background)
+                        .inner_margin(egui::Margin::symmetric(12, 9))
+                        .stroke(Stroke::new(1.0, palette.border)),
+                )
+                .show(context, |ui| {
+                    assistant_actions =
+                        crate::ui::assistant_panel::show(ui, &mut self.assistant, palette);
+                });
+        }
+        self.handle_assistant_actions(assistant_actions, context);
         let available_area = context.available_rect();
         let sidebar_top = available_area.top();
         let sidebar_height = available_area.height();

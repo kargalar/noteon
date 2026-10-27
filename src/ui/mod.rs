@@ -1,4 +1,5 @@
 use crate::ui::menus::PersistentMenuUi;
+pub mod assistant_panel;
 mod block_clipboard;
 pub mod database;
 pub mod editor;
@@ -36,6 +37,7 @@ pub enum Intent {
         start: usize,
     },
     Search,
+    ToggleAssistant,
     FindInPage,
     ToggleSidebarPin,
     ToggleTheme,

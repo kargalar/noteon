@@ -280,6 +280,8 @@ pub enum Action {
     Import,
     Export(PageId),
     Backup,
+    Reload,
+    RestoreSnapshot(PathBuf),
 }
 
 pub enum Request {
@@ -1344,6 +1346,13 @@ fn perform_action(
             } else {
                 None
             }
+        }
+        Action::Reload => None,
+        Action::RestoreSnapshot(path) => {
+            repository.restore_from(&path)?;
+            page_histories.clear();
+            notice = Some("AI changes undone.".into());
+            None
         }
         Action::Export(id) => {
             let title = repository

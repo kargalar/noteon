@@ -17,6 +17,13 @@ fn load_app_icon() -> Option<Arc<egui::IconData>> {
 }
 
 fn main() -> eframe::Result {
+    if std::env::args().any(|argument| argument == noteon::assistant::MCP_FLAG) {
+        if let Err(error) = noteon::assistant::mcp::serve() {
+            eprintln!("noteon mcp server failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 860.0])
         .with_min_inner_size([820.0, 580.0])

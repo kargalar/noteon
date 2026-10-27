@@ -1191,34 +1191,13 @@ fn show_window_chrome(
 
     let hover_t = context.animate_bool(egui::Id::new("window_chrome_hover"), is_hovered);
 
-    let fill = if hover_t > 0.0 {
-        Color32::from_rgba_unmultiplied(
-            palette.sidebar.r(),
-            palette.sidebar.g(),
-            palette.sidebar.b(),
-            (hover_t * 255.0) as u8,
-        )
-    } else {
-        Color32::TRANSPARENT
-    };
-
-    let stroke = if hover_t > 0.05 {
-        Stroke::new(
-            1.0,
-            Color32::from_rgba_unmultiplied(
-                palette.border.r(),
-                palette.border.g(),
-                palette.border.b(),
-                (hover_t * 255.0) as u8,
-            ),
-        )
-    } else {
-        Stroke::NONE
-    };
-
     egui::TopBottomPanel::top("window-chrome")
         .exact_height(HEIGHT)
-        .frame(egui::Frame::new().fill(fill).stroke(stroke))
+        .frame(
+            egui::Frame::new()
+                .fill(palette.sidebar)
+                .stroke(Stroke::new(1.0, palette.border)),
+        )
         .show(context, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {

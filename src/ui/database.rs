@@ -1940,7 +1940,7 @@ fn show_table(
                 vscroll = vscroll.vertical_scroll_offset(offset);
             }
             let mut row_hit_areas = Vec::new();
-            vscroll.show_rows(ui, TABLE_ROW_HEIGHT, rows.len(), |ui, visible| {
+            let rows_scroll = vscroll.show_rows(ui, TABLE_ROW_HEIGHT, rows.len(), |ui, visible| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 for row in &rows[visible] {
                     let row_id = row.page.id;
@@ -2454,6 +2454,29 @@ fn show_table(
                     );
                 }
             });
+
+            let empty_top = (rows_scroll.inner_rect.top() + rows.len() as f32 * TABLE_ROW_HEIGHT
+                - rows_scroll.state.offset.y)
+                .max(rows_scroll.inner_rect.top());
+            let empty_bottom = rows_scroll.inner_rect.bottom();
+            if empty_top < empty_bottom {
+                let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+                let mut boundary_x = table_left;
+                for width in std::iter::once(0.0)
+                    .chain(std::iter::once(name_w))
+                    .chain(show_created_at.then_some(created_w))
+                    .chain(prop_widths.iter().copied())
+                {
+                    boundary_x += width;
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(boundary_x, empty_top),
+                            egui::pos2(boundary_x, empty_bottom),
+                        ],
+                        stroke,
+                    );
+                }
+            }
 
             // 3. "+ New" Bottom Row
             let new_row = ui.horizontal(|ui| {
@@ -3790,10 +3813,21 @@ fn property_editor(
             };
             let edit_id =
                 ui.make_persistent_id(("database-property-value", row.page.id, property.id));
+            let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
+                crate::ui::page_properties::layout_property_value(
+                    ui,
+                    text,
+                    wrap_width,
+                    property.kind == "number",
+                    edit_id,
+                    palette.text,
+                )
+            };
             let text = ui.add_enabled(
                 !busy,
                 egui::TextEdit::singleline(edited)
                     .id(edit_id)
+                    .layouter(&mut layouter)
                     .desired_width(edit_w)
                     .font(FontId::proportional(13.0))
                     .frame(false)

@@ -668,7 +668,10 @@ fn perform_action(
 ) -> Result<Event> {
     let preserve_view = matches!(
         &action,
-        Action::UndoPage(_) | Action::RedoPage(_) | Action::RestorePageHistory { .. }
+        Action::RestorePages(_)
+            | Action::UndoPage(_)
+            | Action::RedoPage(_)
+            | Action::RestorePageHistory { .. }
     );
     let mut focus = None;
     let mut focus_at_end = false;
@@ -1410,6 +1413,50 @@ fn finish_column_insertion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undoing_record_deletion_refreshes_the_table_without_opening_the_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+        let database = repository.create_database(None).unwrap();
+        let first = repository.create_database_record(database).unwrap();
+        let second = repository.create_database_record(database).unwrap();
+        let mut histories = HashMap::new();
+
+        for records in [vec![first], vec![first, second]] {
+            for action in [
+                Action::TrashPages(records.clone()),
+                Action::RestorePages(records.clone()),
+                Action::TrashPages(records.clone()),
+                Action::RestorePages(records.clone()),
+            ] {
+                let restoring = matches!(&action, Action::RestorePages(_));
+                let event = perform_action(&mut repository, &mut histories, action).unwrap();
+                let Event::ActionDone {
+                    preserve_view,
+                    refresh_database,
+                    focus,
+                    ..
+                } = event
+                else {
+                    panic!("deletion history must refresh the current table");
+                };
+                assert_eq!(preserve_view, restoring);
+                assert_eq!(refresh_database, Some(database));
+                assert_eq!(focus, None);
+                for record in &records {
+                    assert_eq!(
+                        repository.page(*record).unwrap().trashed_by.is_none(),
+                        restoring
+                    );
+                }
+                assert_eq!(
+                    repository.database(database).unwrap().rows.len(),
+                    if restoring { 2 } else { 2 - records.len() }
+                );
+            }
+        }
+    }
 
     #[test]
     fn history_restores_refresh_the_table_without_requesting_navigation() {

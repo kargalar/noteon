@@ -712,10 +712,19 @@ impl Editor {
                 .iter()
                 .find(|(_, rect, _)| rect.contains(pos))
                 .map(|(id, _, pos_idx)| (*id, *pos_idx));
+            // Database contents manage their own selection; the handle selects the block.
+            let selection_target = clicked_handle.or_else(|| {
+                clicked_block
+                    .filter(|(_, position)| {
+                        self.document.as_ref().is_some_and(|document| {
+                            document.outline[*position].kind != BlockKind::Database
+                        })
+                    })
+                    .map(|(id, _)| id)
+            });
 
             if is_ctrl {
-                if let Some(target_id) = clicked_handle.or_else(|| clicked_block.map(|(id, _)| id))
-                {
+                if let Some(target_id) = selection_target {
                     if self.selected_blocks.contains(&target_id) {
                         self.selected_blocks.remove(&target_id);
                     } else {
@@ -727,8 +736,7 @@ impl Editor {
                     }
                 }
             } else if is_shift {
-                if let Some(target_id) = clicked_handle.or_else(|| clicked_block.map(|(id, _)| id))
-                {
+                if let Some(target_id) = selection_target {
                     if let Some(document) = &self.document {
                         let anchor_id = self
                             .anchor_block

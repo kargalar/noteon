@@ -2282,6 +2282,23 @@ pub fn show_date_picker_popup(
     chosen
 }
 
+pub(crate) fn layout_property_value(
+    ui: &Ui,
+    text: &str,
+    wrap_width: f32,
+    is_number: bool,
+    edit_id: egui::Id,
+    color: Color32,
+) -> std::sync::Arc<egui::Galley> {
+    let display = if is_number && !ui.memory(|memory| memory.has_focus(edit_id)) {
+        crate::domain::number_format::format_display(text)
+    } else {
+        text.to_owned()
+    };
+    let job = egui::text::LayoutJob::simple(display, FontId::proportional(13.0), color, wrap_width);
+    ui.fonts(|fonts| fonts.layout_job(job))
+}
+
 fn show_text_or_number_editor(
     ui: &mut Ui,
     page: PageId,
@@ -2321,10 +2338,22 @@ fn show_text_or_number_editor(
         (available_width - 16.0).max(80.0)
     };
 
+    let edit_id = ui.id().with(value_id);
+    let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
+        layout_property_value(
+            ui,
+            text,
+            wrap_width,
+            property.kind == "number",
+            edit_id,
+            palette.text,
+        )
+    };
     let response = ui.add_enabled(
         !busy,
         egui::TextEdit::singleline(&mut value)
-            .id(ui.id().with(value_id))
+            .id(edit_id)
+            .layouter(&mut layouter)
             .hint_text(hint)
             .font(FontId::proportional(13.0))
             .frame(false)
@@ -2580,6 +2609,38 @@ fn split_options(options: &str) -> Vec<String> {
 #[cfg(test)]
 mod number_input_tests {
     use super::*;
+
+    #[test]
+    fn number_display_formats_only_unfocused_number_properties() {
+        let context = egui::Context::default();
+        let field = egui::Id::new("number-display-test");
+        for (is_number, focused, expected) in [
+            (true, false, "40.000,5"),
+            (true, true, "40000.5"),
+            (false, false, "40000.5"),
+        ] {
+            context.memory_mut(|memory| {
+                if focused {
+                    memory.request_focus(field);
+                } else {
+                    memory.surrender_focus(field);
+                }
+            });
+            let _ = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    let galley = layout_property_value(
+                        ui,
+                        "40000.5",
+                        250.0,
+                        is_number,
+                        field,
+                        Color32::WHITE,
+                    );
+                    assert_eq!(galley.text(), expected);
+                });
+            });
+        }
+    }
 
     #[test]
     fn number_property_calculates_on_enter_and_rejects_invalid_results() {

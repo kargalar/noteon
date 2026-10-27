@@ -862,6 +862,122 @@ fn marquee_drag_from_margin_selects_blocks_and_delete_removes_them() {
 }
 
 #[test]
+fn ctrl_click_embedded_record_selects_only_the_record() {
+    use noteon::domain::model::{DatabaseData, DatabaseRow, DatabaseView, DatabaseViewSettings};
+    use noteon::ui::editor::DatabaseContext;
+    use std::collections::{HashMap, HashSet};
+
+    let context = egui::Context::default();
+    let mut editor = editor("100", 1);
+    editor.document.as_mut().unwrap().outline[0].kind = BlockKind::Database;
+    editor.cache.blocks.get_mut(&0).unwrap().kind = BlockKind::Database;
+    let mut record = editor.document.as_ref().unwrap().page.clone();
+    record.id = 101;
+    record.parent_id = Some(100);
+    record.title = "Embedded record".into();
+    let mut databases = HashMap::from([(
+        100,
+        DatabaseData {
+            page_id: 100,
+            title: "Table".into(),
+            icon: String::new(),
+            view: DatabaseView::Table,
+            gallery_columns: 3,
+            view_settings: DatabaseViewSettings::default(),
+            sort_key: "manual".into(),
+            sort_descending: false,
+            properties: Vec::new(),
+            rows: vec![DatabaseRow {
+                page: record,
+                preview: String::new(),
+                values: HashMap::new(),
+            }],
+        },
+    )]);
+    let mut render = |editor: &mut Editor, events, modifiers| {
+        context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 860.0),
+                )),
+                events,
+                modifiers,
+                ..Default::default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    editor.show_with_database_context_in_tab(
+                        ui,
+                        Palette::new(false),
+                        &[],
+                        7,
+                        &mut DatabaseContext {
+                            record_database_id: None,
+                            databases: &mut databases,
+                            loading: &mut HashSet::new(),
+                            property_drafts: &mut HashMap::new(),
+                            title_drafts: &mut HashMap::new(),
+                            value_drafts: &mut HashMap::new(),
+                            visible: &mut HashSet::new(),
+                            sidebar: None,
+                        },
+                    );
+                });
+            },
+        )
+    };
+    let mut output = render(&mut editor, Vec::new(), Modifiers::NONE);
+    for _ in 0..2 {
+        output = render(&mut editor, Vec::new(), Modifiers::NONE);
+    }
+    let record_pos = output
+        .shapes
+        .iter()
+        .find_map(|shape| {
+            if let egui::Shape::Text(text) = &shape.shape
+                && text.galley.text() == "Embedded record"
+            {
+                Some(text.pos + text.galley.size() * 0.5)
+            } else {
+                None
+            }
+        })
+        .expect("embedded record must be visible");
+
+    for modifiers in [Modifiers::CTRL, Modifiers::COMMAND, Modifiers::SHIFT] {
+        let _ = render(
+            &mut editor,
+            vec![
+                Event::PointerMoved(record_pos),
+                Event::PointerButton {
+                    pos: record_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                },
+                Event::PointerButton {
+                    pos: record_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                },
+            ],
+            modifiers,
+        );
+        let selected_rows: HashSet<i64> = context.data(|data| {
+            data.get_temp(egui::Id::new(("database-selected-rows", 100_i64)))
+                .unwrap_or_default()
+        });
+        assert_eq!(
+            selected_rows.contains(&101),
+            modifiers != Modifiers::COMMAND
+        );
+        assert!(editor.selected_blocks.is_empty());
+    }
+}
+
+#[test]
 fn ctrl_click_and_shift_click_select_blocks() {
     let context = egui::Context::default();
     let mut editor = editor("Satır içeriği", 5);

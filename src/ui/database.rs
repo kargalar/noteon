@@ -1,3 +1,5 @@
+mod table_navigation;
+
 use crate::ui::menus::{PersistentContextMenu, PersistentMenuUi};
 use std::collections::HashMap;
 
@@ -661,7 +663,7 @@ fn show_inner(
                                 |ui| {
                                     ui.label(RichText::new("Sort by").small().color(palette.muted));
                                     for (label, key) in [
-                                        ("Manual order", "manual"),
+                                        ("Custom", "manual"),
                                         ("Name", "title"),
                                         ("Created", "created_at"),
                                     ] {
@@ -837,7 +839,7 @@ fn show_title(
 
 fn sort_key_label(data: &DatabaseData) -> String {
     match data.sort_key.as_str() {
-        "manual" => "Manual".to_owned(),
+        "manual" => "Custom".to_owned(),
         "title" => "Name".to_owned(),
         "created_at" => "Created".to_owned(),
         key => key
@@ -1705,6 +1707,14 @@ fn show_table(
         })
         .cloned()
         .collect();
+    let mut navigation = table_navigation::TableNavigation::begin(
+        ui,
+        data,
+        &rows,
+        &visible_properties,
+        busy,
+        drafts,
+    );
     let show_created_at = data.view_settings.table_show_created_at;
 
     let base_name_w = data
@@ -2051,6 +2061,7 @@ fn show_table(
             let pending_focus_record: Option<crate::domain::model::PageId> =
                 ui.ctx().data(|d| d.get_temp(focus_record_key));
             let pending_focus_row_idx = pending_focus_record
+                .or(navigation.pending_record())
                 .and_then(|target_id| rows.iter().position(|r| r.page.id == target_id));
 
             let mut vscroll = egui::ScrollArea::vertical()
@@ -2258,6 +2269,9 @@ fn show_table(
                                         },
                                     },
                                 );
+                                if data.sort_key == "manual" {
+                                    icon_drag.on_hover_text("Drag to reorder records");
+                                }
 
                                 let title = drafts
                                     .titles
@@ -2328,11 +2342,7 @@ fn show_table(
                                     ui.ctx().request_repaint();
                                 }
 
-                                let enter_pressed = response.has_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                if enter_pressed {
-                                    response.surrender_focus();
-                                }
+                                navigation.register(ui, row.page.id, None, &response);
 
                                 if ((response.changed() && !title.is_empty())
                                     || response.lost_focus())
@@ -2540,7 +2550,7 @@ fn show_table(
                                     ui.push_id(
                                         ("table-prop-cell", row.page.id, property.id),
                                         |ui| {
-                                            property_editor(
+                                            let response = property_editor(
                                                 ui,
                                                 row,
                                                 property,
@@ -2550,12 +2560,23 @@ fn show_table(
                                                 intents,
                                                 drafts.values,
                                             );
+                                            if table_navigation::is_editable(property) {
+                                                navigation.register(
+                                                    ui,
+                                                    row.page.id,
+                                                    Some(property.id),
+                                                    &response,
+                                                );
+                                            }
                                         },
                                     );
                                 },
                             );
                         }
                     });
+                    if !busy && data.sort_key == "manual" {
+                        table_reorder_target(ui, data, row_id, row_rect, palette, intents);
+                    }
                     if let Some(focused) = ui.memory(|memory| memory.focused())
                         && (Some(focused) != focused_before
                             || ui.ctx().read_response(focused).is_some_and(|response| {
@@ -2846,6 +2867,55 @@ fn show_table(
                 }));
             }
         });
+    navigation.finish(ui, intents);
+}
+
+fn table_reorder_target(
+    ui: &Ui,
+    data: &DatabaseData,
+    target: crate::domain::model::PageId,
+    rect: egui::Rect,
+    palette: Palette,
+    intents: &mut Vec<Intent>,
+) {
+    let response = ui.interact(
+        rect.intersect(ui.clip_rect()),
+        ui.id().with(("table-row-reorder", target)),
+        egui::Sense::hover(),
+    );
+    let Some(payload) = response.dnd_hover_payload::<crate::ui::page_transfer::PageDragPayload>()
+    else {
+        return;
+    };
+    if payload.pages.contains(&target)
+        || !payload
+            .pages
+            .iter()
+            .all(|id| data.rows.iter().any(|row| row.page.id == *id))
+    {
+        return;
+    }
+    let after = ui.input(|input| {
+        input
+            .pointer
+            .interact_pos()
+            .is_some_and(|position| position.y >= rect.center().y)
+    });
+    let y = if after { rect.bottom() } else { rect.top() };
+    ui.painter().line_segment(
+        [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+        egui::Stroke::new(2.0, palette.accent),
+    );
+    if let Some(payload) =
+        response.dnd_release_payload::<crate::ui::page_transfer::PageDragPayload>()
+    {
+        intents.push(Intent::Action(Action::ReorderDatabaseRecords {
+            database: data.page_id,
+            records: payload.pages.clone(),
+            target,
+            after,
+        }));
+    }
 }
 
 fn paint_table_row_extension(
@@ -3495,7 +3565,7 @@ fn property_editor(
     palette: Palette,
     intents: &mut Vec<Intent>,
     value_drafts: &mut std::collections::HashMap<(i64, i64), String>,
-) {
+) -> egui::Response {
     let value = row.values.get(&property.id).cloned().unwrap_or_default();
     let action = |value: String| {
         Intent::Action(Action::SetDatabaseProperty {
@@ -3653,14 +3723,18 @@ fn property_editor(
                             }
                         });
                     },
-                );
-            });
+                )
+                .response
+            })
+            .inner
         }
         "checkbox" => {
             let mut checked = value == "true";
-            if ui.add(egui::Checkbox::without_text(&mut checked)).changed() {
+            let response = ui.add(egui::Checkbox::without_text(&mut checked));
+            if response.changed() {
                 intents.push(action(checked.to_string()));
             }
+            response
         }
         "multi-select" => {
             let selected: Vec<String> = value
@@ -3848,8 +3922,10 @@ fn property_editor(
                             }
                         });
                     },
-                );
-            });
+                )
+                .response
+            })
+            .inner
         }
         "date" => {
             let is_empty = value.trim().is_empty();
@@ -3889,8 +3965,9 @@ fn property_editor(
                     },
                 )
                 .response
-                .on_hover_text("Select date from calendar");
-            });
+                .on_hover_text("Select date from calendar")
+            })
+            .inner
         }
         "created_time" => {
             let display = if value.trim().is_empty() {
@@ -3902,7 +3979,7 @@ fn property_editor(
                 RichText::new(display)
                     .font(FontId::proportional(12.5))
                     .color(palette.muted),
-            );
+            )
         }
         "last_edited_time" => {
             let ts = row.page.updated_at.max(row.page.created_at);
@@ -3915,7 +3992,7 @@ fn property_editor(
                 RichText::new(display)
                     .font(FontId::proportional(12.5))
                     .color(palette.muted),
-            );
+            )
         }
         _ => {
             let edited = value_drafts
@@ -3964,7 +4041,7 @@ fn property_editor(
             if number_submitted && !edited.trim().is_empty() {
                 let Some(result) = crate::domain::number_expression::evaluate(edited) else {
                     text.request_focus();
-                    return;
+                    return text;
                 };
                 *edited = result;
                 ui.ctx().request_repaint();
@@ -3987,6 +4064,7 @@ fn property_editor(
             if (text.lost_focus() || number_submitted) && edited != &value {
                 intents.push(action(edited.clone()));
             }
+            text
         }
     }
 }

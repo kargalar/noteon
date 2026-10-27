@@ -63,9 +63,13 @@ cargo test --all-targets
 | Alt+Left / Alt+Right | Navigate page history |
 | Enter | Split at the cursor and create a block |
 | Shift+Enter | Insert a line break in the current block |
+| Enter in a table cell | Create a record and focus its Name |
+| Tab / Shift+Tab in a table | Move to the next / previous editable property |
 | Ctrl+Z / Ctrl+Y | Undo / redo in the active text field |
 
 Type `/` in an empty block to search available block types. Right-click a block or page for its context menu. Middle-click a page to open it in a new tab; drag tabs to split panels. Drag a cover image to adjust its crop, and drag media edges to resize media blocks.
+
+Choose **Sort → Custom** in a database table, then drag a record's icon to change its position. Custom order is saved and restored when you switch back from another sort.
 
 ## Data and backups
 

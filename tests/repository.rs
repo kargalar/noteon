@@ -33,6 +33,124 @@ fn database_record_names_start_empty_and_persist_renames_without_another_record(
 }
 
 #[test]
+fn custom_database_order_survives_sort_changes_record_edits_and_reopening() {
+    let (directory, mut repository) = database();
+    let database = repository.create_database(None).unwrap();
+    repository
+        .add_database_property(database, "Number", "number", &[])
+        .unwrap();
+    let property = repository
+        .database(database)
+        .unwrap()
+        .properties
+        .into_iter()
+        .find(|property| property.kind == "number")
+        .unwrap()
+        .id;
+    let mut records = Vec::new();
+    for (title, value) in [("Zebra", "15"), ("Apple", "2"), ("Mango", "9")] {
+        let record = repository.create_database_record(database).unwrap();
+        repository.rename_database_record(record, title).unwrap();
+        repository
+            .set_database_property(record, property, value)
+            .unwrap();
+        records.push(record);
+    }
+    let [first, second, third] = records[..] else {
+        unreachable!()
+    };
+    repository
+        .reorder_database_records(database, &[second, first], third, true)
+        .unwrap();
+    let order = |repository: &Repository| {
+        repository
+            .database(database)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| row.page.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(order(&repository), [third, first, second]);
+    for (key, descending, expected) in [
+        ("title".to_owned(), false, vec![second, third, first]),
+        ("title".to_owned(), true, vec![first, third, second]),
+        (property.to_string(), false, vec![second, third, first]),
+    ] {
+        repository
+            .set_database_sort(database, &key, descending)
+            .unwrap();
+        assert_eq!(order(&repository), expected);
+        repository
+            .set_database_sort(database, "manual", false)
+            .unwrap();
+        assert_eq!(order(&repository), [third, first, second]);
+    }
+    for descending in [false, true] {
+        repository
+            .set_database_sort(database, "created_at", descending)
+            .unwrap();
+        repository
+            .set_database_sort(database, "manual", false)
+            .unwrap();
+        assert_eq!(order(&repository), [third, first, second]);
+    }
+    repository
+        .set_database_sort(database, "title", false)
+        .unwrap();
+    repository.rename_database_record(first, "Banana").unwrap();
+    let added = repository.create_database_record(database).unwrap();
+    repository.trash_pages(&[second]).unwrap();
+    drop(repository);
+    let repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+    repository
+        .set_database_sort(database, "manual", false)
+        .unwrap();
+    assert_eq!(order(&repository), [third, first, added]);
+}
+
+#[test]
+fn custom_database_reordering_rejects_foreign_records_without_changing_order() {
+    let (_directory, mut repository) = database();
+    let database = repository.create_database(None).unwrap();
+    let first = repository.create_database_record(database).unwrap();
+    let second = repository.create_database_record(database).unwrap();
+    let foreign_database = repository.create_database(None).unwrap();
+    let foreign = repository.create_database_record(foreign_database).unwrap();
+    repository
+        .set_database_sort(database, "manual", false)
+        .unwrap();
+    for (records, target) in [
+        (vec![first, foreign], second),
+        (vec![first], foreign),
+        (vec![], second),
+    ] {
+        assert!(
+            repository
+                .reorder_database_records(database, &records, target, false)
+                .is_err()
+        );
+        assert_eq!(
+            repository
+                .database(database)
+                .unwrap()
+                .rows
+                .iter()
+                .map(|row| row.page.id)
+                .collect::<Vec<_>>(),
+            [first, second]
+        );
+    }
+    repository
+        .reorder_database_records(database, &[second], first, false)
+        .unwrap();
+    assert_eq!(
+        repository.database(database).unwrap().rows[0].page.id,
+        second
+    );
+}
+
+#[test]
 fn databases_persist_views_properties_priorities_and_created_dates() {
     let (_directory, mut repository) = database();
     let database = repository.create_database(None).unwrap();

@@ -170,6 +170,7 @@ impl NoteonApp {
                     notice,
                     refresh_database,
                     created_record_document,
+                    focus_created_record_name,
                     history,
                     page_transfer,
                 } => {
@@ -243,10 +244,14 @@ impl NoteonApp {
                     } else if let Some(mut doc) = created_record_document {
                         let id = doc.page.id;
                         let db_id = refresh_database.or(doc.page.parent_id);
-                        let open_mode = db_id
-                            .and_then(|db| self.databases.get(&db))
-                            .map(|db| db.view_settings.new_record_open_mode)
-                            .unwrap_or_default();
+                        let open_mode = if focus_created_record_name {
+                            crate::domain::model::NewRecordOpenMode::FocusName
+                        } else {
+                            db_id
+                                .and_then(|db| self.databases.get(&db))
+                                .map(|db| db.view_settings.new_record_open_mode)
+                                .unwrap_or_default()
+                        };
                         match open_mode {
                             crate::domain::model::NewRecordOpenMode::FocusName => {
                                 if let Some(db) = db_id {

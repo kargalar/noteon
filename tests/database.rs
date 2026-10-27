@@ -572,6 +572,78 @@ fn database_new_record_intent_and_dialog_intents() {
 }
 
 #[test]
+fn dragging_a_table_record_icon_reorders_only_in_custom_sort() {
+    for sort in ["manual", "title"] {
+        let context = egui::Context::default();
+        let mut database = test_database();
+        database.sort_key = sort.into();
+        frame_database(&context, &mut database, Vec::new(), Modifiers::NONE);
+        let areas: Vec<(PageId, egui::Rect)> = context
+            .data(|state| {
+                state.get_temp(egui::Id::new((
+                    "database-table-row-hit-areas",
+                    database.page_id,
+                )))
+            })
+            .unwrap();
+        let start = areas[0].1.left_center() + egui::vec2(30.0, 0.0);
+        let end = areas[2].1.left_bottom() + egui::vec2(100.0, -4.0);
+        frame_database(
+            &context,
+            &mut database,
+            vec![
+                Event::PointerMoved(start),
+                Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+            Modifiers::NONE,
+        );
+        frame_database(
+            &context,
+            &mut database,
+            vec![Event::PointerMoved(end)],
+            Modifiers::NONE,
+        );
+        assert!(
+            egui::DragAndDrop::payload::<noteon::ui::page_transfer::PageDragPayload>(&context)
+                .is_some()
+        );
+        let intents = frame_database(
+            &context,
+            &mut database,
+            vec![Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+        );
+        let reorders: Vec<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::Action(noteon::worker::Action::ReorderDatabaseRecords {
+                    database,
+                    records,
+                    target,
+                    after,
+                }) => Some((*database, records.clone(), *target, *after)),
+                _ => None,
+            })
+            .collect();
+        if sort == "manual" {
+            assert_eq!(reorders, [(database.page_id, vec![1], 3, true)]);
+        } else {
+            assert!(reorders.is_empty());
+        }
+    }
+}
+
+#[test]
 fn gallery_select_and_delete_rows() {
     let context = egui::Context::default();
     noteon::ui::theme::configure(&context);

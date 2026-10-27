@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{OptionalExtension, params};
 
@@ -209,6 +209,63 @@ impl Repository {
         }
         transaction.commit()?;
         Ok(page_id)
+    }
+
+    pub fn reorder_database_records(
+        &mut self,
+        database: PageId,
+        records: &[PageId],
+        target: PageId,
+        after: bool,
+    ) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        let valid: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM databases d JOIN pages p ON p.id=d.page_id WHERE d.page_id=?1 AND p.trashed_by IS NULL)",
+            [database],
+            |row| row.get(0),
+        )?;
+        if !valid {
+            return Err(Error::Invalid("Database not found.".into()));
+        }
+        let mut statement = transaction.prepare_cached(
+            "SELECT id FROM pages WHERE parent_id=?1 AND trashed_by IS NULL ORDER BY sort_order,id",
+        )?;
+        let mut siblings = statement
+            .query_map([database], |row| row.get::<_, PageId>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let selected: HashSet<_> = records.iter().copied().collect();
+        let available: HashSet<_> = siblings.iter().copied().collect();
+        if selected.is_empty() || !available.contains(&target) || !selected.is_subset(&available) {
+            return Err(Error::Invalid("Database records not found.".into()));
+        }
+        if selected.contains(&target) {
+            return Ok(());
+        }
+        let moved: Vec<_> = siblings
+            .iter()
+            .copied()
+            .filter(|id| selected.contains(id))
+            .collect();
+        siblings.retain(|id| !selected.contains(id));
+        let index = siblings
+            .iter()
+            .position(|id| *id == target)
+            .ok_or_else(|| Error::Invalid("Database record not found.".into()))?
+            + usize::from(after);
+        siblings.splice(index..index, moved);
+        let mut update =
+            transaction.prepare_cached("UPDATE pages SET sort_order=?1 WHERE id=?2")?;
+        for (index, id) in siblings.into_iter().enumerate() {
+            update.execute(params![sql_index(index)?, id])?;
+        }
+        drop(update);
+        transaction.execute(
+            "UPDATE databases SET sort_key='manual',sort_descending=0 WHERE page_id=?1",
+            [database],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn move_database_record(

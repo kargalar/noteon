@@ -147,6 +147,13 @@ pub enum Action {
         replace_block: Option<i64>,
     },
     CreateDatabaseRecord(PageId),
+    CreateDatabaseRecordInline(PageId),
+    ReorderDatabaseRecords {
+        database: PageId,
+        records: Vec<PageId>,
+        target: PageId,
+        after: bool,
+    },
     CreateDatabaseRecordWithProperty {
         database: PageId,
         property: i64,
@@ -356,6 +363,7 @@ pub enum Event {
         notice: Option<String>,
         refresh_database: Option<PageId>,
         created_record_document: Option<Document>,
+        focus_created_record_name: bool,
         history: Option<Vec<crate::domain::model::PageHistorySummary>>,
         page_transfer: Option<Box<PageTransferUpdate>>,
     },
@@ -685,6 +693,7 @@ fn perform_action(
     let mut refresh_database = None;
     let mut refresh_page_properties = None;
     let mut created_record = None;
+    let focus_created_record_name = matches!(&action, Action::CreateDatabaseRecordInline(_));
     let mut page_transfer = None;
 
     let action_info: Option<(PageId, &'static str)> = match &action {
@@ -753,7 +762,7 @@ fn perform_action(
             focus = Some(position);
             Some(parent)
         }
-        Action::CreateDatabaseRecord(database) => {
+        Action::CreateDatabaseRecord(database) | Action::CreateDatabaseRecordInline(database) => {
             let record = repository.create_database_record(database)?;
             refresh_database = Some(database);
             created_record = Some(record);
@@ -768,6 +777,16 @@ fn perform_action(
                 .create_database_record_with_property(database, Some((property, &value)))?;
             refresh_database = Some(database);
             created_record = Some(record);
+            None
+        }
+        Action::ReorderDatabaseRecords {
+            database,
+            records,
+            target,
+            after,
+        } => {
+            repository.reorder_database_records(database, &records, target, after)?;
+            refresh_database = Some(database);
             None
         }
         Action::MoveDatabaseRecord {
@@ -1400,6 +1419,7 @@ fn perform_action(
         refresh_database,
         page_transfer,
         created_record_document,
+        focus_created_record_name,
         history: page
             .and_then(|id| page_histories.get(&id))
             .map(|h| h.summaries()),
@@ -1428,6 +1448,52 @@ fn finish_column_insertion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_record_creation_requests_name_focus_and_reordering_refreshes_the_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+        let database = repository.create_database(None).unwrap();
+        let first = repository.create_database_record(database).unwrap();
+        let mut histories = HashMap::new();
+        let event = perform_action(
+            &mut repository,
+            &mut histories,
+            Action::CreateDatabaseRecordInline(database),
+        )
+        .unwrap();
+        let Event::ActionDone {
+            document,
+            refresh_database,
+            created_record_document: Some(record),
+            focus_created_record_name,
+            ..
+        } = event
+        else {
+            panic!("expected a created record");
+        };
+        assert!(document.is_none());
+        assert_eq!(refresh_database, Some(database));
+        assert!(focus_created_record_name);
+        let event = perform_action(
+            &mut repository,
+            &mut histories,
+            Action::ReorderDatabaseRecords {
+                database,
+                records: vec![record.page.id],
+                target: first,
+                after: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(event, Event::ActionDone { refresh_database: Some(id), document: None, .. } if id == database)
+        );
+        assert_eq!(
+            repository.database(database).unwrap().rows[0].page.id,
+            record.page.id
+        );
+    }
 
     #[test]
     fn undoing_record_deletion_refreshes_the_table_without_opening_the_record() {

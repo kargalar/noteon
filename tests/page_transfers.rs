@@ -372,6 +372,244 @@ fn selected_record_copy_and_cut_paste_as_page_blocks_in_the_editor() {
     }
 }
 
+#[test]
+fn selected_table_blocks_copy_and_cut_paste_with_their_content() {
+    for cut in [false, true] {
+        for focused in [false, true] {
+            let (_directory, mut repository) = repository();
+            let source = repository.create_page(None, "Source").unwrap();
+            let database = repository.create_database_block(source, 1).unwrap();
+            let record = create_record(&mut repository, database);
+            repository
+                .add_database_property(database, "Score", "number", &[])
+                .unwrap();
+            let score = repository
+                .database(database)
+                .unwrap()
+                .properties
+                .into_iter()
+                .find(|property| property.name == "Score")
+                .unwrap();
+            repository
+                .set_database_property(record, score.id, "42")
+                .unwrap();
+            let mut settings = repository.database(database).unwrap().view_settings;
+            settings.table_visible_properties = Some(vec![score.id]);
+            settings.table_column_widths.insert(score.id, 180.0);
+            repository
+                .set_database_view_settings(database, &settings)
+                .unwrap();
+            repository
+                .set_database_sort(database, &score.id.to_string(), false)
+                .unwrap();
+            let mut before = repository.blocks(source, 0, 1).unwrap().remove(0);
+            before.kind = BlockKind::Heading2;
+            before.content = "Before the table".into();
+            before.text_styles.push(TextStyleRange {
+                start: 0,
+                end: 6,
+                style: InlineTextStyle {
+                    bold: true,
+                    ..Default::default()
+                },
+            });
+            repository
+                .save(&SaveBatch {
+                    blocks: vec![before.clone()],
+                    ..Default::default()
+                })
+                .unwrap();
+            repository
+                .append_blocks(
+                    source,
+                    2,
+                    &[(BlockKind::Text, "After the table".into(), false)],
+                )
+                .unwrap();
+            let original = repository.blocks(source, 0, 10).unwrap();
+            let context = egui::Context::default();
+            noteon::ui::theme::configure(&context);
+            let mut editor = Editor::default();
+            editor.bind(repository.document(source).unwrap(), 1, None);
+            editor.cache.insert(0, original.clone());
+            editor
+                .selected_blocks
+                .extend(original.iter().map(|block| block.id));
+            let mut intents = Vec::new();
+            let output = context.run(
+                input(vec![if cut { Event::Cut } else { Event::Copy }]),
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        intents.extend(editor.show(ui, Palette::new(false), &[]));
+                    });
+                },
+            );
+            let copied = output
+                .platform_output
+                .commands
+                .iter()
+                .find_map(|command| {
+                    if let egui::OutputCommand::CopyText(text) = command {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .expect("selected table must produce clipboard content");
+            assert!(copied.contains("noteon://page/"));
+            if cut {
+                let ids = intents
+                    .iter()
+                    .find_map(|intent| {
+                        if let Intent::Action(Action::DeleteBlocks { blocks, .. }) = intent {
+                            Some(blocks)
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("cut removes the selected blocks");
+                repository.delete_blocks(source, ids).unwrap();
+            }
+            let destination = repository.create_page(None, "Destination").unwrap();
+            editor.bind(repository.document(destination).unwrap(), 2, None);
+            let blocks = repository.blocks(destination, 0, 10).unwrap();
+            let empty = blocks[0].id;
+            editor.cache.insert(0, blocks);
+            for _ in 0..2 {
+                let _ = context.run(input(Vec::new()), |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        editor.show(ui, Palette::new(false), &[]);
+                    });
+                });
+            }
+            if focused {
+                context.memory_mut(|memory| memory.request_focus(egui::Id::new(("block", empty))));
+            } else {
+                editor.selected_blocks.insert(empty);
+            }
+            intents.clear();
+            let _ = context.run(input(vec![Event::Paste(copied)]), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    intents.extend(editor.show(ui, Palette::new(false), &[]));
+                });
+            });
+            let (page, position, replace_block, blocks) = intents
+                .into_iter()
+                .find_map(|intent| {
+                    if let Intent::Action(Action::PasteBlocks {
+                        page,
+                        position,
+                        replace_block,
+                        blocks,
+                    }) = intent
+                    {
+                        Some((page, position, replace_block, blocks))
+                    } else {
+                        None
+                    }
+                })
+                .expect("paste must preserve the table block type");
+            assert_eq!(page, destination);
+            assert_eq!(replace_block, Some(empty));
+            repository
+                .paste_blocks(page, position, replace_block, &blocks)
+                .unwrap();
+            repository.ensure_subpage_blocks(destination).unwrap();
+            let pasted = repository.blocks(destination, 0, 10).unwrap();
+            assert_eq!(pasted.len(), 3);
+            assert_eq!(pasted[0].kind, before.kind);
+            assert_eq!(pasted[0].text_styles, before.text_styles);
+            assert_eq!(pasted[1].kind, BlockKind::Database);
+            assert_eq!(pasted[2].content, "After the table");
+            let cloned = pasted[1].content.parse::<i64>().unwrap();
+            assert_ne!(cloned, database);
+            let cloned_data = repository.database(cloned).unwrap();
+            let cloned_score = cloned_data
+                .properties
+                .iter()
+                .find(|property| property.name == "Score")
+                .unwrap();
+            assert_ne!(cloned_score.id, score.id);
+            assert_eq!(
+                cloned_data.view_settings.table_visible_properties,
+                Some(vec![cloned_score.id])
+            );
+            assert_eq!(
+                cloned_data.view_settings.table_column_widths[&cloned_score.id],
+                180.0
+            );
+            assert_eq!(cloned_data.sort_key, cloned_score.id.to_string());
+            assert_eq!(cloned_data.rows.len(), 1);
+            assert_eq!(cloned_data.rows[0].values[&cloned_score.id], "42");
+            assert_ne!(cloned_data.rows[0].page.id, record);
+            assert_eq!(
+                repository
+                    .blocks(cloned_data.rows[0].page.id, 0, 1)
+                    .unwrap()[0]
+                    .content,
+                "Preserved content"
+            );
+            repository
+                .set_database_property(cloned_data.rows[0].page.id, cloned_score.id, "99")
+                .unwrap();
+            assert_eq!(
+                repository.database(database).unwrap().rows[0].values[&score.id],
+                "42"
+            );
+        }
+    }
+}
+
+#[test]
+fn table_paste_is_atomic_and_can_be_repeated_on_the_source_page() {
+    let (_directory, mut repository) = repository();
+    let source = repository.create_page(None, "Source").unwrap();
+    let database = repository.create_database_block(source, 1).unwrap();
+    let record = create_record(&mut repository, database);
+    let table = repository.blocks(source, 1, 1).unwrap().remove(0);
+    let destination = repository.create_page(None, "Destination").unwrap();
+    let empty = repository.blocks(destination, 0, 1).unwrap()[0].id;
+    let before_pages = repository.list_pages().unwrap().len();
+    let mut invalid = table.clone();
+    invalid.content = "missing".into();
+    assert!(
+        repository
+            .paste_blocks(destination, 0, Some(empty), &[table.clone(), invalid])
+            .is_err()
+    );
+    assert_eq!(repository.list_pages().unwrap().len(), before_pages);
+    assert_eq!(repository.blocks(destination, 0, 1).unwrap()[0].id, empty);
+    assert!(
+        repository
+            .paste_blocks(record, 0, None, std::slice::from_ref(&table))
+            .is_err()
+    );
+    for _ in 0..2 {
+        repository
+            .paste_blocks(source, 2, None, std::slice::from_ref(&table))
+            .unwrap();
+    }
+    let tables: Vec<_> = repository
+        .blocks(source, 0, 10)
+        .unwrap()
+        .into_iter()
+        .filter(|block| block.kind == BlockKind::Database)
+        .collect();
+    assert_eq!(tables.len(), 3);
+    assert_ne!(tables[1].content, tables[2].content);
+    repository.delete_pages_permanently(&[database]).unwrap();
+    for table in &tables[1..] {
+        assert_eq!(
+            repository
+                .database(table.content.parse().unwrap())
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+    }
+}
+
 fn pointer(position: egui::Pos2, pressed: bool) -> Event {
     Event::PointerButton {
         pos: position,

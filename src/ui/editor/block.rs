@@ -838,6 +838,10 @@ fn show_menu(
             }
         }
         ui.separator();
+        if ui.button(text::COPY_BLOCKS).clicked() {
+            crate::ui::block_clipboard::copy(ui.ctx(), vec![block.clone()]);
+            ui.close_menu();
+        }
         if ui.button("▲ Move up").clicked() {
             intents.push(Intent::Action(Action::MoveBlock {
                 page: block.page_id,
@@ -954,12 +958,18 @@ fn handle_paste(
     editor_id: egui::Id,
     intents: &mut Vec<Intent>,
 ) -> bool {
-    if let Some(action) = crate::ui::page_transfer::take_paste(
+    let position = block.position + usize::from(!block.content.is_empty());
+    let replace_block =
+        (block.kind == BlockKind::Text && block.content.is_empty()).then_some(block.id);
+    if let Some(action) = crate::ui::block_clipboard::take_paste(
         ui,
         block.page_id,
-        Some(block.position + usize::from(!block.content.is_empty())),
-        block.content.is_empty().then_some(block.id),
-    ) {
+        position,
+        replace_block,
+    )
+    .or_else(|| {
+        crate::ui::page_transfer::take_paste(ui, block.page_id, Some(position), replace_block)
+    }) {
         intents.push(Intent::Action(action));
         return true;
     }

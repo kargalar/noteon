@@ -295,7 +295,15 @@ impl Editor {
                 })
                 .map(|block| block.id);
             if let Some(action) =
-                crate::ui::page_transfer::take_paste(ui, page_id, Some(position), replace_block)
+                crate::ui::block_clipboard::take_paste(ui, page_id, position, replace_block)
+                    .or_else(|| {
+                        crate::ui::page_transfer::take_paste(
+                            ui,
+                            page_id,
+                            Some(position),
+                            replace_block,
+                        )
+                    })
             {
                 intents.push(Intent::Action(action));
             }

@@ -10,5 +10,6 @@ pub const SEARCH_TITLE: &str = "Search workspace";
 pub const SEARCH_PLACEHOLDER: &str = "A page, an idea, a word…";
 pub const TEXT_PLACEHOLDER: &str = "Write something";
 pub const ADD_BLOCK: &str = "+ Add block";
+pub const COPY_BLOCKS: &str = "📋  Copy blocks";
 pub const EMPTY_TITLE: &str = "Make room for your thoughts.";
 pub const EMPTY_DESCRIPTION: &str = "Choose a page or start something new.";

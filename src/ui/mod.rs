@@ -1,4 +1,5 @@
 use crate::ui::menus::PersistentMenuUi;
+mod block_clipboard;
 pub mod database;
 pub mod editor;
 pub mod menus;

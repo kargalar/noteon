@@ -454,7 +454,8 @@ fn show_inner(
                 true,
             );
         } else {
-            ui.ctx().copy_text(selected_rows_as_tsv(&rows, &data.properties));
+            ui.ctx()
+                .copy_text(selected_rows_as_tsv(&rows, &data.properties));
         }
     }
     if !ui.ctx().wants_keyboard_input()
@@ -778,12 +779,11 @@ fn selected_rows_as_tsv(rows: &[&DatabaseRow], properties: &[DatabaseProperty]) 
 
     for row in rows {
         let mut cells = vec![row.page.display_title().to_owned()];
-        cells.extend(properties.iter().map(|property| {
-            row.values
-                .get(&property.id)
-                .cloned()
-                .unwrap_or_default()
-        }));
+        cells.extend(
+            properties
+                .iter()
+                .map(|property| row.values.get(&property.id).cloned().unwrap_or_default()),
+        );
         lines.push(
             cells
                 .iter()

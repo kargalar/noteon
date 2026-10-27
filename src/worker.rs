@@ -64,6 +64,12 @@ pub enum Action {
         position: usize,
         blocks: Vec<crate::domain::model::StyledBlockContent>,
     },
+    PasteBlocks {
+        page: PageId,
+        position: usize,
+        replace_block: Option<BlockId>,
+        blocks: Vec<Block>,
+    },
     ImportMedia {
         page: PageId,
         position: usize,
@@ -682,9 +688,9 @@ fn perform_action(
     let mut page_transfer = None;
 
     let action_info: Option<(PageId, &'static str)> = match &action {
-        Action::InsertBlock { page, .. } | Action::InsertBlocks { page, .. } => {
-            Some((*page, "Blok eklendi"))
-        }
+        Action::InsertBlock { page, .. }
+        | Action::InsertBlocks { page, .. }
+        | Action::PasteBlocks { page, .. } => Some((*page, "Blok eklendi")),
         Action::CreateSubpageBlock { page, .. } => Some((*page, "Alt sayfa eklendi")),
         Action::ImportMedia { page, .. } => Some((*page, "Medya eklendi")),
         Action::DeleteBlock { page, .. } | Action::DeleteBlocks { page, .. } => {
@@ -1178,6 +1184,15 @@ fn perform_action(
                 blocks.len(),
                 column_anchor,
             )?);
+            Some(page)
+        }
+        Action::PasteBlocks {
+            page,
+            position,
+            replace_block,
+            blocks,
+        } => {
+            repository.paste_blocks(page, position, replace_block, &blocks)?;
             Some(page)
         }
         Action::ImportMedia {

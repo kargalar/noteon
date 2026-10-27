@@ -30,9 +30,14 @@ pub fn copy_pages(context: &Context, pages: Vec<PageId>, titles: &[String], cut:
         .collect::<Vec<_>>()
         .join("\n");
     context.copy_text(text.clone());
+    crate::ui::block_clipboard::clear(context);
     context.data_mut(|data| {
         data.insert_temp(clipboard_id(), PageClipboard { text, pages, cut });
     });
+}
+
+pub(super) fn clear_clipboard(context: &Context) {
+    context.data_mut(|data| data.remove::<PageClipboard>(clipboard_id()));
 }
 
 pub fn is_cut(context: &Context, page: PageId) -> bool {

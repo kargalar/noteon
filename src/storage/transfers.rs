@@ -4,11 +4,105 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::{Repository, blocks::normalize_page_blocks, sql_index};
 use crate::domain::model::{
-    DatabaseViewSettings, PageId, parse_property_options, serialize_property_options,
+    Block, BlockId, BlockKind, DatabaseViewSettings, PageId, parse_property_options,
+    serialize_property_options,
 };
 use crate::error::{Error, Result};
 
 impl Repository {
+    /// Paste block content and clone referenced tables/pages in the same transaction.
+    pub fn paste_blocks(
+        &mut self,
+        page: PageId,
+        position: usize,
+        replace_block: Option<BlockId>,
+        blocks: &[Block],
+    ) -> Result<()> {
+        if blocks.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.transaction()?;
+        let count: i64 = transaction.query_row(
+            "SELECT block_count FROM pages WHERE id=?1 AND trashed_by IS NULL",
+            [page],
+            |row| row.get(0),
+        )?;
+        let position = if let Some(block) = replace_block {
+            let position = transaction.query_row(
+                "SELECT position FROM blocks WHERE id=?1 AND page_id=?2 AND kind='text' AND content=''",
+                params![block, page],
+                |row| row.get::<_, i64>(0),
+            ).optional()?.ok_or_else(|| Error::Invalid("The destination block is no longer empty.".into()))?;
+            transaction.execute("DELETE FROM blocks WHERE id=?1", [block])?;
+            normalize_page_blocks(&transaction, page)?;
+            position
+        } else {
+            sql_index(position.min(usize::try_from(count).unwrap_or(0)))?
+        };
+        let mut pages = HashMap::new();
+        let mut properties = HashMap::new();
+        for block in blocks {
+            if !matches!(block.kind, BlockKind::Database | BlockKind::PageLink) {
+                continue;
+            }
+            let source = block
+                .content
+                .parse::<PageId>()
+                .map_err(|_| Error::Invalid("Invalid copied page reference.".into()))?;
+            if pages.contains_key(&source) {
+                continue;
+            }
+            let valid: bool = transaction.query_row(
+                "WITH RECURSIVE descendants(id) AS (SELECT ?1 UNION ALL SELECT p.id FROM pages p JOIN descendants d ON p.parent_id=d.id)
+                 SELECT EXISTS(SELECT 1 FROM pages WHERE id=?1 AND trashed_by IS NULL)
+                 AND NOT EXISTS(SELECT 1 FROM descendants WHERE id=?2)",
+                params![source, page],
+                |row| row.get(0),
+            )?;
+            if !valid {
+                return Err(Error::Invalid(
+                    "The copied page is unavailable or contains the destination.".into(),
+                ));
+            }
+            clone_page_tree(
+                &transaction,
+                source,
+                Some(page),
+                &mut pages,
+                &mut properties,
+            )?;
+        }
+        remap_cloned_references(&transaction, &pages, &properties)?;
+        transaction.execute(
+            "UPDATE blocks SET position=position+?1 WHERE page_id=?2 AND position>=?3",
+            params![sql_index(blocks.len())?, page, position],
+        )?;
+        for (offset, block) in blocks.iter().enumerate() {
+            let content = if matches!(block.kind, BlockKind::Database | BlockKind::PageLink) {
+                let source = block
+                    .content
+                    .parse::<PageId>()
+                    .map_err(|_| Error::Invalid("Invalid copied page reference.".into()))?;
+                pages[&source].to_string()
+            } else {
+                block.content.clone()
+            };
+            let styles = serde_json::to_string(&block.text_styles)
+                .map_err(|error| Error::Invalid(format!("Invalid text formatting: {error}")))?;
+            transaction.execute(
+                "INSERT INTO blocks(page_id,position,kind,content,checked,media_width,text_styles) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![page, position + sql_index(offset)?, block.kind.as_str(), content, block.checked, block.media_width, styles],
+            )?;
+        }
+        normalize_page_blocks(&transaction, page)?;
+        transaction.execute(
+            "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
+            [page],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Atomically move or clone complete page trees and insert page blocks at the destination.
     pub fn transfer_pages(
         &mut self,

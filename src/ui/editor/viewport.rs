@@ -956,10 +956,7 @@ impl Editor {
                 }
             }
             if do_cut {
-                let copied = self.selected_blocks_plain_text();
-                if !copied.is_empty() {
-                    ui.ctx().copy_text(copied);
-                }
+                self.copy_selected_blocks(ui.ctx());
                 intents.push(Intent::Action(Action::DeleteBlocks {
                     page: page_id,
                     blocks: ordered_ids.clone(),
@@ -972,10 +969,7 @@ impl Editor {
                 }));
             }
             if do_copy {
-                let copied = self.selected_blocks_plain_text();
-                if !copied.is_empty() {
-                    ui.ctx().copy_text(copied);
-                }
+                self.copy_selected_blocks(ui.ctx());
             }
             if clear_selection {
                 self.selected_blocks.clear();
@@ -1062,19 +1056,19 @@ impl Editor {
             .collect()
     }
 
-    fn selected_blocks_plain_text(&self) -> String {
+    fn copy_selected_blocks(&self, context: &egui::Context) {
         let Some(document) = &self.document else {
-            return String::new();
+            return;
         };
-        let mut lines = Vec::new();
+        let mut blocks = Vec::new();
         for (position, stub) in document.outline.iter().enumerate() {
             if self.selected_blocks.contains(&stub.id)
                 && let Some(block) = self.cache.blocks.get(&position)
             {
-                lines.push(block.content.as_str());
+                blocks.push(block.clone());
             }
         }
-        lines.join("\n")
+        crate::ui::block_clipboard::copy(context, blocks);
     }
 
     fn show_bulk_context_menu(
@@ -1346,11 +1340,8 @@ impl Editor {
                         }));
                         close_menu = true;
                     }
-                    if ui.button("📋  Copy text").clicked() {
-                        let copied = self.selected_blocks_plain_text();
-                        if !copied.is_empty() {
-                            ui.ctx().copy_text(copied);
-                        }
+                    if ui.button(crate::ui::text::COPY_BLOCKS).clicked() {
+                        self.copy_selected_blocks(ui.ctx());
                         close_menu = true;
                     }
                     ui.separator();

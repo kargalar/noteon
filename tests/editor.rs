@@ -1533,6 +1533,17 @@ fn title_enter_inserts_an_empty_text_block_at_the_top() {
 }
 
 #[test]
+fn inserting_a_block_preserves_the_view_while_focusing_it() {
+    let mut editor = editor("Text", 3);
+    let document = editor.document.clone().unwrap();
+
+    editor.bind_with_focus(document, 2, Some(2), false);
+
+    assert_eq!(editor.focus_position, Some(2));
+    assert_eq!(editor.jump_to, None);
+}
+
+#[test]
 fn enter_creates_new_block_below() {
     let context = egui::Context::default();
     let mut editor = editor("İlk satır", 1);

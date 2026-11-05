@@ -113,7 +113,15 @@ impl Editor {
         focus: Option<usize>,
         focus_at_end: bool,
     ) {
+        let same_page = self
+            .document
+            .as_ref()
+            .is_some_and(|old| old.page.id == document.page.id);
         self.bind(document, generation, focus);
+        if same_page && focus.is_some() && !focus_at_end {
+            self.jump_to = None;
+            self.reset_scroll = true;
+        }
         self.focus_at_end = focus_at_end;
     }
 

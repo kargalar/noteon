@@ -55,7 +55,7 @@ impl Repository {
         }
 
         static NEXT_MEDIA_ID: AtomicU64 = AtomicU64::new(0);
-        let media_directory = data_directory.join("attachments");
+        let media_directory = self.attachment_directory(page, data_directory)?;
         std::fs::create_dir_all(&media_directory)?;
         let file_name = format!(
             "{}-{}-{}.{}",

@@ -1037,6 +1037,132 @@ fn dropped_media_is_copied_into_noteon_data_and_inserted_as_a_block() {
 }
 
 #[test]
+fn database_row_media_is_stored_below_its_database_and_page_folders() {
+    let (directory, mut repository) = database();
+    let database_id = repository.create_database(None).unwrap();
+    let record_id = repository.create_database_record(database_id).unwrap();
+    repository
+        .rename_database_record(record_id, "Arrival")
+        .unwrap();
+    let source = directory.path().join("poster.png");
+    std::fs::write(&source, b"poster").unwrap();
+    let data_directory = directory.path().join("noteon-data");
+
+    repository
+        .import_media_block(record_id, 0, &source, &data_directory)
+        .unwrap();
+    let media_path = std::path::PathBuf::from(
+        repository.blocks(record_id, 0, 1).unwrap()[0]
+            .content
+            .as_str(),
+    );
+    let record_folder = media_path.parent().unwrap();
+    let database_folder = record_folder.parent().unwrap();
+    assert!(
+        record_folder
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("Arrival-")
+    );
+    assert!(
+        database_folder
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("New database-")
+    );
+    assert!(media_path.is_file());
+}
+
+#[test]
+fn existing_database_row_attachments_are_moved_into_nested_folders_on_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_directory = directory.path().join("data");
+    let database_path = data_directory.join("noteon.sqlite");
+    let legacy_directory = data_directory.join("attachments/notion/old-page");
+    std::fs::create_dir_all(&legacy_directory).unwrap();
+    let legacy_cover = legacy_directory.join("poster.png");
+    std::fs::write(&legacy_cover, b"poster").unwrap();
+
+    let (database_id, record_id, outside_page_id) = {
+        let mut repository = Repository::open(&database_path).unwrap();
+        let database_id = repository.create_database(None).unwrap();
+        let record_id = repository.create_database_record(database_id).unwrap();
+        let outside_page_id = repository.create_page(None, "Outside table").unwrap();
+        repository
+            .rename_database_record(record_id, "Arrival")
+            .unwrap();
+        let mut edit = PageEdit::from(&repository.page(record_id).unwrap());
+        edit.cover_image = Some(legacy_cover.to_string_lossy().into_owned());
+        repository
+            .save(&SaveBatch {
+                pages: vec![edit],
+                blocks: Vec::new(),
+            })
+            .unwrap();
+        repository
+            .append_blocks(
+                record_id,
+                1,
+                &[(
+                    BlockKind::Text,
+                    format!("📎 Poster — {}", legacy_cover.display()),
+                    false,
+                )],
+            )
+            .unwrap();
+        repository
+            .append_blocks(
+                outside_page_id,
+                1,
+                &[(
+                    BlockKind::Text,
+                    format!("📎 Shared poster — {}", legacy_cover.display()),
+                    false,
+                )],
+            )
+            .unwrap();
+        (database_id, record_id, outside_page_id)
+    };
+
+    let repository = Repository::open(&database_path).unwrap();
+    let cover = repository.page(record_id).unwrap().cover_image.unwrap();
+    let cover_path = std::path::PathBuf::from(&cover);
+    assert!(cover_path.is_file());
+    assert!(legacy_cover.is_file());
+    let text_block = repository.blocks(record_id, 1, 1).unwrap().remove(0);
+    assert!(text_block.content.ends_with(&cover));
+    let outside_block = repository.blocks(outside_page_id, 1, 1).unwrap().remove(0);
+    let outside_path = outside_block.content.rsplit_once(" — ").unwrap().1;
+    assert!(std::path::Path::new(outside_path).is_file());
+    assert_eq!(
+        std::fs::canonicalize(outside_path).unwrap(),
+        std::fs::canonicalize(&legacy_cover).unwrap()
+    );
+    assert!(
+        cover_path
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("Arrival-")
+    );
+    assert!(
+        cover_path
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&format!("New database-{database_id}"))
+    );
+}
+
+#[test]
 fn virtual_layout_maps_variable_height_rows_after_updates() {
     let mut layout = VirtualLayout::new([20.0, 40.0, 15.0]);
     assert_eq!(layout.row_at(0.0), 0);

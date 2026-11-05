@@ -11,7 +11,12 @@ use crate::error::{Error, Result};
 use super::{Repository, sql_index};
 
 impl Repository {
-    pub fn import_cover_image(&self, source: &Path, data_directory: &Path) -> Result<String> {
+    pub fn import_cover_image(
+        &self,
+        page: PageId,
+        source: &Path,
+        data_directory: &Path,
+    ) -> Result<String> {
         let extension = source
             .extension()
             .and_then(|value| value.to_str())
@@ -31,7 +36,7 @@ impl Repository {
             ));
         }
         static NEXT_COVER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let directory = data_directory.join("attachments");
+        let directory = self.attachment_directory(page, data_directory)?;
         std::fs::create_dir_all(&directory)?;
         let name = format!(
             "cover-{}-{}.{}",

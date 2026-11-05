@@ -73,7 +73,7 @@ Choose **Sort → Custom** in a database table, then drag a record's icon to cha
 
 ## Data and backups
 
-By default, Noteon stores the workspace at `%LOCALAPPDATA%\Kargalar\Noteon\data\noteon.sqlite`. The exact location is shown in Settings. To choose a different data folder, set `NOTEON_DATA_DIR` before launching Noteon:
+By default, Noteon stores the workspace in the `data` folder next to `Noteon.exe`. Keep this folder with the executable when moving the app. On first launch, an existing workspace in `%LOCALAPPDATA%\Kargalar\Noteon\data` is moved automatically when it is on the same drive, or copied when it is on a different drive. The exact location is shown in Settings. To choose a different data folder, set `NOTEON_DATA_DIR` before launching Noteon:
 
 ```powershell
 $env:NOTEON_DATA_DIR = 'D:\Notes\Noteon'

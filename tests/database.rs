@@ -368,6 +368,94 @@ fn table_delete_trashes_the_current_property_row_without_checkbox_selection() {
 }
 
 #[test]
+fn table_backspace_does_not_trash_the_current_property_row() {
+    for kind in [
+        "text",
+        "number",
+        "url",
+        "email",
+        "phone",
+        "checkbox",
+        "select",
+        "multi-select",
+        "date",
+        "created_time",
+        "last_edited_time",
+    ] {
+        let context = egui::Context::default();
+        noteon::ui::theme::configure(&context);
+        let mut database = test_database();
+        database
+            .properties
+            .push(noteon::domain::model::DatabaseProperty {
+                id: 7,
+                name: "Property".into(),
+                kind: kind.into(),
+                options: Vec::new(),
+            });
+        frame_database(&context, &mut database, vec![], Modifiers::NONE);
+        let position = egui::pos2(420.0, 160.0);
+        frame_database(
+            &context,
+            &mut database,
+            vec![Event::PointerMoved(position)],
+            Modifiers::NONE,
+        );
+        for pressed in [true, false] {
+            frame_database(
+                &context,
+                &mut database,
+                vec![Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                }],
+                Modifiers::NONE,
+            );
+        }
+        let selected: HashSet<PageId> = context
+            .data(|state| {
+                state.get_temp(egui::Id::new(("database-selected-rows", database.page_id)))
+            })
+            .unwrap_or_default();
+        assert!(selected.is_empty());
+        if kind == "text" {
+            assert!(context.memory(|memory| memory.focused()).is_some());
+            frame_database(
+                &context,
+                &mut database,
+                vec![Event::PointerMoved(egui::pos2(900.0, 700.0))],
+                Modifiers::NONE,
+            );
+        }
+        let intents = frame_database(
+            &context,
+            &mut database,
+            vec![Event::Key {
+                key: Key::Backspace,
+                physical_key: Some(Key::Backspace),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+        );
+        let trashed: Vec<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::Action(noteon::worker::Action::Trash(id)) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            trashed.is_empty(),
+            "Backspace must not trash row for property kind: {kind}"
+        );
+    }
+}
+
+#[test]
 fn table_delete_prioritizes_multiple_selected_rows_over_focused_database_title() {
     for selected in [HashSet::from([1_i64, 3]), HashSet::from([1_i64])] {
         let context = egui::Context::default();
@@ -919,4 +1007,393 @@ fn property_type_picker_renders_two_column_groups_and_supports_all_types() {
             assert!(picked.is_none());
         });
     });
+}
+
+#[test]
+fn test_backspace_deletes_text_in_name_cell() {
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let mut database = test_database();
+    let mut prop_drafts = HashMap::new();
+    let mut title_drafts = HashMap::new();
+    let mut val_drafts = HashMap::new();
+
+    fn run_frame(
+        context: &egui::Context,
+        database: &mut DatabaseData,
+        prop_drafts: &mut HashMap<i64, (String, String)>,
+        title_drafts: &mut HashMap<PageId, String>,
+        val_drafts: &mut HashMap<(PageId, i64), String>,
+        events: Vec<Event>,
+    ) -> (Vec<Intent>, egui::FullOutput) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut intents = Vec::new();
+        let output = context.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut drafts = Drafts {
+                    properties: prop_drafts,
+                    titles: title_drafts,
+                    values: val_drafts,
+                };
+                show(
+                    ui,
+                    database,
+                    None,
+                    &[],
+                    false,
+                    Palette::new(false),
+                    &mut intents,
+                    &mut drafts,
+                );
+            });
+        });
+        (intents, output)
+    }
+
+    let (_, output) = run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![],
+    );
+    let shape = output
+        .shapes
+        .iter()
+        .find_map(|s| {
+            if let egui::Shape::Text(t) = &s.shape
+                && t.galley.text() == "Record 1"
+            {
+                Some(t.pos)
+            } else {
+                None
+            }
+        })
+        .expect("Record 1 must exist");
+
+    // Click on "Record 1"
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::PointerMoved(shape)],
+    );
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::PointerButton {
+            pos: shape,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::PointerButton {
+            pos: shape,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+
+    let focused = context
+        .memory(|m| m.focused())
+        .expect("TextEdit should be focused");
+
+    // Test 1: Cursor at the end (index 8)
+    let mut state = egui::text_edit::TextEditState::load(&context, focused).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::one(
+            egui::text::CCursor::new(8),
+        )));
+    state.store(&context, focused);
+
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::Key {
+            key: Key::Backspace,
+            physical_key: Some(Key::Backspace),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+
+    assert_eq!(title_drafts.get(&1).map(String::as_str), Some("Record "));
+
+    // Test 2: Full selection (0 to 7)
+    let mut state = egui::text_edit::TextEditState::load(&context, focused).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(7),
+        )));
+    state.store(&context, focused);
+
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::Key {
+            key: Key::Backspace,
+            physical_key: Some(Key::Backspace),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+
+    assert_eq!(title_drafts.get(&1).map(String::as_str), Some(""));
+}
+
+#[test]
+fn test_focus_retention_in_full_page_text_property() {
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let mut database = test_database();
+    database
+        .properties
+        .push(noteon::domain::model::DatabaseProperty {
+            id: 7,
+            name: "Notes".into(),
+            kind: "text".into(),
+            options: Vec::new(),
+        });
+
+    let mut prop_drafts = HashMap::new();
+    let mut title_drafts = HashMap::new();
+    let mut val_drafts = HashMap::new();
+
+    fn run_frame(
+        context: &egui::Context,
+        database: &mut DatabaseData,
+        prop_drafts: &mut HashMap<i64, (String, String)>,
+        title_drafts: &mut HashMap<PageId, String>,
+        val_drafts: &mut HashMap<(PageId, i64), String>,
+        events: Vec<Event>,
+        full_page: bool,
+    ) -> (Vec<Intent>, egui::FullOutput) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut intents = Vec::new();
+        let output = context.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut drafts = Drafts {
+                    properties: prop_drafts,
+                    titles: title_drafts,
+                    values: val_drafts,
+                };
+                if full_page {
+                    show(
+                        ui,
+                        database,
+                        None,
+                        &[],
+                        false,
+                        Palette::new(false),
+                        &mut intents,
+                        &mut drafts,
+                    );
+                } else {
+                    show_embedded(ui, database, Palette::new(false), &mut intents, &mut drafts);
+                }
+            });
+        });
+        (intents, output)
+    }
+
+    let (_, output) = run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![],
+        true,
+    );
+    // Find "Empty"
+    let pos = output
+        .shapes
+        .iter()
+        .find_map(|s| {
+            if let egui::Shape::Text(t) = &s.shape
+                && t.galley.text() == "Empty"
+            {
+                Some(t.pos + egui::vec2(5.0, -6.0))
+            } else {
+                None
+            }
+        })
+        .expect("Empty text property must exist");
+    println!("Clicking at {pos:?}");
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::PointerMoved(pos)],
+        true,
+    );
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }],
+        true,
+    );
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+        true,
+    );
+
+    let focused = context.memory(|m| m.focused());
+    println!("Focused after click: {focused:?}");
+    assert!(focused.is_some(), "Cell must be focused after click");
+
+    for frame_idx in 0..10 {
+        run_frame(
+            &context,
+            &mut database,
+            &mut prop_drafts,
+            &mut title_drafts,
+            &mut val_drafts,
+            vec![],
+            true,
+        );
+        let f = context.memory(|m| m.focused());
+        assert_eq!(f, focused, "Focus dropped on idle frame {frame_idx}!");
+    }
+
+    for (i, ch) in "hello world".chars().enumerate() {
+        run_frame(
+            &context,
+            &mut database,
+            &mut prop_drafts,
+            &mut title_drafts,
+            &mut val_drafts,
+            vec![
+                Event::PointerMoved(pos + egui::vec2(i as f32, 0.0)),
+                Event::Text(ch.to_string()),
+            ],
+            true,
+        );
+        let f = context.memory(|m| m.focused());
+        assert_eq!(f, focused, "Focus dropped after typing '{ch}' at step {i}!");
+    }
+
+    // Pressing Backspace must not drop focus and must not trash the row
+    let (intents, _) = run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::Key {
+            key: Key::Backspace,
+            physical_key: None,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+        }],
+        true,
+    );
+    assert_eq!(
+        context.memory(|m| m.focused()),
+        focused,
+        "Focus dropped after Backspace!"
+    );
+    assert!(
+        intents.is_empty(),
+        "Backspace must not generate trash intent while editing!"
+    );
+
+    // Clicking in the cell's empty space to the right must keep/request focus
+    let right_pos = pos + egui::vec2(50.0, 0.0);
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![
+            Event::PointerMoved(right_pos),
+            Event::PointerButton {
+                pos: right_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+        true,
+    );
+    run_frame(
+        &context,
+        &mut database,
+        &mut prop_drafts,
+        &mut title_drafts,
+        &mut val_drafts,
+        vec![Event::PointerButton {
+            pos: right_pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+        true,
+    );
+    assert_eq!(
+        context.memory(|m| m.focused()),
+        focused,
+        "Focus dropped after clicking empty space on right!"
+    );
 }

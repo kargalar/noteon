@@ -6,7 +6,7 @@ pub enum Error {
     Database(#[from] rusqlite::Error),
     #[error("File operation failed: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Could not find the local data directory. You can set NOTEON_DATA_DIR.")]
+    #[error("Could not locate the executable directory. You can set NOTEON_DATA_DIR.")]
     DataDirectory,
     #[error("{0}")]
     Invalid(String),

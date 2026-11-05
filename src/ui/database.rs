@@ -386,10 +386,8 @@ fn delete_selected_table_rows(ui: &Ui, data: &DatabaseData, intents: &mut Vec<In
     } else {
         focused_row.or(hovered_row).into_iter().collect()
     };
-    let delete_pressed = ui.input_mut(|input| {
-        input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-            || input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-    });
+    let delete_pressed =
+        ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Delete));
     if !targets.is_empty() && delete_pressed {
         for page in targets {
             intents.push(Intent::Action(Action::Trash(page)));
@@ -447,20 +445,15 @@ fn show_inner(
             .iter()
             .filter(|row| selected.contains(&row.page.id))
             .collect();
-        if cut {
-            crate::ui::page_transfer::copy_pages(
-                ui.ctx(),
-                rows.iter().map(|row| row.page.id).collect(),
-                &rows
-                    .iter()
-                    .map(|row| row.page.display_title().to_owned())
-                    .collect::<Vec<_>>(),
-                true,
-            );
-        } else {
-            ui.ctx()
-                .copy_text(selected_rows_as_tsv(&rows, &data.properties));
-        }
+        crate::ui::page_transfer::copy_pages(
+            ui.ctx(),
+            rows.iter().map(|row| row.page.id).collect(),
+            &rows
+                .iter()
+                .map(|row| row.page.display_title().to_owned())
+                .collect::<Vec<_>>(),
+            cut,
+        );
     }
     if !ui.ctx().wants_keyboard_input()
         && crate::ui::selection::is_active(ui, selection_scope)
@@ -773,31 +766,6 @@ fn show_inner(
             intents,
         );
     }
-}
-
-fn selected_rows_as_tsv(rows: &[&DatabaseRow], properties: &[DatabaseProperty]) -> String {
-    let mut lines = Vec::with_capacity(rows.len() + 1);
-    let mut header = vec!["Name".to_owned()];
-    header.extend(properties.iter().map(|property| property.name.clone()));
-    lines.push(header.join("\t"));
-
-    for row in rows {
-        let mut cells = vec![row.page.display_title().to_owned()];
-        cells.extend(
-            properties
-                .iter()
-                .map(|property| row.values.get(&property.id).cloned().unwrap_or_default()),
-        );
-        lines.push(
-            cells
-                .iter()
-                .map(|cell| cell.replace(['\t', '\r', '\n'], " "))
-                .collect::<Vec<_>>()
-                .join("\t"),
-        );
-    }
-
-    lines.join("\n")
 }
 
 fn show_title(
@@ -1960,10 +1928,8 @@ fn show_table(
                 .unwrap_or_default();
 
             if !selected_rows.is_empty() && !ui.ctx().wants_keyboard_input() {
-                let delete_pressed = ui.input_mut(|i| {
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-                });
+                let delete_pressed =
+                    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete));
                 if delete_pressed {
                     for id in &selected_rows {
                         intents.push(Intent::Action(Action::Trash(*id)));
@@ -2287,7 +2253,7 @@ fn show_table(
                                 .max(24.0);
 
                                 let title_edit_id =
-                                    ui.id().with(("table-row-title-edit", row.page.id));
+                                    egui::Id::new(("table-row-title-edit", row.page.id));
 
                                 let text_color =
                                     if crate::ui::page_transfer::is_cut(ui.ctx(), row.page.id) {
@@ -2540,7 +2506,7 @@ fn show_table(
 
                         for (idx, property) in visible_properties.iter().enumerate() {
                             let col_w = prop_widths[idx];
-                            table_cell(
+                            let (cell_rect, response) = table_cell(
                                 ui,
                                 col_w,
                                 TABLE_ROW_HEIGHT,
@@ -2570,10 +2536,54 @@ fn show_table(
                                                     &response,
                                                 );
                                             }
+                                            response
                                         },
-                                    );
+                                    )
+                                    .inner
                                 },
                             );
+
+                            let is_text_editable = matches!(
+                                property.kind.as_str(),
+                                "text" | "number" | "url" | "email" | "phone"
+                            );
+                            if is_text_editable && !busy {
+                                let in_cell =
+                                    pointer_pos.is_some_and(|pos| cell_rect.contains(pos));
+                                let in_widget =
+                                    pointer_pos.is_some_and(|pos| response.rect.contains(pos));
+                                if in_cell && !marquee_active {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                                    if primary_clicked
+                                        && !is_ctrl
+                                        && !is_shift
+                                        && ui.ctx().dragged_id().is_none()
+                                        && !in_widget
+                                    {
+                                        response.request_focus();
+                                        let edit_id = egui::Id::new((
+                                            "database-property-value",
+                                            row.page.id,
+                                            property.id,
+                                        ));
+                                        let mut state =
+                                            egui::text_edit::TextEditState::load(ui.ctx(), edit_id)
+                                                .unwrap_or_default();
+                                        let current_val = drafts
+                                            .values
+                                            .get(&(row.page.id, property.id))
+                                            .or_else(|| row.values.get(&property.id))
+                                            .map(String::as_str)
+                                            .unwrap_or("");
+                                        let char_count = current_val.chars().count();
+                                        state.cursor.set_char_range(Some(CCursorRange::two(
+                                            CCursor::new(char_count),
+                                            CCursor::new(char_count),
+                                        )));
+                                        state.store(ui.ctx(), edit_id);
+                                    }
+                                }
+                            }
                         }
                     });
                     if !busy && data.sort_key == "manual" {
@@ -2952,7 +2962,7 @@ fn table_border_color(palette: Palette) -> Color32 {
     )
 }
 
-fn table_cell(
+fn table_cell<R>(
     ui: &mut Ui,
     width: f32,
     height: f32,
@@ -2960,8 +2970,8 @@ fn table_cell(
     _is_header: bool,
     _is_first_col: bool,
     is_selected: bool,
-    add_contents: impl FnOnce(&mut Ui, bool),
-) {
+    add_contents: impl FnOnce(&mut Ui, bool) -> R,
+) -> (egui::Rect, R) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let hovered = response.hovered() || ui.rect_contains_pointer(rect);
     let fill = if is_selected {
@@ -2996,11 +3006,13 @@ fn table_cell(
     );
     let mut child_ui = ui.new_child(
         egui::UiBuilder::new()
+            .id_salt(("table-cell-content", rect.min.x as i32))
             .max_rect(content_rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     child_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
-    add_contents(&mut child_ui, hovered);
+    let inner = add_contents(&mut child_ui, hovered);
+    (rect, inner)
 }
 
 fn table_footer_cell(
@@ -4014,8 +4026,7 @@ fn property_editor(
             } else {
                 (column_width - 16.0).max(24.0)
             };
-            let edit_id =
-                ui.make_persistent_id(("database-property-value", row.page.id, property.id));
+            let edit_id = egui::Id::new(("database-property-value", row.page.id, property.id));
             let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
                 crate::ui::page_properties::layout_property_value(
                     ui,
@@ -5554,11 +5565,7 @@ mod property_value_tests {
                     },
                     |context| {
                         egui::CentralPanel::default().show(context, |ui| {
-                            edit_id = ui.make_persistent_id((
-                                "database-property-value",
-                                page,
-                                property.id,
-                            ));
+                            edit_id = egui::Id::new(("database-property-value", page, property.id));
                             property_editor(
                                 ui,
                                 row,

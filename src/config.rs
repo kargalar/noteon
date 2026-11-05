@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -316,14 +316,88 @@ pub fn data_directory() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("NOTEON_DATA_DIR") {
         return Ok(PathBuf::from(path));
     }
-    directories::ProjectDirs::from("", "Kargalar", APP_NAME)
-        .map(|dirs| dirs.data_local_dir().to_path_buf())
-        .ok_or(Error::DataDirectory)
+    let executable = std::env::current_exe()?;
+    let directory = executable
+        .parent()
+        .ok_or(Error::DataDirectory)?
+        .join("data");
+    if let Some(legacy) = directories::ProjectDirs::from("", "Kargalar", APP_NAME) {
+        migrate_legacy_data(legacy.data_local_dir(), &directory)?;
+    }
+    Ok(directory)
+}
+
+fn migrate_legacy_data(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() || !source.join(DATABASE_FILE).is_file() {
+        return Ok(());
+    }
+    match std::fs::rename(source, destination) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {}
+        Err(error) => return Err(error.into()),
+    }
+    let staging = destination.with_extension(format!("migration-{}", std::process::id()));
+    std::fs::create_dir(&staging)?;
+    let result = (|| {
+        copy_legacy_files(source, &staging)?;
+        let database = rusqlite::Connection::open(source.join(DATABASE_FILE))?;
+        database.backup(rusqlite::MAIN_DB, staging.join(DATABASE_FILE), None)?;
+        std::fs::rename(&staging, destination)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+fn copy_legacy_files(source: &Path, destination: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            std::fs::create_dir(&target)?;
+            copy_legacy_files(&path, &target)?;
+        } else if entry.file_type()?.is_file()
+            && !(source.join(DATABASE_FILE).is_file()
+                && matches!(
+                    entry.file_name().to_str(),
+                    Some("noteon.sqlite" | "noteon.sqlite-wal" | "noteon.sqlite-shm")
+                ))
+        {
+            std::fs::copy(path, target)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_workspace_moves_without_copying_or_overwriting() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("legacy");
+        let destination = root.path().join("data");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join(DATABASE_FILE), b"workspace").unwrap();
+        std::fs::write(source.join("attachment"), b"media").unwrap();
+        migrate_legacy_data(&source, &destination).unwrap();
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(destination.join("attachment")).unwrap(),
+            b"media"
+        );
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join(DATABASE_FILE), b"other").unwrap();
+        migrate_legacy_data(&source, &destination).unwrap();
+        assert_eq!(
+            std::fs::read(destination.join(DATABASE_FILE)).unwrap(),
+            b"workspace"
+        );
+    }
 
     #[test]
     fn test_icon_separation() {

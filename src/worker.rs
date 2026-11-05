@@ -1579,7 +1579,7 @@ fn perform_action(
                 .pick_file()
             {
                 let data_directory = crate::config::data_directory()?;
-                let cover = repository.import_cover_image(&source, &data_directory)?;
+                let cover = repository.import_cover_image(page_id, &source, &data_directory)?;
                 let mut edit = crate::domain::model::PageEdit::from(&repository.page(page_id)?);
                 edit.cover_image = Some(cover);
                 edit.cover = 0;

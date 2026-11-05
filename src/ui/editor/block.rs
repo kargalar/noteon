@@ -235,7 +235,7 @@ pub fn show(
     if block.kind == BlockKind::Divider {
         ui.painter().line_segment(
             [body.left_center(), body.right_center()],
-            Stroke::new(1.0, palette.border),
+            Stroke::new(1.0_f32, palette.border),
         );
     } else {
         let is_page_link =
@@ -313,7 +313,7 @@ pub fn show(
                 FontId::proportional(15.0),
                 palette.text,
                 if link_resp.hovered() {
-                    Stroke::new(1.0, palette.muted)
+                    Stroke::new(1.0_f32, palette.muted)
                 } else {
                     Stroke::NONE
                 },
@@ -414,7 +414,7 @@ pub fn show(
                 FontId::proportional(15.0),
                 palette.text,
                 if link_resp.hovered() {
-                    Stroke::new(1.0, palette.muted)
+                    Stroke::new(1.0_f32, palette.muted)
                 } else {
                     Stroke::NONE
                 },
@@ -616,7 +616,7 @@ fn show_media(
                 pos2(grip_rect.center().x + offset, grip_rect.center().y - 8.0),
                 pos2(grip_rect.center().x + offset, grip_rect.center().y + 8.0),
             ],
-            Stroke::new(1.5, grip_color),
+            Stroke::new(1.5_f32, grip_color),
         );
     }
     if grip.drag_started() {
@@ -914,7 +914,7 @@ fn show_decoration(ui: &mut Ui, body: Rect, block: &mut Block, palette: Palette)
                 body.left_top() + vec2(2.0, 8.0),
                 body.left_bottom() - vec2(-2.0, 8.0),
             ],
-            Stroke::new(3.0, palette.accent),
+            Stroke::new(3.0_f32, palette.accent),
         );
     }
     let marker_center = body.left_top() + vec2(12.0, 20.0);
@@ -1738,10 +1738,10 @@ fn layout_styled_text(
                 Some(super::links::LinkType::FilePath { .. }) => file_color,
                 _ => color,
             };
-            format.underline = Stroke::new(1.1, underline_stroke_color);
+            format.underline = Stroke::new(1.1_f32, underline_stroke_color);
         }
         if style.strikethrough {
-            format.strikethrough = Stroke::new(1.0, color);
+            format.strikethrough = Stroke::new(1.0_f32, color);
         }
         if let Some(bg) = background {
             format.background = bg;

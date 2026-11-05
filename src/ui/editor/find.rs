@@ -160,7 +160,7 @@ impl PageFind {
             .show(ui.ctx(), |ui| {
                 egui::Frame::new()
                     .fill(palette.sidebar)
-                    .stroke(Stroke::new(1.0, palette.border))
+                    .stroke(Stroke::new(1.0_f32, palette.border))
                     .corner_radius(8.0)
                     .shadow(ui.visuals().window_shadow)
                     .inner_margin(egui::Margin::symmetric(8, 4))

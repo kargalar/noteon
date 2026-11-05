@@ -127,7 +127,7 @@ pub fn drop_target(
         ui.painter().rect_stroke(
             rect.shrink(1.0),
             4.0,
-            egui::Stroke::new(2.0, palette.accent),
+            egui::Stroke::new(2.0_f32, palette.accent),
             egui::StrokeKind::Inside,
         );
         if let Some(payload) = response.dnd_release_payload::<PageDragPayload>() {

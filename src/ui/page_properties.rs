@@ -73,7 +73,7 @@ pub fn paint_property_icon(
     bg_color: Color32,
 ) {
     let c = rect.center();
-    let stroke = Stroke::new(1.35, color);
+    let stroke = Stroke::new(1.35_f32, color);
     match kind {
         "text" => {
             let l = rect.left() + 2.0;
@@ -200,7 +200,7 @@ pub fn paint_property_icon(
         "checkbox" => {
             let box_rect = egui::Rect::from_center_size(c, vec2(11.5, 11.5));
             painter.rect_filled(box_rect, 2.2, color);
-            let check_stroke = Stroke::new(1.6, bg_color);
+            let check_stroke = Stroke::new(1.6_f32, bg_color);
             painter.line_segment(
                 [
                     egui::pos2(c.x - 3.0, c.y + 0.2),
@@ -235,7 +235,7 @@ pub fn paint_property_icon(
                     egui::pos2(c.x - 4.2, c.y - 4.5),
                     egui::pos2(c.x - 2.0, c.y - 4.5),
                 ],
-                Stroke::new(2.0, color),
+                Stroke::new(2.0_f32, color),
             );
             painter.line_segment(
                 [
@@ -256,7 +256,7 @@ pub fn paint_property_icon(
                     egui::pos2(c.x + 2.5, c.y + 4.2),
                     egui::pos2(c.x + 4.5, c.y + 2.5),
                 ],
-                Stroke::new(2.0, color),
+                Stroke::new(2.0_f32, color),
             );
         }
         "email" => {
@@ -700,12 +700,12 @@ pub fn show_color_palette_grid<F>(
                 ui.painter().circle_filled(rect.center(), 8.5, *color);
                 if is_selected {
                     ui.painter()
-                        .circle_stroke(rect.center(), 10.0, Stroke::new(2.0, palette.text));
+                        .circle_stroke(rect.center(), 10.0, Stroke::new(2.0_f32, palette.text));
                 } else if resp.hovered() {
                     ui.painter().circle_stroke(
                         rect.center(),
                         10.0,
-                        Stroke::new(1.5, palette.accent),
+                        Stroke::new(1.5_f32, palette.accent),
                     );
                 }
                 if resp.on_hover_text(*name).clicked() {
@@ -1721,7 +1721,7 @@ fn show_single_option_editor(
         ui.style_mut().visuals.widgets.inactive.bg_stroke = if is_empty {
             Stroke::NONE
         } else {
-            Stroke::new(1.0, pill_border)
+            Stroke::new(1.0_f32, pill_border)
         };
         ui.persistent_menu_button(
             RichText::new(display_label)
@@ -2081,7 +2081,7 @@ fn show_date_editor(
         ui.style_mut().visuals.widgets.inactive.weak_bg_fill = pill_bg;
         ui.style_mut().visuals.widgets.inactive.bg_fill = pill_bg;
         ui.style_mut().visuals.widgets.inactive.bg_stroke = if has_date {
-            Stroke::new(1.0, palette.accent.linear_multiply(0.3))
+            Stroke::new(1.0_f32, palette.accent.linear_multiply(0.3))
         } else {
             Stroke::NONE
         };
@@ -2252,7 +2252,7 @@ pub fn show_date_picker_popup(
                     palette.text
                 };
                 let stroke = if is_today && !is_selected {
-                    Stroke::new(1.0, palette.accent)
+                    Stroke::new(1.0_f32, palette.accent)
                 } else {
                     Stroke::NONE
                 };

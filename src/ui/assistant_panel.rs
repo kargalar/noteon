@@ -236,7 +236,7 @@ fn show_markdown_block(
                 .fill(palette.hover)
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(8, 5))
-                .stroke(Stroke::new(1.0, palette.border))
+                .stroke(Stroke::new(1.0_f32, palette.border))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     show_styled_line(ui, content, styles, 13.5, true, palette);
@@ -336,7 +336,7 @@ fn text_format_for(style: &InlineTextStyle, font_size: f32, palette: Palette) ->
     let mut format = TextFormat::simple(FontId::new(size, family), palette.text);
     format.italics = style.italic;
     if style.strikethrough {
-        format.strikethrough = Stroke::new(1.0, palette.muted);
+        format.strikethrough = Stroke::new(1.0_f32, palette.muted);
     }
     if is_code {
         format.background = palette.code;

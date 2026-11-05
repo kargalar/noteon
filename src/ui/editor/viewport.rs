@@ -314,7 +314,7 @@ impl Editor {
                             highlight_rect,
                             6.0,
                             Stroke::new(
-                                1.0,
+                                1.0_f32,
                                 Color32::from_rgba_unmultiplied(
                                     palette.accent.r(),
                                     palette.accent.g(),
@@ -608,7 +608,7 @@ impl Editor {
                         pos2(origin.x, line_y),
                         pos2(origin.x + document_width, line_y),
                     ],
-                    Stroke::new(2.0, palette.accent),
+                    Stroke::new(2.0_f32, palette.accent),
                 );
                 if let Some(payload) =
                     response.dnd_release_payload::<crate::ui::page_transfer::PageDragPayload>()
@@ -868,7 +868,7 @@ impl Editor {
                 painter.rect_stroke(
                     selection_rect,
                     3.0,
-                    Stroke::new(1.2, palette.accent),
+                    Stroke::new(1.2_f32, palette.accent),
                     egui::StrokeKind::Inside,
                 );
             }

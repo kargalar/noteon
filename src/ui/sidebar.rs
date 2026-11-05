@@ -550,7 +550,7 @@ impl PageRow<'_> {
                     egui::pos2(rect.left() + 4.0, y),
                     egui::pos2(rect.right() - 4.0, y),
                 ],
-                Stroke::new(2.0, palette.accent),
+                Stroke::new(2.0_f32, palette.accent),
             );
             if let Some(source) = response.dnd_release_payload::<PageId>() {
                 intents.push(Intent::Action(Action::ReorderPage {

@@ -122,14 +122,14 @@ pub fn apply(
     style.visuals.extreme_bg_color = palette.background;
     style.visuals.faint_bg_color = palette.code;
     style.visuals.selection.bg_fill = palette.accent_soft;
-    style.visuals.selection.stroke = Stroke::new(1.0, palette.accent);
-    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, palette.border);
+    style.visuals.selection.stroke = Stroke::new(1.0_f32, palette.accent);
+    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, palette.border);
     style.visuals.widgets.inactive.weak_bg_fill = palette.code;
     style.visuals.widgets.inactive.bg_fill = palette.code;
-    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, palette.border);
+    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, palette.border);
     style.visuals.widgets.hovered.weak_bg_fill = palette.hover;
     style.visuals.widgets.hovered.bg_fill = palette.hover;
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, palette.accent);
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, palette.accent);
     style.visuals.widgets.active.bg_fill = palette.accent_soft;
     style.visuals.widgets.active.weak_bg_fill = palette.accent_soft;
     context.set_style(style);

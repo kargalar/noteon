@@ -113,7 +113,7 @@ fn show_vertical_resize_handle(
                 egui::pos2(v_handle_rect.left(), v_handle_rect.center().y),
                 egui::pos2(v_handle_rect.right(), v_handle_rect.center().y),
             ],
-            egui::Stroke::new(2.0, palette.accent),
+            egui::Stroke::new(2.0_f32, palette.accent),
         );
     }
     ui.painter().rect_filled(
@@ -595,7 +595,7 @@ fn show_inner(
                                 Color32::TRANSPARENT
                             };
                             let stroke = if selected {
-                                egui::Stroke::new(1.0, palette.accent.linear_multiply(0.4))
+                                egui::Stroke::new(1.0_f32, palette.accent.linear_multiply(0.4))
                             } else {
                                 egui::Stroke::NONE
                             };
@@ -732,7 +732,7 @@ fn show_inner(
 
                     ui.add_space(8.0);
                     let divider_stroke =
-                        egui::Stroke::new(1.0, palette.border.linear_multiply(0.4));
+                        egui::Stroke::new(1.0_f32, palette.border.linear_multiply(0.4));
                     let avail_w = ui.available_width();
                     let (divider_rect, _) =
                         ui.allocate_exact_size(egui::vec2(avail_w, 1.0), egui::Sense::hover());
@@ -1542,7 +1542,7 @@ fn handle_column_resize(
     if response.hovered() || response.dragged() {
         ui.painter().line_segment(
             [egui::pos2(x, top_y), egui::pos2(x, top_y + total_height)],
-            egui::Stroke::new(2.0, palette.accent),
+            egui::Stroke::new(2.0_f32, palette.accent),
         );
     }
 
@@ -1839,7 +1839,7 @@ fn show_table(
                 let show_add = add_resp.hovered()
                     || was_open
                     || ui.rect_contains_pointer(add_rect.expand2(egui::vec2(18.0, 12.0)));
-                let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+                let stroke = egui::Stroke::new(1.0_f32, table_border_color(palette));
                 ui.painter()
                     .line_segment([add_rect.left_top(), add_rect.left_bottom()], stroke);
                 if show_add {
@@ -2007,7 +2007,7 @@ fn show_table(
                 painter.rect_stroke(
                     rect,
                     2.0,
-                    egui::Stroke::new(1.2, palette.accent),
+                    egui::Stroke::new(1.2_f32, palette.accent),
                     egui::StrokeKind::Inside,
                 );
                 let edge_zone = 28.0;
@@ -2137,7 +2137,7 @@ fn show_table(
                                         egui::Sense::click(),
                                     );
                                     let check_stroke = egui::Stroke::new(
-                                        1.0,
+                                        1.0_f32,
                                         if is_row_selected {
                                             palette.accent
                                         } else {
@@ -2617,7 +2617,7 @@ fn show_table(
                 .max(rows_scroll.inner_rect.top());
             let empty_bottom = rows_scroll.inner_rect.bottom();
             if empty_top < empty_bottom {
-                let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+                let stroke = egui::Stroke::new(1.0_f32, table_border_color(palette));
                 let mut boundary_x = table_left;
                 for width in std::iter::once(0.0)
                     .chain(std::iter::once(name_w))
@@ -2916,7 +2916,7 @@ fn table_reorder_target(
     let y = if after { rect.bottom() } else { rect.top() };
     ui.painter().line_segment(
         [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-        egui::Stroke::new(2.0, palette.accent),
+        egui::Stroke::new(2.0_f32, palette.accent),
     );
     if let Some(payload) =
         response.dnd_release_payload::<crate::ui::page_transfer::PageDragPayload>()
@@ -2939,7 +2939,7 @@ fn paint_table_row_extension(
     if horizontal.is_empty() {
         return;
     }
-    let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+    let stroke = egui::Stroke::new(1.0_f32, table_border_color(palette));
     for y in [vertical.start, vertical.end] {
         ui.painter().line_segment(
             [
@@ -2983,7 +2983,7 @@ fn table_cell<R>(
     };
     ui.painter().rect_filled(rect, 0.0, fill);
 
-    let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+    let stroke = egui::Stroke::new(1.0_f32, table_border_color(palette));
     ui.painter()
         .line_segment([rect.left_top(), rect.right_top()], stroke);
     ui.painter()
@@ -2996,7 +2996,7 @@ fn table_cell<R>(
     if is_selected && _is_first_col {
         ui.painter().line_segment(
             [rect.left_top(), rect.left_bottom()],
-            egui::Stroke::new(3.0, palette.accent),
+            egui::Stroke::new(3.0_f32, palette.accent),
         );
     }
 
@@ -3031,7 +3031,7 @@ fn table_footer_cell(
     };
     ui.painter().rect_filled(rect, 0.0, fill);
 
-    let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+    let stroke = egui::Stroke::new(1.0_f32, table_border_color(palette));
     ui.painter()
         .line_segment([rect.left_top(), rect.right_top()], stroke);
     ui.painter()
@@ -3092,7 +3092,7 @@ fn table_number_footer_cell(
     };
     ui.painter().rect_filled(rect, 0.0, fill);
 
-    let stroke = egui::Stroke::new(1.0, table_border_color(palette));
+    let stroke = egui::Stroke::new(1.0_f32, table_border_color(palette));
     ui.painter()
         .line_segment([rect.left_top(), rect.right_top()], stroke);
     ui.painter()
@@ -3596,7 +3596,7 @@ fn property_editor(
                 let opt_col = resolve_option_color(property.option_color(&value));
                 let (bg, border, text) =
                     option_pill_colors(palette, &property.kind, &value, opt_col);
-                (bg, text, egui::Stroke::new(1.0, border))
+                (bg, text, egui::Stroke::new(1.0_f32, border))
             };
             let display_text = if value.is_empty() { "—" } else { &value };
             ui.scope(|ui| {
@@ -4329,7 +4329,7 @@ fn show_cards(
             painter.rect_stroke(
                 rect,
                 2.0,
-                egui::Stroke::new(1.2, palette.accent),
+                egui::Stroke::new(1.2_f32, palette.accent),
                 egui::StrokeKind::Inside,
             );
             let edge_zone = 28.0;
@@ -4352,7 +4352,7 @@ fn show_cards(
         ui.painter().rect_stroke(
             empty_rect,
             8.0,
-            egui::Stroke::new(1.0, palette.border.linear_multiply(0.45)),
+            egui::Stroke::new(1.0_f32, palette.border.linear_multiply(0.45)),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
@@ -4406,7 +4406,7 @@ fn show_cards(
                                 card_rect,
                                 8.0,
                                 egui::Stroke::new(
-                                    if is_selected { 2.0 } else { 1.0 },
+                                    if is_selected { 2.0 } else { 1.0_f32 },
                                     border_color,
                                 ),
                                 egui::StrokeKind::Inside,
@@ -4491,7 +4491,7 @@ fn show_cards(
                                     egui::Sense::click(),
                                 );
                                 let check_stroke = egui::Stroke::new(
-                                    1.0,
+                                    1.0_f32,
                                     if is_selected {
                                         palette.accent
                                     } else {
@@ -4571,7 +4571,7 @@ fn show_cards(
                                 ui.painter().rect_stroke(
                                     open_box_rect,
                                     3.0,
-                                    egui::Stroke::new(1.0, palette.border),
+                                    egui::Stroke::new(1.0_f32, palette.border),
                                     egui::StrokeKind::Inside,
                                 );
                                 ui.painter().text(
@@ -4948,7 +4948,7 @@ fn show_board(
 
                     let col_frame = egui::Frame::new()
                         .fill(palette.code)
-                        .stroke(egui::Stroke::new(1.0, palette.border.linear_multiply(0.4)))
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border.linear_multiply(0.4)))
                         .corner_radius(8)
                         .inner_margin(10);
 
@@ -5104,7 +5104,7 @@ fn show_board(
                                             card_rect,
                                             6.0,
                                             egui::Stroke::new(
-                                                if is_selected { 2.0 } else { 1.0 },
+                                                if is_selected { 2.0 } else { 1.0_f32 },
                                                 stroke_col,
                                             ),
                                             egui::StrokeKind::Inside,
@@ -5125,7 +5125,7 @@ fn show_board(
                                             layer.rect_stroke(
                                                 ghost_rect,
                                                 6.0,
-                                                egui::Stroke::new(1.5, palette.accent),
+                                                egui::Stroke::new(1.5_f32, palette.accent),
                                                 egui::StrokeKind::Inside,
                                             );
                                             layer.text(
@@ -5191,7 +5191,7 @@ fn show_board(
                                                     egui::pos2(card_rect.left() + 4.0, line_y),
                                                     egui::pos2(card_rect.right() - 4.0, line_y),
                                                 ],
-                                                egui::Stroke::new(2.5, palette.accent),
+                                                egui::Stroke::new(2.5_f32, palette.accent),
                                             );
                                             if let Some(released) =
                                                 card_resp.dnd_release_payload::<BoardDragPayload>()
@@ -5374,7 +5374,7 @@ fn show_board(
                             ui.painter().rect_stroke(
                                 col_inner.response.rect,
                                 8.0,
-                                egui::Stroke::new(2.0, palette.accent),
+                                egui::Stroke::new(2.0_f32, palette.accent),
                                 egui::StrokeKind::Inside,
                             );
                             if let Some(released) =

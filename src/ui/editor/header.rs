@@ -111,7 +111,7 @@ pub(super) fn show(
             ui.painter().rect_stroke(
                 cover_rect.shrink(2.0),
                 4.0,
-                egui::Stroke::new(1.0, palette.border.linear_multiply(0.5)),
+                egui::Stroke::new(1.0_f32, palette.border.linear_multiply(0.5)),
                 egui::StrokeKind::Inside,
             );
             ui.painter().text(
@@ -278,7 +278,7 @@ pub(super) fn show(
             egui::pos2(line_left, line_y),
             egui::pos2(line_right, line_y),
         ],
-        Stroke::new(1.0, palette.border),
+        Stroke::new(1.0_f32, palette.border),
     );
     ui.add_space(4.0);
     (
@@ -776,7 +776,7 @@ fn cover(ui: &Ui, rect: Rect, color: Color32) {
     let center = rect.right_center() - vec2(100.0, -36.0);
     for index in 0..8 {
         let radius = 32.0 + index as f32 * 18.0;
-        painter.circle_stroke(center, radius, Stroke::new(1.2, ink));
+        painter.circle_stroke(center, radius, Stroke::new(1.2_f32, ink));
     }
     let x = rect.left() + 32.0;
     painter.text(

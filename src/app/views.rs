@@ -103,7 +103,7 @@ impl NoteonApp {
                     egui::Frame::new()
                         .fill(palette.background)
                         .inner_margin(egui::Margin::symmetric(12, 9))
-                        .stroke(Stroke::new(1.0, palette.border)),
+                        .stroke(Stroke::new(1.0_f32, palette.border)),
                 )
                 .show(context, |ui| {
                     assistant_actions =
@@ -123,7 +123,7 @@ impl NoteonApp {
                     egui::Frame::new()
                         .fill(palette.sidebar)
                         .inner_margin(egui::Margin::symmetric(15, 9))
-                        .stroke(Stroke::new(1.0, palette.border)),
+                        .stroke(Stroke::new(1.0_f32, palette.border)),
                 )
                 .show(context, |ui| {
                     ui.add_enabled_ui(self.ready && !self.busy && !self.closing, |ui| {
@@ -277,7 +277,7 @@ impl NoteonApp {
                         egui::Frame::new()
                             .fill(palette.sidebar)
                             .inner_margin(egui::Margin::symmetric(15, 9))
-                            .stroke(Stroke::new(1.0, palette.border))
+                            .stroke(Stroke::new(1.0_f32, palette.border))
                             .show(ui, |ui| {
                                 ui.set_min_width(ui.available_width());
                                 ui.set_min_height(sidebar_height - 18.0);
@@ -472,7 +472,7 @@ impl NoteonApp {
                         .fill(palette.sidebar)
                         .inner_margin(egui::Margin::symmetric(14, 10))
                         .corner_radius(6)
-                        .stroke(egui::Stroke::new(1.0, palette.border.linear_multiply(0.5)))
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border.linear_multiply(0.5)))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
@@ -984,7 +984,7 @@ impl NoteonApp {
 
         let frame = egui::Frame::window(&context.style())
             .fill(palette.background)
-            .stroke(Stroke::new(1.0, palette.border))
+            .stroke(Stroke::new(1.0_f32, palette.border))
             .corner_radius(10.0)
             .inner_margin(egui::Margin::symmetric(16, 12));
 
@@ -1139,7 +1139,7 @@ fn show_theme_section<F>(
     } else {
         palette.border
     };
-    let border_width = if is_highlighted { 2.0 } else { 1.0 };
+    let border_width = if is_highlighted { 2.0 } else { 1.0_f32 };
     let frame_fill = if is_highlighted {
         Color32::from_rgba_unmultiplied(
             palette.accent_soft.r(),
@@ -1231,7 +1231,7 @@ fn show_window_chrome(
         .frame(
             egui::Frame::new()
                 .fill(palette.sidebar)
-                .stroke(Stroke::new(1.0, palette.border)),
+                .stroke(Stroke::new(1.0_f32, palette.border)),
         )
         .show(context, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
@@ -1448,7 +1448,7 @@ impl TabViewer for PageTabViewer<'_> {
             painter.with_clip_rect(panel_rect).rect_stroke(
                 preview,
                 6.0,
-                Stroke::new(2.0, self.palette.accent),
+                Stroke::new(2.0_f32, self.palette.accent),
                 egui::StrokeKind::Inside,
             );
             if let Some(released_page) =

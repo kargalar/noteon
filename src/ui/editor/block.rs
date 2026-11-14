@@ -502,11 +502,9 @@ pub fn show(
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
             let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
             let text_focus = focus || just_started;
-            let hovered = ui.rect_contains_pointer(body);
             changed |= show_text(
                 ui,
                 text_rect,
-                hovered,
                 block,
                 text_focus,
                 focus_at_end,
@@ -1047,7 +1045,6 @@ fn handle_paste(
 fn show_text(
     ui: &mut Ui,
     text_rect: Rect,
-    hovered: bool,
     block: &mut Block,
     focus: bool,
     focus_at_end: bool,
@@ -1059,15 +1056,8 @@ fn show_text(
 ) -> bool {
     let mut changed = false;
     let mut focused = false;
-    let hint = if block.kind == BlockKind::Text && !hovered {
+    let hint = if block.kind == BlockKind::Text {
         RichText::new("")
-    } else if block.kind == BlockKind::Text {
-        RichText::new(text::TEXT_PLACEHOLDER).color(egui::Color32::from_rgba_unmultiplied(
-            palette.muted.r(),
-            palette.muted.g(),
-            palette.muted.b(),
-            52,
-        ))
     } else {
         RichText::new(block.kind.label())
     };

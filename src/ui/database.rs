@@ -2312,10 +2312,7 @@ fn show_table(
 
                                 navigation.register(ui, row.page.id, None, &response);
 
-                                if ((response.changed() && !title.is_empty())
-                                    || response.lost_focus())
-                                    && title != &row.page.title
-                                {
+                                if response.lost_focus() && title != &row.page.title {
                                     intents.push(Intent::Action(Action::RenameDatabaseRecord {
                                         page: row.page.id,
                                         title: title.clone(),

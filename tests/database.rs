@@ -1397,3 +1397,68 @@ fn test_focus_retention_in_full_page_text_property() {
         "Focus dropped after clicking empty space on right!"
     );
 }
+
+#[test]
+fn record_name_keeps_focus_while_typing_and_saves_on_blur() {
+    use noteon::worker::Action;
+    let context = egui::Context::default();
+    noteon::ui::theme::configure(&context);
+    let mut database = test_database();
+    database.rows[0].page.title.clear();
+    let page = database.rows[0].page.id;
+    let field = egui::Id::new(("table-row-title-edit", page));
+    let focus_key = egui::Id::new(("pending-table-focus-record", database.page_id));
+    context.data_mut(|data| data.insert_temp(focus_key, page));
+    let mut properties = HashMap::new();
+    let mut titles = HashMap::new();
+    let mut values = HashMap::new();
+    let mut frame = |events| {
+        let mut intents = Vec::new();
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    show_embedded(
+                        ui,
+                        &mut database,
+                        Palette::new(false),
+                        &mut intents,
+                        &mut Drafts {
+                            properties: &mut properties,
+                            titles: &mut titles,
+                            values: &mut values,
+                        },
+                    );
+                });
+            },
+        );
+        intents
+    };
+    frame(vec![]);
+    assert_eq!(context.memory(|memory| memory.focused()), Some(field));
+    for character in "Hello".chars() {
+        let intents = frame(vec![Event::Text(character.to_string())]);
+        assert!(
+            intents.iter().all(|intent| !matches!(
+                intent,
+                Intent::Action(Action::RenameDatabaseRecord { .. })
+            ))
+        );
+        assert_eq!(context.memory(|memory| memory.focused()), Some(field));
+    }
+    let intents = frame(vec![Event::Key {
+        key: Key::Enter,
+        physical_key: Some(Key::Enter),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    assert!(intents.iter().any(|intent| matches!(intent, Intent::Action(Action::RenameDatabaseRecord { page: id, title }) if *id == page && title == "Hello")));
+}

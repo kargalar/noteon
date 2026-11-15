@@ -1,0 +1,200 @@
+/* AI assistant drawer, compose box, message formatting, settings drawer, and workspace offset overrides. */
+
+.assistant-panel {
+  position: absolute;
+  z-index: 5;
+  right: 0;
+  top: 86px;
+  bottom: 27px;
+  width: min(var(--assistant-width, 380px), calc(100vw - 24px));
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  box-shadow: -8px 0 24px #00000008;
+}
+
+.assistant-panel[hidden] {
+  display: none;
+}
+
+.assistant-resize-handle {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 7px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.assistant-resize-handle:hover,
+.assistant-resize-handle:focus-visible {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  outline: 0;
+}
+
+.assistant-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.assistant-header > div {
+  display: flex;
+}
+
+.assistant-messages {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assistant-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--sidebar);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.assistant-message.user {
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  align-self: flex-end;
+  max-width: 94%;
+}
+
+.assistant-message.error {
+  color: #bd3c3c;
+}
+
+.assistant-message.activity {
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 1px;
+}
+
+.assistant-message.assistant {
+  white-space: normal;
+}
+
+.assistant-message p {
+  margin: 0 0 6px;
+}
+
+.assistant-message p:last-child {
+  margin-bottom: 0;
+}
+
+.assistant-message ul,
+.assistant-message ol {
+  margin: 4px 0 6px 18px;
+  padding: 0;
+}
+
+.assistant-message pre {
+  margin: 6px 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--panel);
+  overflow: auto;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+
+.assistant-message code {
+  font-family: Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--hover);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.assistant-message pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.assistant-compose {
+  padding: 9px;
+  border-top: 1px solid var(--line);
+}
+
+.assistant-compose textarea {
+  width: 100%;
+  height: 82px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px;
+  background: var(--input);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: 0;
+}
+
+.assistant-compose > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.assistant-settings {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.assistant-settings[hidden] {
+  display: none;
+}
+
+.assistant-settings label {
+  display: grid;
+  gap: 4px;
+}
+
+.assistant-settings input,
+.assistant-settings select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--input);
+  color: var(--text);
+  padding: 6px;
+}
+
+.assistant-settings .primary {
+  grid-column: 1 / -1;
+}
+
+.suggestion {
+  text-align: left;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.main.assistant-open .dock-root {
+  padding-right: min(var(--assistant-width, 380px), calc(100vw - 24px));
+}
+
+.main.assistant-open .content,
+.main.assistant-open .dock-editor-pane > .content {
+  padding-right: max(35px, calc((100% - 900px) / 2));
+}

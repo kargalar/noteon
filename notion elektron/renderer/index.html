@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; media-src 'self' file: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
+    <title>Notion Elektron</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="startup-overlay" class="startup-overlay" role="status" aria-live="polite">
+      <div class="startup-card">
+        <span class="startup-spinner" aria-hidden="true"></span>
+        <strong>Opening your workspace</strong>
+        <span class="startup-message">Loading pages and restoring your last session…</span>
+      </div>
+    </div>
+
+    <div class="app">
+      <aside class="sidebar">
+        <header class="brand">
+          <span class="brand-mark">N</span>
+          <strong>Notion Elektron</strong>
+          <button id="sidebar-pin" title="Unpin sidebar for auto-hide" aria-label="Unpin sidebar">📌</button>
+          <button id="collapse" title="Collapse sidebar">‹</button>
+        </header>
+
+        <div class="workspace-label">WORKSPACE</div>
+        <div class="side-actions">
+          <button id="new-page">＋ New page</button>
+          <button id="new-database">▦ New database</button>
+        </div>
+        <div class="side-actions secondary">
+          <button id="show-favorites">★ Favorites</button>
+          <button id="show-trash">▱ Trash</button>
+        </div>
+
+        <label class="search">
+          <span>⌕</span>
+          <input id="search" placeholder="Search pages…" />
+          <kbd>Ctrl K</kbd>
+        </label>
+
+        <nav id="tree" class="tree" tabindex="0"></nav>
+
+        <div class="sidebar-bottom">
+          <button id="toggle-theme" title="Toggle light and dark appearance">◐ Toggle theme</button>
+          <button id="help">? Help</button>
+          <button id="settings">⚙ Settings</button>
+          <span id="data-location"></span>
+        </div>
+
+        <div
+          id="sidebar-resize"
+          class="panel-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          tabindex="0"
+        ></div>
+      </aside>
+
+      <main class="main">
+        <div class="topbar">
+          <div class="history-controls">
+            <button id="history-back" title="Previous page (Alt+Left)" disabled>←</button>
+            <button id="history-forward" title="Next page (Alt+Right)" disabled>→</button>
+          </div>
+          <button id="show-sidebar" title="Show sidebar" hidden>☰</button>
+          <div id="breadcrumbs"></div>
+          <div class="top-actions">
+            <button id="workspace-undo" title="Undo workspace change (Ctrl+Z)" disabled>↶</button>
+            <button id="workspace-redo" title="Redo workspace change (Ctrl+Shift+Z)" disabled>↷</button>
+            <button id="find-page" title="Find in page (Ctrl+F)">Find</button>
+            <button id="assistant-toggle">✦ Assistant</button>
+            <button id="split-window" title="Split the focused pane">Split pane</button>
+            <button id="close-pane" title="Close the focused pane" hidden>Close pane</button>
+            <button id="import-md">Import</button>
+            <button id="export-md">Export</button>
+            <button id="import-noteon" title="Import a Noteon data folder">Import Noteon</button>
+            <button id="restore-backup" title="Restore a SQLite workspace backup">Restore</button>
+            <button id="backup">Backup</button>
+          </div>
+        </div>
+
+        <div id="dock-root" class="dock-root">
+          <div id="primary-pane" class="dock-editor-pane">
+            <div id="tabs" class="tabs"></div>
+            <section id="content" class="content">
+              <div class="empty">
+                <div class="empty-icon">✎</div>
+                <h1>Choose a page</h1>
+                <p>Pick a page from the sidebar or create a new one.</p>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <aside id="assistant-panel" class="assistant-panel" hidden>
+          <div
+            id="assistant-resize"
+            class="assistant-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize assistant panel"
+            tabindex="0"
+          ></div>
+          <header class="assistant-header">
+            <strong>✦ Assistant</strong>
+            <div>
+              <button id="assistant-undo" title="Undo assistant changes" disabled>↶ Undo</button>
+              <button id="assistant-clear" title="Clear chat">Clear</button>
+              <button id="assistant-settings-toggle" title="Assistant settings">⚙</button>
+              <button id="assistant-close" title="Close assistant">×</button>
+            </div>
+          </header>
+
+          <div id="assistant-settings" class="assistant-settings" hidden>
+            <label>
+              Model
+              <input id="assistant-model" value="gpt-6-luna" />
+            </label>
+            <label>
+              Reasoning
+              <select id="assistant-effort">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high" selected>High</option>
+              </select>
+            </label>
+            <button id="assistant-settings-save" class="primary">Save settings</button>
+          </div>
+
+          <div id="assistant-messages" class="assistant-messages">
+            <p class="muted">Ask me to read, write, organize or restructure your notes and tables.</p>
+            <button class="suggestion">Summarize this page</button>
+            <button class="suggestion">Create a table on this page for my tasks</button>
+            <button class="suggestion">Turn the notes on this page into a to-do list</button>
+            <button class="suggestion" data-fill-only="true">Find notes about…</button>
+          </div>
+
+          <div class="assistant-compose">
+            <textarea id="assistant-input" placeholder="Ask about your workspace…"></textarea>
+            <div>
+              <button id="assistant-stop" hidden>Stop</button>
+              <button id="assistant-send" class="primary">Send</button>
+            </div>
+          </div>
+        </aside>
+
+        <footer>
+          <span id="save-state">All changes saved</span>
+          <button id="retry-save" hidden>Retry save</button>
+          <span id="page-count"></span>
+        </footer>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog">
+      <form method="dialog">
+        <header>
+          <h2>Settings</h2>
+          <button class="icon">×</button>
+        </header>
+        <label>
+          Appearance
+          <select id="theme">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <label>
+          Font size
+          <input id="font-scale" type="range" min="0.8" max="1.5" step="0.05" />
+        </label>
+        <label>
+          Accent color
+          <input id="accent-color" type="color" />
+        </label>
+        <label>
+          Background
+          <input id="background-color" type="color" />
+        </label>
+        <label>
+          Theme section
+          <select id="custom-theme-section">
+            <option value="general">General</option>
+            <option value="sidebar">Sidebar</option>
+            <option value="editor">Editor</option>
+            <option value="header">Header</option>
+            <option value="gallery">Gallery</option>
+            <option value="board">Board</option>
+            <option value="table">Table</option>
+          </select>
+        </label>
+        <div id="custom-theme-colors"></div>
+        <div class="theme-reset-actions">
+          <button id="reset-theme-section" type="button">Reset section</button>
+          <button id="reset-theme-all" type="button">Reset all custom colors</button>
+        </div>
+        <p class="muted">Workspace files are stored locally on this device.</p>
+        <button class="primary">Done</button>
+      </form>
+    </dialog>
+
+    <dialog id="split-dialog" aria-labelledby="split-dialog-title">
+      <header>
+        <h2 id="split-dialog-title">Split pane</h2>
+        <button class="icon" id="split-dialog-close" type="button" aria-label="Close">×</button>
+      </header>
+      <p class="muted">Choose where to place the new pane.</p>
+      <div class="split-direction-grid">
+        <button type="button" data-split-direction="left">← Left</button>
+        <button type="button" data-split-direction="right">Right →</button>
+        <button type="button" data-split-direction="top">↑ Top</button>
+        <button type="button" data-split-direction="bottom">↓ Bottom</button>
+      </div>
+    </dialog>
+
+    <dialog id="help-dialog">
+      <header>
+        <h2>Quick guide</h2>
+        <button class="icon" id="help-close" type="button" aria-label="Close">×</button>
+      </header>
+      <div class="help-shortcuts">
+        <div><kbd>Ctrl + N</kbd><span>New page</span></div>
+        <div><kbd>Ctrl + F</kbd><span>Find on page</span></div>
+        <div><kbd>Ctrl + K</kbd><span>Search workspace</span></div>
+        <div><kbd>Ctrl + S</kbd><span>Save now or retry a failed save</span></div>
+        <div><kbd>Ctrl + B</kbd><span>Toggle or pin sidebar</span></div>
+        <div><kbd>Ctrl + J</kbd><span>Toggle Assistant panel</span></div>
+        <div><kbd>Alt + ← / →</kbd><span>Previous or next page</span></div>
+        <div><kbd>Enter</kbd><span>Split at cursor and add a block</span></div>
+        <div><kbd>Shift + Enter</kbd><span>New line in the same block</span></div>
+        <div><kbd>Right-click a block</kbd><span>Change type, move, or delete</span></div>
+      </div>
+      <p>
+        In an empty block, type <code>/h1</code>, <code>/h2</code>, <code>/h3</code>, <code>/todo</code>,
+        <code>/bullet</code>, <code>/number</code>, <code>/quote</code>, <code>/callout</code>, <code>/code</code>, or
+        <code>/divider</code>, then press Enter.
+      </p>
+      <p class="muted">
+        You can also start a block with <code>#</code>, <code>-</code>, <code>[]</code>, or <code>&gt;</code> followed by
+        a space. Enter inserts a line break in code blocks.
+      </p>
+    </dialog>
+
+    <script src="dock-model.js"></script>
+    <script src="dock-view.js"></script>
+    <script src="modules/state.js"></script>
+    <script src="modules/dialogs.js"></script>
+    <script src="modules/theme-settings.js"></script>
+    <script src="modules/dock-tabs.js"></script>
+    <script src="modules/tree.js"></script>
+    <script src="modules/page-editor.js"></script>
+    <script src="modules/block-editor.js"></script>
+    <script src="modules/database-view.js"></script>
+    <script src="modules/assistant.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

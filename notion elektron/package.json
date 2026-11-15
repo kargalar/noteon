@@ -1,0 +1,48 @@
+{
+  "name": "notion-elektron",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A desktop Electron port of Noteon with a compatible local workspace.",
+  "main": "main.cjs",
+  "scripts": {
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "start": "node scripts/ensure-electron.cjs && electron-rebuild -f -w better-sqlite3 && electron .",
+    "rebuild-native": "electron-rebuild -f -w better-sqlite3",
+    "dist": "electron-builder --dir",
+    "dist:win": "electron-builder --win portable"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.1",
+    "electron": "^39.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.kargalar.noteonelektron",
+    "productName": "Notion Elektron",
+    "files": [
+      "main.cjs",
+      "main/**/*",
+      "preload.cjs",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "../target/release/noteon.exe", "to": "noteon-mcp.exe" }
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
+  },
+  "allowScripts": {
+    "electron@39.8.10": true,
+    "better-sqlite3@12.11.1": true
+  }
+}

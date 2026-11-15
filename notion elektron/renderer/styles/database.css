@@ -1,0 +1,723 @@
+/* Database tables, gallery cards, kanban boards, option pickers, chips, and record dialogs. */
+
+.db-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 16px;
+}
+
+.db-toolbar select {
+  margin-left: auto;
+}
+
+.db-selection-count {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: 8px;
+}
+
+.db-view-dialog {
+  min-width: 320px;
+  max-height: 80vh;
+  overflow: auto;
+}
+
+.db-view-options {
+  display: grid;
+  gap: 8px;
+}
+
+.db-view-options > strong {
+  margin-top: 8px;
+}
+
+.db-view-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  font-size: 13px;
+}
+
+.db-view-toggle input {
+  accent-color: var(--accent);
+}
+
+.db-table-viewport {
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+table.db-table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 70%;
+  max-width: 100%;
+  font-size: 13px;
+  table-layout: fixed;
+}
+
+table.db-table th,
+table.db-table td {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  text-align: left;
+  min-width: 64px;
+}
+
+table.db-table th {
+  color: var(--muted);
+  font-weight: 500;
+  background: var(--sidebar);
+}
+
+.db-table-viewport thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+table.db-table th.resizable-column {
+  position: relative;
+  padding-right: 20px;
+}
+
+table.db-table .column-grip {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+table.db-table .column-grip:hover {
+  background: var(--accent);
+  opacity: 0.45;
+}
+
+table.db-table td[contenteditable] {
+  outline: 0;
+}
+
+table.db-table td[contenteditable]:focus {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+table.db-table tfoot {
+  font-weight: 600;
+  background: var(--sidebar);
+}
+
+table.db-table tfoot th,
+table.db-table tfoot td {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.db-table-size-grip {
+  height: 12px;
+  max-width: 100%;
+  cursor: ns-resize;
+  touch-action: none;
+  position: relative;
+}
+
+.db-table-size-grip::after {
+  content: "";
+  position: absolute;
+  left: calc(50% - 22px);
+  top: 4px;
+  width: 44px;
+  height: 4px;
+  border-radius: 3px;
+  background: var(--line);
+}
+
+.db-table-size-grip:hover::after,
+.db-table-size-grip:focus::after {
+  background: var(--accent);
+}
+
+.record-select {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+
+.select-cell {
+  width: 44px !important;
+  min-width: 44px !important;
+  max-width: 44px !important;
+  padding: 4px !important;
+  text-align: center !important;
+}
+
+.record-title {
+  outline: 0;
+  min-width: 120px;
+  display: inline-block;
+}
+
+.record-title:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+}
+
+.calc-select {
+  width: 100%;
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--input);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.db-add-row-btn {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 10px;
+  margin-top: 6px;
+}
+
+.db-cards-viewport {
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.db-cards-board {
+  overscroll-behavior: contain;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  cursor: pointer;
+}
+
+.card:hover {
+  background: var(--sidebar);
+}
+
+.cards .card {
+  position: relative;
+  background: var(--gallery-card, var(--panel));
+  border-color: var(--gallery-border, var(--line));
+}
+
+.cards .record-select {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+.gallery-cover {
+  display: block;
+  width: calc(100% + 28px);
+  height: 130px;
+  object-fit: cover;
+  margin: -14px -14px 12px;
+  border-radius: 8px 8px 0 0;
+}
+
+.gallery-description {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 3px 0;
+}
+
+.board {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.board-col {
+  min-width: 220px;
+  background: var(--sidebar);
+  padding: 10px;
+  border-radius: 8px;
+}
+
+.board-col h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  margin: 4px 3px 10px;
+}
+
+.board-col .card {
+  background: var(--board-card, var(--panel));
+  margin: 7px 0;
+}
+
+.board-col .record-select {
+  float: right;
+}
+
+.board-col.dragging {
+  opacity: 0.5;
+}
+
+.board-col.drop-before {
+  box-shadow: -3px 0 0 var(--accent);
+}
+
+.board-col.drop-after {
+  box-shadow: 3px 0 0 var(--accent);
+}
+
+.board-group-chip {
+  display: inline-flex;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--option-color, #85877f) 18%, var(--panel));
+  color: var(--text);
+  font-weight: 600;
+}
+
+.board-group-count {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.board-col-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.board-add-record-button {
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.board-add-record-button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.board-add-record-button:disabled {
+  opacity: 0.4;
+}
+
+.board-col-remove {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.board-col-remove:hover {
+  color: #b53b34;
+  background: var(--hover);
+}
+
+.board-fallback {
+  display: grid;
+  gap: 12px;
+}
+
+.board-fallback-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--sidebar);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.board-fallback-cards {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr);
+  gap: 8px;
+  max-width: 780px;
+}
+
+.board-fallback-cards .card {
+  display: grid;
+  gap: 4px;
+}
+
+.board-fallback-empty {
+  padding: 20px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.board-add-group {
+  min-height: 44px;
+  background: transparent !important;
+  border: 1px dashed var(--line) !important;
+}
+
+.board-add-group-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+}
+
+.board-add-group-form {
+  display: grid;
+  gap: 7px;
+}
+
+.board-add-group-form[hidden] {
+  display: none;
+}
+
+.board-add-group-form input {
+  width: 100%;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--input);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.board-add-group-form button {
+  justify-self: start;
+  font-size: 11px;
+}
+
+dialog.database-record-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(960px, 92vw);
+  height: min(880px, 85vh);
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.database-record-dialog > header {
+  flex: none;
+  height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.database-record-dialog > header > div {
+  display: flex;
+  gap: 6px;
+}
+
+.database-record-dialog > header button {
+  font-size: 12px;
+}
+
+.database-record-dialog > .content {
+  height: calc(100% - 42px);
+  min-height: 0;
+  overflow: auto;
+}
+
+.option-picker {
+  position: relative;
+  display: inline-flex;
+  min-width: 72px;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.option-picker-trigger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  min-height: 25px;
+  max-width: 100%;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  overflow: hidden;
+}
+
+.option-picker-trigger:hover,
+.option-picker.open .option-picker-trigger {
+  background: var(--hover);
+}
+
+.option-picker-chip,
+.property-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--option-color, #85877f) 42%, var(--panel));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--option-color, #85877f) 18%, var(--panel));
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.option-picker-chip.multi,
+.property-chip.multi {
+  border-color: transparent;
+  background: var(--option-color, #85877f);
+  color: var(--option-text, #fff);
+}
+
+.option-empty,
+.property-chip.empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.option-picker-menu {
+  display: none;
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 120;
+  min-width: 205px;
+  max-width: min(290px, 80vw);
+  max-height: min(340px, 55vh);
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 32px #0003;
+}
+
+.option-picker.open .option-picker-menu {
+  display: block;
+}
+
+.option-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 2px;
+  border-radius: 4px;
+}
+
+.option-picker-row:hover {
+  background: var(--hover);
+}
+
+.option-picker-choice,
+.option-picker-none {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+}
+
+.option-picker-choice[aria-selected="true"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.option-picker-dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.option-picker-check {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.option-picker-color {
+  width: 21px;
+  height: 21px;
+  flex: none;
+  padding: 1px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.option-picker-reset,
+.option-picker-remove {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.option-picker-reset:hover {
+  color: var(--accent);
+  background: var(--hover);
+}
+
+.option-picker-remove:hover {
+  color: #b53b34;
+  background: var(--hover);
+}
+
+.option-picker-none {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.option-picker-add {
+  display: flex;
+  gap: 4px;
+  padding: 6px 2px 2px;
+  border-top: 1px solid var(--line);
+}
+
+.option-picker-add input {
+  min-width: 0;
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--input);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.option-picker-add button {
+  font-size: 11px;
+}
+
+.database-card-property {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.database-card-property > span:first-child {
+  flex: none;
+}
+
+.db-table .option-picker {
+  width: 100%;
+}
+
+.db-table td .option-picker-trigger {
+  width: 100%;
+}
+
+.property-row > .option-picker {
+  width: 100%;
+  min-width: 0;
+}
+
+.property-row > .option-picker .option-picker-trigger {
+  width: 100%;
+}
+
+.db-url-editor {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  width: 100%;
+}
+
+.db-url-editor .db-value {
+  flex: 1;
+  min-width: 0;
+}
+
+.db-url-open {
+  flex: none;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+}
+
+.db-url-open:hover {
+  background: var(--hover);
+}
+
+.db-url-open:disabled {
+  opacity: 0.4;
+}
+
+.embedded-db-box {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--panel);
+  width: 100%;
+}
+
+.embedded-db-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 8px;
+}
+
+.embedded-db-header strong {
+  font-size: 14px;
+}

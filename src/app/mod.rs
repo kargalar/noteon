@@ -1163,6 +1163,33 @@ impl NoteonApp {
 }
 
 impl eframe::App for NoteonApp {
+    #[cfg(windows)]
+    fn raw_input_hook(&mut self, context: &egui::Context, input: &mut egui::RawInput) {
+        use mouse_position::mouse_position::Mouse;
+
+        if input.hovered_files.is_empty() && input.dropped_files.is_empty() {
+            return;
+        }
+        // The Windows file-drop event carries a path but no cursor coordinates.
+        let Mouse::Position { x, y } = Mouse::get_mouse_position() else {
+            return;
+        };
+        let viewport = input.viewport();
+        if let Some(window) = viewport.inner_rect {
+            let scale = viewport.native_pixels_per_point.map_or_else(
+                || context.pixels_per_point(),
+                |native| native * context.zoom_factor(),
+            );
+            let position = egui::pos2(x as f32, y as f32) / scale;
+            input
+                .events
+                .push(egui::Event::PointerMoved(position - window.min.to_vec2()));
+        }
+        if !input.hovered_files.is_empty() {
+            context.request_repaint_after(std::time::Duration::from_millis(33));
+        }
+    }
+
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         theme::refresh_motion(context);
         self.receive_events(context);

@@ -24,6 +24,7 @@ twemoji-assets = "1.4.0"
 arboard = "3"
 
 [target.'cfg(windows)'.dependencies]
+mouse_position = "0.1.4"
 windows = { version = "0.62.2", features = ["UI_ViewManagement"] }
 
 [dev-dependencies]

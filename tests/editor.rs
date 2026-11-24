@@ -103,6 +103,72 @@ fn enter(modifiers: Modifiers) -> Event {
 }
 
 #[test]
+fn media_drop_targets_scrolled_blocks_and_the_column_under_the_pointer() {
+    use noteon::worker::{Action, MediaSource};
+    use std::path::PathBuf;
+
+    let context = egui::Context::default();
+    let mut editor = editor("Text", 120);
+    for (position, column) in [(49, 0), (50, 1)] {
+        let stub = &mut editor.document.as_mut().unwrap().outline[position];
+        stub.column_group = Some(1);
+        stub.column_index = column;
+        let block = editor.cache.blocks.get_mut(&position).unwrap();
+        block.column_group = Some(1);
+        block.column_index = column;
+    }
+    editor.jump_to = Some(44);
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+    let target = context
+        .read_response(egui::Id::new(("row", 51_i64)))
+        .unwrap()
+        .rect;
+    let pointer = egui::pos2(target.center().x, target.top() + 3.0);
+    let files = ["photo.PNG", "video.mp4"];
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 860.0),
+        )),
+        events: vec![Event::PointerMoved(pointer)],
+        dropped_files: files
+            .iter()
+            .map(|name| egui::DroppedFile {
+                path: Some(PathBuf::from(name)),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut imports = Vec::new();
+    let _ = context.run(input, |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            imports.extend(
+                editor
+                    .show(ui, Palette::new(false), &[])
+                    .into_iter()
+                    .filter_map(|intent| match intent {
+                        Intent::Action(Action::ImportMedia {
+                            position,
+                            column_anchor,
+                            source: MediaSource::File(path),
+                            ..
+                        }) => Some((position, column_anchor, path)),
+                        _ => None,
+                    }),
+            );
+        });
+    });
+    assert_eq!(
+        imports,
+        vec![
+            (50, Some(51), PathBuf::from(files[0])),
+            (51, Some(51), PathBuf::from(files[1])),
+        ]
+    );
+}
+
+#[test]
 fn embedded_tables_resize_the_containing_row_before_following_blocks_are_drawn() {
     use noteon::domain::model::{DatabaseData, DatabaseView, DatabaseViewSettings};
     use noteon::ui::editor::DatabaseContext;

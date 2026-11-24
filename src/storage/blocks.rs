@@ -34,26 +34,69 @@ impl Repository {
         source: &Path,
         data_directory: &Path,
     ) -> Result<BlockKind> {
+        self.import_media_file(page, position, None, source, data_directory)
+    }
+
+    pub(crate) fn import_media_file(
+        &mut self,
+        page: PageId,
+        position: usize,
+        column_anchor: Option<BlockId>,
+        source: &Path,
+        data_directory: &Path,
+    ) -> Result<BlockKind> {
+        let kind = BlockKind::from_media_path(source).ok_or_else(|| {
+            Error::Invalid("This file type is not supported as an image or video.".into())
+        })?;
         let extension = source
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let kind = match extension.as_str() {
-            "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff" => BlockKind::Image,
-            "mp4" | "mov" | "m4v" | "webm" | "mkv" | "avi" | "wmv" => BlockKind::Video,
-            _ => {
-                return Err(Error::Invalid(
-                    "This file type is not supported as an image or video.".into(),
-                ));
-            }
-        };
         if !source.is_file() {
             return Err(Error::Invalid(
                 "The dropped media file could not be found.".into(),
             ));
         }
 
+        let destination = self.media_destination(page, &extension, data_directory)?;
+        if let Err(error) = std::fs::copy(source, &destination) {
+            let _ = std::fs::remove_file(&destination);
+            return Err(error.into());
+        }
+        self.insert_media_block(page, position, column_anchor, kind, &destination)
+    }
+
+    pub(crate) fn import_clipboard_image(
+        &mut self,
+        page: PageId,
+        position: usize,
+        column_anchor: Option<BlockId>,
+        image: &image::RgbaImage,
+        data_directory: &Path,
+    ) -> Result<BlockKind> {
+        let destination = self.media_destination(page, "png", data_directory)?;
+        if let Err(error) = image.save(&destination) {
+            let _ = std::fs::remove_file(&destination);
+            return Err(Error::Invalid(format!(
+                "Could not save clipboard image: {error}"
+            )));
+        }
+        self.insert_media_block(
+            page,
+            position,
+            column_anchor,
+            BlockKind::Image,
+            &destination,
+        )
+    }
+
+    fn media_destination(
+        &self,
+        page: PageId,
+        extension: &str,
+        data_directory: &Path,
+    ) -> Result<std::path::PathBuf> {
         static NEXT_MEDIA_ID: AtomicU64 = AtomicU64::new(0);
         let media_directory = self.attachment_directory(page, data_directory)?;
         std::fs::create_dir_all(&media_directory)?;
@@ -67,9 +110,17 @@ impl Repository {
             NEXT_MEDIA_ID.fetch_add(1, Ordering::Relaxed),
             extension
         );
-        let destination = media_directory.join(file_name);
-        std::fs::copy(source, &destination)?;
+        Ok(media_directory.join(file_name))
+    }
 
+    fn insert_media_block(
+        &mut self,
+        page: PageId,
+        position: usize,
+        column_anchor: Option<BlockId>,
+        kind: BlockKind,
+        destination: &Path,
+    ) -> Result<BlockKind> {
         let result = (|| {
             let transaction = self.connection.transaction()?;
             let count: usize = transaction.query_row(
@@ -77,14 +128,31 @@ impl Repository {
                 [page],
                 |row| crate::storage::read_usize(row, 0),
             )?;
-            let position = sql_index(position.min(count))?;
+            let mut position = sql_index(position.min(count))?;
+            let mut layout = (None::<i64>, 0_i64, 1.0_f32);
+            if let Some(anchor) = column_anchor {
+                layout = transaction.query_row(
+                    "SELECT column_group,layout_column,column_width FROM blocks
+                     WHERE page_id=?1 AND id=?2 AND column_group IS NOT NULL",
+                    params![page, anchor],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                let (first, last): (i64, i64) = transaction.query_row(
+                    "SELECT MIN(position),MAX(position) FROM blocks
+                     WHERE page_id=?1 AND column_group=?2 AND layout_column=?3",
+                    params![page, layout.0, layout.1],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                position = position.clamp(first, last + 1);
+            }
             transaction.execute(
                 "UPDATE blocks SET position=position+1 WHERE page_id=?1 AND position>=?2",
                 params![page, position],
             )?;
             transaction.execute(
-                "INSERT INTO blocks(page_id,position,kind,content) VALUES(?1,?2,?3,?4)",
-                params![page, position, kind.as_str(), destination.to_string_lossy()],
+                "INSERT INTO blocks(page_id,position,kind,content,column_group,layout_column,column_width)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![page, position, kind.as_str(), destination.to_string_lossy(), layout.0, layout.1, layout.2],
             )?;
             transaction.execute(
                 "UPDATE pages SET updated_at=unixepoch() WHERE id=?1",
@@ -94,7 +162,7 @@ impl Repository {
             Ok(())
         })();
         if let Err(error) = result {
-            let _ = std::fs::remove_file(&destination);
+            let _ = std::fs::remove_file(destination);
             return Err(error);
         }
         Ok(kind)

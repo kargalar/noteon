@@ -136,6 +136,10 @@ impl BlockKind {
             .unwrap_or_default()
     }
 
+    pub fn from_media_path(path: &std::path::Path) -> Option<Self> {
+        Self::from_media_extension(path.extension()?.to_str()?)
+    }
+
     pub fn from_media_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
             "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff" => Some(Self::Image),

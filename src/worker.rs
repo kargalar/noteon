@@ -16,6 +16,12 @@ use crate::error::{Error, Result};
 use crate::storage::Repository;
 
 #[derive(Debug)]
+pub enum MediaSource {
+    File(PathBuf),
+    Image(image::RgbaImage),
+}
+
+#[derive(Debug)]
 pub enum Action {
     CreatePage(Option<PageId>),
     CreateSubpageBlock {
@@ -76,7 +82,8 @@ pub enum Action {
     ImportMedia {
         page: PageId,
         position: usize,
-        source: PathBuf,
+        column_anchor: Option<BlockId>,
+        source: MediaSource,
     },
     ChooseCoverImage(PageId),
     DeleteBlock {
@@ -1624,10 +1631,26 @@ fn perform_action(
         Action::ImportMedia {
             page,
             position,
+            column_anchor,
             source,
         } => {
             let data_directory = crate::config::data_directory()?;
-            let kind = repository.import_media_block(page, position, &source, &data_directory)?;
+            let kind = match source {
+                MediaSource::File(path) => repository.import_media_file(
+                    page,
+                    position,
+                    column_anchor,
+                    &path,
+                    &data_directory,
+                )?,
+                MediaSource::Image(image) => repository.import_clipboard_image(
+                    page,
+                    position,
+                    column_anchor,
+                    &image,
+                    &data_directory,
+                )?,
+            };
             notice = Some(format!("{} eklendi.", kind.label()));
             focus = Some(position);
             Some(page)
@@ -2196,6 +2219,32 @@ mod tests {
             );
             assert_eq!(inserted[1].content, "Second pasted line");
         }
+    }
+
+    #[test]
+    fn clipboard_image_is_saved_in_the_target_column() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
+        let page = repository.create_page(None, "Columns").unwrap();
+        let left = repository.blocks(page, 0, 1).unwrap()[0].id;
+        let right = repository.insert_block(page, 1, BlockKind::Text).unwrap();
+        repository
+            .arrange_block(page, right, left, DropPlacement::Right)
+            .unwrap();
+        let image = image::RgbaImage::from_pixel(3, 2, image::Rgba([42, 65, 120, 128]));
+
+        repository
+            .import_clipboard_image(page, 1, Some(right), &image, directory.path())
+            .unwrap();
+
+        let blocks = repository.blocks(page, 0, 3).unwrap();
+        assert_eq!(blocks[0].id, left);
+        assert_eq!(blocks[2].id, right);
+        let imported = &blocks[1];
+        assert_eq!(imported.kind, BlockKind::Image);
+        assert_eq!(imported.column_group, blocks[2].column_group);
+        assert_eq!(imported.column_index, blocks[2].column_index);
+        assert_eq!(image::open(&imported.content).unwrap().into_rgba8(), image);
     }
 
     #[test]

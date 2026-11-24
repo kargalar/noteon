@@ -1,5 +1,5 @@
 use crate::domain::model::{Block, BlockId, BlockKind, PageId};
-use crate::worker::Action;
+use crate::worker::{Action, MediaSource};
 use eframe::egui::{self, Context, Id, Ui};
 
 #[derive(Clone)]
@@ -60,71 +60,60 @@ pub fn take_paste(
 }
 
 /// Turns media on the OS clipboard (copied files or raw image data) into import actions.
-pub fn take_media_paste(ui: &Ui, page: PageId, position: usize) -> Vec<Action> {
-    let requested = ui.input(|input| {
-        input.events.iter().any(|event| {
-            matches!(event, egui::Event::Paste(_))
-                || matches!(
-                    event,
-                    egui::Event::Key { key: egui::Key::V, pressed: true, modifiers, .. }
-                        if modifiers.command
-                )
-        })
+pub fn take_media_paste(
+    ui: &Ui,
+    page: PageId,
+    position: usize,
+    column_anchor: Option<BlockId>,
+) -> Vec<Action> {
+    let (paste, release) = ui.input(|input| {
+        (
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Paste(_)) || paste_key(event, true)),
+            input.events.iter().any(|event| paste_key(event, false)),
+        )
     });
-    if !requested {
+    if !ui.is_enabled() || (!paste && !release) {
         return Vec::new();
     }
     let Ok(mut clipboard) = arboard::Clipboard::new() else {
         return Vec::new();
     };
-    let mut sources: Vec<std::path::PathBuf> = clipboard
+    // egui-winit swallows the key press and emits Paste only for nonempty text.
+    // A release-only event can therefore recover media-only pastes without duplicating text pastes.
+    if !paste && clipboard.get_text().is_ok_and(|text| !text.is_empty()) {
+        return Vec::new();
+    }
+    let mut sources: Vec<MediaSource> = clipboard
         .get()
         .file_list()
         .unwrap_or_default()
         .into_iter()
-        .filter(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| BlockKind::from_media_extension(extension).is_some())
-        })
+        .filter(|path| BlockKind::from_media_path(path).is_some())
+        .map(MediaSource::File)
         .collect();
     if sources.is_empty() {
-        let has_text = ui.input(|input| {
-            input
-                .events
-                .iter()
-                .any(|event| matches!(event, egui::Event::Paste(text) if !text.is_empty()))
-        });
-        if has_text {
-            return Vec::new();
-        }
         let Ok(image) = clipboard.get_image() else {
             return Vec::new();
         };
-        let Some(buffer) = image::RgbaImage::from_raw(
-            image.width as u32,
-            image.height as u32,
-            image.bytes.into_owned(),
-        ) else {
+        let (Ok(width), Ok(height)) = (u32::try_from(image.width), u32::try_from(image.height))
+        else {
             return Vec::new();
         };
-        let path = std::env::temp_dir().join(format!(
-            "noteon-paste-{}-{}.png",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ));
-        if buffer.save(&path).is_err() {
+        let Some(buffer) = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())
+        else {
             return Vec::new();
-        }
-        sources.push(path);
+        };
+        sources.push(MediaSource::Image(buffer));
     }
     ui.input_mut(|input| {
-        input
-            .events
-            .retain(|event| !matches!(event, egui::Event::Paste(_)));
+        input.events.retain(|event| {
+            !matches!(event, egui::Event::Paste(_))
+                && !paste_key(event, true)
+                && !paste_key(event, false)
+        });
     });
     sources
         .into_iter()
@@ -132,7 +121,17 @@ pub fn take_media_paste(ui: &Ui, page: PageId, position: usize) -> Vec<Action> {
         .map(|(offset, source)| Action::ImportMedia {
             page,
             position: position + offset,
+            column_anchor,
             source,
         })
         .collect()
+}
+
+fn paste_key(event: &egui::Event, pressed: bool) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { key, physical_key, pressed: state, modifiers, .. }
+            if (*key == egui::Key::V || *physical_key == Some(egui::Key::V))
+                && *state == pressed && modifiers.command && !modifiers.alt && !modifiers.shift
+    )
 }

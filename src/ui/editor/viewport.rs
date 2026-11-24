@@ -3,7 +3,7 @@ use crate::domain::model::{BlockId, BlockKind, BulkBlockStyleOp, InlineFontFamil
 use crate::domain::virtual_layout::VirtualLayout;
 use crate::ui::menus::PersistentMenuUi;
 use crate::ui::{Intent, palette::Palette};
-use crate::worker::Action;
+use crate::worker::{Action, MediaSource};
 use eframe::egui::{
     self, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2,
 };
@@ -210,6 +210,7 @@ impl Editor {
         let databases = &mut *context.databases;
         let intents = &mut *context.intents;
         let Canvas {
+            page_rect,
             width,
             document_width,
             inset,
@@ -525,57 +526,101 @@ impl Editor {
                 text_styles: Vec::new(),
             }));
         }
-        let dropped_files = ui.ctx().input_mut(|input| {
-            if input
-                .pointer
-                .latest_pos()
-                .is_some_and(|pointer| viewport.contains(pointer))
-            {
-                std::mem::take(&mut input.raw.dropped_files)
-            } else {
-                Vec::new()
-            }
+        let pointer = ui.input(|input| {
+            (!input.raw.hovered_files.is_empty() || !input.raw.dropped_files.is_empty())
+                .then(|| input.pointer.latest_pos())
+                .flatten()
         });
-        if let Some(pointer) = ui.ctx().input(|input| input.pointer.latest_pos())
-            && viewport.contains(pointer)
-            && !dropped_files.is_empty()
+        if let Some(pointer) = pointer
+            && page_rect.contains(pointer)
+            && ui.is_enabled()
+            && ui.ctx().layer_id_at(pointer) == Some(ui.layer_id())
         {
+            let dropped = ui.input_mut(|input| std::mem::take(&mut input.raw.dropped_files));
+            let is_non_media = |path: &std::path::Path| BlockKind::from_media_path(path).is_none();
+            let has_non_media = dropped
+                .iter()
+                .filter_map(|file| file.path.as_deref())
+                .any(is_non_media)
+                || ui.input(|input| {
+                    input
+                        .raw
+                        .hovered_files
+                        .iter()
+                        .filter_map(|file| file.path.as_deref())
+                        .any(is_non_media)
+                });
             let local_y = pointer.y - origin.y;
             let mut position = document.outline.len();
-            for (row_index, row) in self.visual_rows.iter().enumerate() {
-                let top = self.layout.top(row_index);
-                let bottom = top + self.layout.height(row_index);
-                if (top..=bottom).contains(&local_y) {
-                    position = row[0] + usize::from(local_y > (top + bottom) * 0.5) * row.len();
-                    break;
+            let mut column_anchor = None;
+            let mut line_left = origin.x;
+            let mut line_right = origin.x + document_width;
+            let mut line_y = origin.y + self.layout.total();
+            if local_y < 0.0 || pointer.y < ui.clip_rect().top() {
+                position = 0;
+                line_y = ui.clip_rect().top();
+            } else if local_y < self.layout.total() {
+                let row_index = self.layout.row_at(local_y);
+                let row = &self.visual_rows[row_index];
+                let top = origin.y + self.layout.top(row_index);
+                let row_height = self.layout.height(row_index);
+                let after = pointer.y > top + row_height * 0.5;
+                position = row[0] + usize::from(after) * row.len();
+                line_y = top + if after { row_height } else { 0.0 };
+                if !has_non_media
+                    && document.outline[row[0]].column_group.is_some()
+                    && let Some(&(id, rect, index)) = visible_blocks
+                        .iter()
+                        .filter(|(_, rect, index)| {
+                            self.position_to_row[*index] == row_index
+                                && (rect.left()..=rect.right()).contains(&pointer.x)
+                        })
+                        .min_by(|(_, a, _), (_, b, _)| {
+                            distance_to_vertical_span(*a, pointer.y)
+                                .total_cmp(&distance_to_vertical_span(*b, pointer.y))
+                        })
+                {
+                    let after = pointer.y > rect.center().y;
+                    position = index + usize::from(after);
+                    column_anchor = Some(id);
+                    line_left = rect.left();
+                    line_right = rect.right();
+                    line_y = if after { rect.bottom() } else { rect.top() };
                 }
             }
-            for (offset, file) in dropped_files.into_iter().enumerate() {
-                let Some(path) = file.path else {
-                    continue;
-                };
-                if path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| {
-                        crate::domain::model::BlockKind::from_media_extension(extension).is_some()
-                    })
-                {
+            if ui.input(|input| {
+                input.raw.hovered_files.iter().any(|file| {
+                    file.path
+                        .as_deref()
+                        .and_then(BlockKind::from_media_path)
+                        .is_some()
+                })
+            }) {
+                let line_y = line_y.clamp(ui.clip_rect().top(), ui.clip_rect().bottom());
+                ui.painter().line_segment(
+                    [pos2(line_left, line_y), pos2(line_right, line_y)],
+                    Stroke::new(2.0_f32, palette.accent),
+                );
+            }
+            for path in dropped.into_iter().filter_map(|file| file.path) {
+                if BlockKind::from_media_path(&path).is_some() {
                     intents.push(Intent::Action(Action::ImportMedia {
                         page: page_id,
-                        position: position + offset,
-                        source: path,
+                        position,
+                        column_anchor,
+                        source: MediaSource::File(path),
                     }));
                 } else {
                     intents.push(Intent::Action(Action::InsertBlock {
                         column_anchor: None,
                         page: page_id,
-                        position: position + offset,
+                        position,
                         kind: crate::domain::model::BlockKind::Text,
                         content: path.to_string_lossy().into_owned(),
                         text_styles: Vec::new(),
                     }));
                 }
+                position += 1;
             }
         }
         if egui::DragAndDrop::payload::<crate::ui::page_transfer::PageDragPayload>(ui.ctx())
@@ -1377,6 +1422,10 @@ impl Editor {
 
 const COLUMN_GAP: f32 = 10.0;
 const MIN_COLUMN_RATIO: f32 = 0.08;
+
+fn distance_to_vertical_span(rect: Rect, y: f32) -> f32 {
+    (rect.top() - y).max(y - rect.bottom()).max(0.0)
+}
 
 fn row_column_widths(
     row: &[usize],

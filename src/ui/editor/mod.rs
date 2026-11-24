@@ -314,10 +314,20 @@ impl Editor {
             {
                 intents.push(Intent::Action(action));
             } else {
+                let column_anchor = document
+                    .outline
+                    .get(position)
+                    .filter(|stub| stub.column_group.is_some())
+                    .map(|stub| stub.id);
                 intents.extend(
-                    crate::ui::block_clipboard::take_media_paste(ui, page_id, position)
-                        .into_iter()
-                        .map(Intent::Action),
+                    crate::ui::block_clipboard::take_media_paste(
+                        ui,
+                        page_id,
+                        position,
+                        column_anchor,
+                    )
+                    .into_iter()
+                    .map(Intent::Action),
                 );
             }
         }

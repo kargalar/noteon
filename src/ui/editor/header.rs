@@ -8,6 +8,7 @@ use eframe::egui::{self, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, vec
 
 #[derive(Clone, Copy)]
 pub(super) struct Canvas {
+    pub page_rect: Rect,
     pub width: f32,
     pub document_width: f32,
     pub inset: f32,
@@ -33,6 +34,7 @@ pub(super) fn show(
     find_title_range: Option<(usize, usize)>,
     history: &[crate::domain::model::PageHistorySummary],
 ) -> (Canvas, Vec<Intent>) {
+    let page_rect = ui.max_rect().intersect(ui.clip_rect());
     let mut intents = Vec::new();
     let page = &mut document.page;
     let mut page_changed = false;
@@ -288,6 +290,7 @@ pub(super) fn show(
     ui.add_space(4.0);
     (
         Canvas {
+            page_rect,
             width,
             document_width,
             inset,
@@ -588,6 +591,13 @@ fn title(
                     egui::text::CCursor::new(char_count),
                 )));
             state.store(ui.ctx(), title_id);
+        }
+        if ui.memory(|mem| mem.has_focus(title_id)) {
+            intents.extend(
+                crate::ui::block_clipboard::take_media_paste(ui, page.id, 0, None)
+                    .into_iter()
+                    .map(Intent::Action),
+            );
         }
         let insert_first_block = ui.memory(|mem| mem.has_focus(title_id))
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));

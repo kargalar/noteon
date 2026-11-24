@@ -973,6 +973,11 @@ fn handle_paste(
         intents.push(Intent::Action(action));
         return true;
     }
+    let media = crate::ui::block_clipboard::take_media_paste(ui, block.page_id, position);
+    if !media.is_empty() {
+        intents.extend(media.into_iter().map(Intent::Action));
+        return false;
+    }
     if block.kind == BlockKind::Code {
         return false;
     }

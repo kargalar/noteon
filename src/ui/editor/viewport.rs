@@ -528,7 +528,7 @@ impl Editor {
         let dropped_files = ui.ctx().input_mut(|input| {
             if input
                 .pointer
-                .interact_pos()
+                .latest_pos()
                 .is_some_and(|pointer| viewport.contains(pointer))
             {
                 std::mem::take(&mut input.raw.dropped_files)
@@ -536,7 +536,7 @@ impl Editor {
                 Vec::new()
             }
         });
-        if let Some(pointer) = ui.ctx().pointer_interact_pos()
+        if let Some(pointer) = ui.ctx().input(|input| input.pointer.latest_pos())
             && viewport.contains(pointer)
             && !dropped_files.is_empty()
         {

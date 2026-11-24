@@ -21,6 +21,7 @@ thiserror = "2.0"
 egui_extras = { version = "0.31.1", features = ["svg", "image"] }
 egui-twemoji = "0.7.1"
 twemoji-assets = "1.4.0"
+arboard = "3"
 
 [dev-dependencies]
 tempfile = "3.27"

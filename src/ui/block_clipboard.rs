@@ -58,3 +58,81 @@ pub fn take_paste(
         blocks: clipboard.blocks,
     })
 }
+
+/// Turns media on the OS clipboard (copied files or raw image data) into import actions.
+pub fn take_media_paste(ui: &Ui, page: PageId, position: usize) -> Vec<Action> {
+    let requested = ui.input(|input| {
+        input.events.iter().any(|event| {
+            matches!(event, egui::Event::Paste(_))
+                || matches!(
+                    event,
+                    egui::Event::Key { key: egui::Key::V, pressed: true, modifiers, .. }
+                        if modifiers.command
+                )
+        })
+    });
+    if !requested {
+        return Vec::new();
+    }
+    let Ok(mut clipboard) = arboard::Clipboard::new() else {
+        return Vec::new();
+    };
+    let mut sources: Vec<std::path::PathBuf> = clipboard
+        .get()
+        .file_list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| BlockKind::from_media_extension(extension).is_some())
+        })
+        .collect();
+    if sources.is_empty() {
+        let has_text = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Paste(text) if !text.is_empty()))
+        });
+        if has_text {
+            return Vec::new();
+        }
+        let Ok(image) = clipboard.get_image() else {
+            return Vec::new();
+        };
+        let Some(buffer) = image::RgbaImage::from_raw(
+            image.width as u32,
+            image.height as u32,
+            image.bytes.into_owned(),
+        ) else {
+            return Vec::new();
+        };
+        let path = std::env::temp_dir().join(format!(
+            "noteon-paste-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ));
+        if buffer.save(&path).is_err() {
+            return Vec::new();
+        }
+        sources.push(path);
+    }
+    ui.input_mut(|input| {
+        input
+            .events
+            .retain(|event| !matches!(event, egui::Event::Paste(_)));
+    });
+    sources
+        .into_iter()
+        .enumerate()
+        .map(|(offset, source)| Action::ImportMedia {
+            page,
+            position: position + offset,
+            source,
+        })
+        .collect()
+}

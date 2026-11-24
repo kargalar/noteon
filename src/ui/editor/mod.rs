@@ -313,6 +313,12 @@ impl Editor {
                     })
             {
                 intents.push(Intent::Action(action));
+            } else {
+                intents.extend(
+                    crate::ui::block_clipboard::take_media_paste(ui, page_id, position)
+                        .into_iter()
+                        .map(Intent::Action),
+                );
             }
         }
         if self.find.show_bar(ui, page_id, widget_scope, palette) {

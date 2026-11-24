@@ -90,9 +90,8 @@ impl Editor {
         }
         if !same_page {
             self.find = find::PageFind::default();
-        } else if self.find.open {
-            self.find
-                .update_matches(Some(&document), &self.cache.blocks);
+        } else {
+            self.find.refresh();
         }
         self.title_focus = !same_page && document.page.title.is_empty();
         self.document = Some(document);
@@ -125,26 +124,26 @@ impl Editor {
         self.focus_at_end = focus_at_end;
     }
 
-    pub fn open_find(&mut self) {
-        self.find.open();
-        self.find
-            .update_matches(self.document.as_ref(), &self.cache.blocks);
-        if let Some(m) = self.find.current_match() {
-            match m {
-                find::PageFindMatch::Title { .. } => {
-                    self.jump_to = Some(0);
-                    self.scroll_offset = 0.0;
-                    self.reset_scroll = true;
-                }
-                find::PageFindMatch::Block { position, .. } => {
-                    self.jump_to = Some(*position);
-                }
-            }
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(crate) fn receive_find_matches(
+        &mut self,
+        revision: u64,
+        matches: Vec<crate::domain::search::PageFindMatch>,
+    ) {
+        if self.find.receive_matches(revision, matches) {
+            self.scroll_to_find_match();
         }
     }
 
-    pub fn clear(&mut self) {
-        *self = Self::default();
+    fn scroll_to_find_match(&mut self) {
+        self.find.apply_scroll_to_match(
+            &mut self.jump_to,
+            &mut self.reset_scroll,
+            &mut self.scroll_offset,
+        );
     }
 
     pub fn show(
@@ -262,7 +261,7 @@ impl Editor {
         } else {
             None
         };
-        let is_find_title_active = self.find.open && self.find.is_title_active_match();
+        let find_title_range = self.find.active_title_range();
         let (canvas, mut intents) = header::show(
             ui,
             document,
@@ -277,7 +276,7 @@ impl Editor {
                 value_drafts: context.value_drafts,
             },
             find_q,
-            is_find_title_active,
+            find_title_range,
             &self.history,
         );
         intents.extend(self.show_blocks(ui, canvas, palette, context));
@@ -316,29 +315,8 @@ impl Editor {
                 intents.push(Intent::Action(action));
             }
         }
-        self.find.show_bar(
-            ui,
-            page_id,
-            widget_scope,
-            palette,
-            self.document.as_ref(),
-            &self.cache.blocks,
-            &mut self.jump_to,
-            &mut self.reset_scroll,
-            &mut self.scroll_offset,
-        );
-        if self.find.open
-            && let Some(doc) = &self.document
-        {
-            for stub_pos in (0..doc.outline.len()).step_by(crate::config::BLOCK_BATCH_SIZE) {
-                if let Some(load_start) = self.cache.request(stub_pos) {
-                    intents.push(Intent::LoadBlocks {
-                        page: page_id,
-                        generation: self.generation,
-                        start: load_start,
-                    });
-                }
-            }
+        if self.find.show_bar(ui, page_id, widget_scope, palette) {
+            self.scroll_to_find_match();
         }
         intents
     }

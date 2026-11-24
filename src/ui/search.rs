@@ -14,6 +14,7 @@ pub struct Search {
     pub generation: u64,
     pub hits: Vec<SearchHit>,
     pub loading: bool,
+    failed: bool,
     query: String,
     changed_at: Option<Instant>,
     focus: bool,
@@ -25,13 +26,17 @@ impl Search {
         self.focus = true;
     }
 
+    pub fn fail(&mut self) {
+        self.loading = false;
+        self.failed = true;
+    }
+
     pub fn take_request(&mut self) -> Option<(String, u64)> {
         if self
             .changed_at
             .is_some_and(|time| time.elapsed() >= SEARCH_DELAY)
         {
             self.changed_at = None;
-            self.loading = !self.query.trim().is_empty();
             return Some((self.query.clone(), self.generation));
         }
         None
@@ -54,6 +59,7 @@ impl Search {
                 let input = ui.add_sized(
                     [ui.available_width(), 37.0],
                     egui::TextEdit::singleline(&mut self.query)
+                        .return_key(None)
                         .hint_text(text::SEARCH_PLACEHOLDER)
                         .font(egui::FontId::proportional(18.0)),
                 );
@@ -63,9 +69,10 @@ impl Search {
                 }
                 if input.changed() {
                     self.generation += 1;
-                    self.changed_at = Some(Instant::now());
                     self.hits.clear();
-                    self.loading = true;
+                    self.failed = false;
+                    self.loading = !self.query.trim().is_empty();
+                    self.changed_at = self.loading.then(Instant::now);
                 }
                 ui.add_space(9.0);
                 ui.separator();
@@ -74,6 +81,8 @@ impl Search {
                         ui.spinner();
                         small_label(ui, "Searching your notes…", palette.muted);
                     });
+                } else if self.failed {
+                    ui.label(RichText::new("Search failed.").color(palette.danger));
                 } else if self.query.trim().is_empty() {
                     ui.add_space(20.0);
                     small_label(
@@ -128,5 +137,48 @@ impl Search {
         }
         self.open = open;
         intents
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enter_opens_the_first_workspace_search_result() {
+        let context = egui::Context::default();
+        let mut search = Search {
+            query: "notes".into(),
+            hits: vec![SearchHit {
+                page_id: 42,
+                title: "Notes".into(),
+                icon: String::new(),
+                preview: "Excerpt".into(),
+                position: Some(5),
+            }],
+            ..Default::default()
+        };
+        search.open();
+        let palette = Palette::new(false);
+        let _ = context.run(egui::RawInput::default(), |context| {
+            search.show(context, palette);
+        });
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: Some(egui::Key::Enter),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let _ = context.run(input, |context| {
+            assert!(matches!(
+                search.show(context, palette).as_slice(),
+                [Intent::Open(42, Some(5))]
+            ));
+        });
+        assert!(!search.open);
     }
 }

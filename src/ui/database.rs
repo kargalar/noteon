@@ -1598,15 +1598,17 @@ fn show_table_find_bar(ui: &mut Ui, data: &DatabaseData, palette: Palette) {
             response.request_focus();
             ui.ctx().data_mut(|state| state.remove::<bool>(focus_id));
         }
-        if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if ui.memory(|memory| memory.had_focus_last_frame(response.id))
+            && ui.input(|input| input.key_pressed(egui::Key::Escape))
+        {
             close = true;
         }
-        let matching_rows = data
-            .rows
-            .iter()
-            .filter(|row| table_row_matches(row, &data.properties, &query))
-            .count();
         if !query.trim().is_empty() {
+            let matching_rows = data
+                .rows
+                .iter()
+                .filter(|row| table_row_matches(row, &data.properties, &query))
+                .count();
             ui.label(
                 RichText::new(format!("{matching_rows}/{}", data.rows.len()))
                     .size(11.5)
@@ -1656,7 +1658,13 @@ fn show_table(
     let query = ui
         .ctx()
         .data(|state| {
-            state.get_temp::<String>(egui::Id::new(("database-table-find-query", data.page_id)))
+            let open = egui::Id::new(("database-table-find-open", data.page_id));
+            let query = egui::Id::new(("database-table-find-query", data.page_id));
+            if state.get_temp::<bool>(open).unwrap_or(false) {
+                state.get_temp::<String>(query)
+            } else {
+                None
+            }
         })
         .unwrap_or_default();
     let rows: Vec<DatabaseRow> = data
@@ -4945,7 +4953,10 @@ fn show_board(
 
                     let col_frame = egui::Frame::new()
                         .fill(palette.code)
-                        .stroke(egui::Stroke::new(1.0_f32, palette.border.linear_multiply(0.4)))
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            palette.border.linear_multiply(0.4),
+                        ))
                         .corner_radius(8)
                         .inner_margin(10);
 

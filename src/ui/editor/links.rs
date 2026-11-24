@@ -328,25 +328,6 @@ pub fn find_links_and_paths(text: &str) -> Vec<DetectedLink> {
     results
 }
 
-pub fn open_url_in_browser(url: &str) {
-    let target = normalize_web_url(url);
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", &target])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn();
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&target).spawn();
-    }
-}
-
 pub fn open_in_file_explorer(raw_path: &str) {
     let clean = normalize_file_path(raw_path);
     let path = std::path::Path::new(&clean);

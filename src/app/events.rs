@@ -123,11 +123,6 @@ impl NoteonApp {
                     {
                         self.saves.overlay_blocks(&mut blocks);
                         editor.cache.insert(start, blocks);
-                        if editor.find.open {
-                            editor
-                                .find
-                                .update_matches(editor.document.as_ref(), &editor.cache.blocks);
-                        }
                     }
                 }
                 Event::Database(mut data) => {
@@ -151,6 +146,19 @@ impl NoteonApp {
                 Event::Search { generation, hits } if generation == self.search.generation => {
                     self.search.hits = hits;
                     self.search.loading = false;
+                }
+                Event::PageFind {
+                    generation,
+                    revision,
+                    matches,
+                } => {
+                    if let Some(editor) = self
+                        .editors
+                        .values_mut()
+                        .find(|editor| editor.generation == generation)
+                    {
+                        editor.receive_find_matches(revision, matches);
+                    }
                 }
                 Event::Saved { id, histories } => {
                     self.saves.acknowledge(id);
@@ -355,10 +363,13 @@ impl NoteonApp {
                         }
                         FailedOperation::Action => self.busy = false,
                         FailedOperation::Document(generation) => {
-                            if let Some((page, _)) = self.pending_documents.remove(&generation)
-                                && self.selected == Some(page)
-                            {
-                                self.loading = false;
+                            if let Some((page, _)) = self.pending_documents.remove(&generation) {
+                                if self.selected == Some(page) {
+                                    self.loading = false;
+                                }
+                                if self.pending_dialog == Some(page) {
+                                    self.pending_dialog = None;
+                                }
                             }
                         }
                         FailedOperation::Blocks(start, generation) => {
@@ -376,7 +387,22 @@ impl NoteonApp {
                         FailedOperation::Search(generation)
                             if generation == self.search.generation =>
                         {
-                            self.search.loading = false
+                            self.search.fail();
+                        }
+                        FailedOperation::Search(_) => continue,
+                        FailedOperation::FindInPage {
+                            generation,
+                            revision,
+                        } => {
+                            if self
+                                .editors
+                                .values_mut()
+                                .find(|editor| editor.generation == generation)
+                                .is_some_and(|editor| editor.find.fail(revision))
+                            {
+                                self.error = Some(message);
+                            }
+                            continue;
                         }
                         _ => {}
                     }

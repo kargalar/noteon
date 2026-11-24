@@ -1668,3 +1668,33 @@ fn test_find_char_ranges_and_case_insensitivity() {
     let ranges_tr = find_char_ranges("İstanbul ve istanbullular", "istanbul");
     assert_eq!(ranges_tr, vec![0..8, 12..20]);
 }
+
+#[test]
+fn page_find_keeps_text_shortcuts_and_closes_on_escape() {
+    let context = egui::Context::default();
+    let mut editor = editor("Sample content", 1);
+    editor.find.open();
+    frame(&context, &mut editor, Vec::new(), Modifiers::NONE);
+
+    let key = |key, modifiers| Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    let intents = frame(
+        &context,
+        &mut editor,
+        vec![key(Key::Z, Modifiers::CTRL)],
+        Modifiers::CTRL,
+    );
+    assert!(!intents.iter().any(|intent| matches!(intent, Intent::Undo)));
+    frame(
+        &context,
+        &mut editor,
+        vec![key(Key::Escape, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    assert!(!editor.find.open);
+}

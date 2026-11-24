@@ -10,6 +10,47 @@ fn database() -> (tempfile::TempDir, Repository) {
 }
 
 #[test]
+fn find_in_page_matches_text_beyond_the_editor_cache() {
+    use noteon::config::{BLOCK_BATCH_SIZE, CACHED_BATCHES};
+    use noteon::domain::search::PageFindMatch;
+
+    let (directory, mut repository) = database();
+    let path = directory.path().join("long-page.md");
+    let filler = "Filler block\n".repeat(BLOCK_BATCH_SIZE * CACHED_BATCHES);
+    std::fs::write(
+        &path,
+        format!("# İstanbul\nİSTANBUL\n{filler}🌍 istanbul\n"),
+    )
+    .unwrap();
+    let page = repository.import_markdown(&path).unwrap();
+    let other = repository.create_page(None, "İstanbul").unwrap();
+    let last_position = BLOCK_BATCH_SIZE * CACHED_BATCHES + 1;
+    let first = &repository.blocks(page, 0, 1).unwrap()[0];
+    let last = &repository.blocks(page, last_position, 1).unwrap()[0];
+
+    assert_eq!(
+        repository.find_in_page(page, "istanbul").unwrap(),
+        vec![
+            PageFindMatch::Title(0..8),
+            PageFindMatch::Block {
+                position: 0,
+                block_id: first.id,
+                range: 0..8
+            },
+            PageFindMatch::Block {
+                position: last_position,
+                block_id: last.id,
+                range: 2..10
+            },
+        ]
+    );
+    assert_eq!(
+        repository.find_in_page(other, "istanbul").unwrap(),
+        vec![PageFindMatch::Title(0..8)]
+    );
+}
+
+#[test]
 fn database_record_names_start_empty_and_persist_renames_without_another_record() {
     let (_directory, mut repository) = database();
     let database_id = repository.create_database(None).unwrap();

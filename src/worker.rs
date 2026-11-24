@@ -11,6 +11,7 @@ use crate::domain::model::{
     Document, DropPlacement, Page, PageId, PageSnapshot, PropertyOption, SaveBatch, SearchHit,
     TextStyleRange,
 };
+use crate::domain::search::PageFindMatch;
 use crate::error::{Error, Result};
 use crate::storage::Repository;
 
@@ -301,6 +302,12 @@ pub enum Request {
         query: String,
         generation: u64,
     },
+    FindInPage {
+        page: PageId,
+        generation: u64,
+        revision: u64,
+        query: String,
+    },
     Save {
         id: u64,
         batch: SaveBatch,
@@ -320,6 +327,7 @@ pub enum FailedOperation {
     Blocks(usize, u64),
     Database(PageId),
     Search(u64),
+    FindInPage { generation: u64, revision: u64 },
     Save(u64),
     Action,
     Setting,
@@ -352,6 +360,11 @@ pub enum Event {
     Search {
         generation: u64,
         hits: Vec<SearchHit>,
+    },
+    PageFind {
+        generation: u64,
+        revision: u64,
+        matches: Vec<PageFindMatch>,
     },
     Saved {
         id: u64,
@@ -465,7 +478,8 @@ impl Worker {
                         return;
                     }
                 }
-                let mut write_failed = false;
+                let mut failed_pages = HashSet::new();
+                let mut failed_blocks = HashSet::new();
                 let mut page_histories: HashMap<PageId, PageHistory> = HashMap::new();
                 let mut global_history = GlobalHistory::default();
                 for request in requests {
@@ -510,6 +524,33 @@ impl Worker {
                                 .search(&query)
                                 .map(|hits| Event::Search { generation, hits }),
                         ),
+                        Request::FindInPage {
+                            page,
+                            generation,
+                            revision,
+                            query,
+                        } => {
+                            let result = if failed_pages.is_empty() && failed_blocks.is_empty() {
+                                repository.find_in_page(page, &query).map(|matches| {
+                                    Event::PageFind {
+                                        generation,
+                                        revision,
+                                        matches,
+                                    }
+                                })
+                            } else {
+                                Err(Error::Invalid(
+                                    "Save pending changes before searching.".into(),
+                                ))
+                            };
+                            (
+                                FailedOperation::FindInPage {
+                                    generation,
+                                    revision,
+                                },
+                                result,
+                            )
+                        }
                         Request::Save { id, batch } => {
                             let touched_pages: HashSet<PageId> = batch
                                 .pages
@@ -517,14 +558,14 @@ impl Worker {
                                 .map(|p| p.id)
                                 .chain(batch.blocks.iter().map(|b| b.page_id))
                                 .collect();
+                            let mut history_entries = Vec::new();
                             for &page_id in &touched_pages {
-                                let history = page_histories.entry(page_id).or_default();
-                                let should_push = match history.last_save_time {
-                                    Some(time) => {
+                                let should_push = page_histories
+                                    .get(&page_id)
+                                    .and_then(|history| history.last_save_time)
+                                    .is_none_or(|time| {
                                         time.elapsed() > std::time::Duration::from_millis(1500)
-                                    }
-                                    None => true,
-                                };
+                                    });
                                 if let Ok(current_snap) = repository.page_snapshot(page_id) {
                                     let is_discrete_change =
                                         batch.pages.iter().any(|p| p.id == page_id)
@@ -548,16 +589,36 @@ impl Worker {
                                         } else {
                                             "Metin düzenlendi"
                                         };
-                                        if history.push_undo(current_snap, desc) {
-                                            global_history
-                                                .push_undo(GlobalUndoEntry::Page(page_id));
-                                        }
+                                        history_entries.push((page_id, current_snap, desc));
                                     }
                                 }
-                                history.last_save_time = Some(std::time::Instant::now());
                             }
                             let result = repository.save(&batch);
-                            write_failed = result.is_err();
+                            if result.is_ok() {
+                                for page in &batch.pages {
+                                    failed_pages.remove(&page.id);
+                                }
+                                for block in &batch.blocks {
+                                    failed_blocks.remove(&block.id);
+                                }
+                                for (page, snapshot, description) in history_entries {
+                                    if page_histories
+                                        .entry(page)
+                                        .or_default()
+                                        .push_undo(snapshot, description)
+                                    {
+                                        global_history.push_undo(GlobalUndoEntry::Page(page));
+                                    }
+                                }
+                                let saved_at = std::time::Instant::now();
+                                for &page in &touched_pages {
+                                    page_histories.entry(page).or_default().last_save_time =
+                                        Some(saved_at);
+                                }
+                            } else {
+                                failed_pages.extend(batch.pages.iter().map(|page| page.id));
+                                failed_blocks.extend(batch.blocks.iter().map(|block| block.id));
+                            }
                             let updated_histories: HashMap<
                                 PageId,
                                 Vec<crate::domain::model::PageHistorySummary>,
@@ -582,7 +643,7 @@ impl Worker {
                             )
                         }
                         Request::Action(action) => {
-                            let result = if write_failed {
+                            let result = if !failed_pages.is_empty() || !failed_blocks.is_empty() {
                                 Err(Error::Invalid(
                                     "Save pending changes before continuing.".into(),
                                 ))
@@ -1375,7 +1436,8 @@ fn perform_action(
                                 refresh_database = Some(parent_id);
                             }
                             repository.restore_pages(&[record_id])?;
-                            global_history.push_undo_record(GlobalUndoEntry::CreateRecord(record_id));
+                            global_history
+                                .push_undo_record(GlobalUndoEntry::CreateRecord(record_id));
                             redone_page = Some(record_id);
                             break;
                         }
@@ -1803,6 +1865,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_later_successful_save_cannot_hide_an_unresolved_failed_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("test.sqlite");
+        let mut repository = Repository::open(&path).unwrap();
+        let first = repository.create_page(None, "First").unwrap();
+        let second = repository.create_page(None, "Second").unwrap();
+        let mut first_block = repository.blocks(first, 0, 1).unwrap().remove(0);
+        let mut second_block = repository.blocks(second, 0, 1).unwrap().remove(0);
+        repository
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_save BEFORE UPDATE OF content ON blocks
+             WHEN NEW.content = 'temporary failure'
+             BEGIN SELECT RAISE(ABORT, 'test save failed'); END;",
+            )
+            .unwrap();
+
+        let worker = Worker::start(path, egui::Context::default()).unwrap();
+        let receive = || {
+            worker
+                .events
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+        };
+        assert!(matches!(receive(), Event::Ready { .. }));
+        let save = |id, block| {
+            worker
+                .send(Request::Save {
+                    id,
+                    batch: SaveBatch {
+                        pages: Vec::new(),
+                        blocks: vec![block],
+                    },
+                })
+                .unwrap()
+        };
+
+        first_block.content = "temporary failure".into();
+        save(1, first_block.clone());
+        assert!(matches!(
+            receive(),
+            Event::Failed {
+                operation: FailedOperation::Save(1),
+                ..
+            }
+        ));
+        second_block.content = "separate edit".into();
+        save(2, second_block);
+        assert!(matches!(receive(), Event::Saved { id: 2, .. }));
+
+        worker.send(Request::Action(Action::Undo)).unwrap();
+        assert!(matches!(
+            receive(),
+            Event::Failed {
+                operation: FailedOperation::Action,
+                ..
+            }
+        ));
+        assert_eq!(
+            repository.blocks(second, 0, 1).unwrap()[0].content,
+            "separate edit"
+        );
+
+        repository
+            .connection
+            .execute_batch("DROP TRIGGER reject_save")
+            .unwrap();
+        save(3, first_block);
+        assert!(matches!(receive(), Event::Saved { id: 3, .. }));
+        worker.send(Request::Action(Action::Undo)).unwrap();
+        assert!(
+            matches!(receive(), Event::ActionDone { document: Some(doc), .. } if doc.page.id == first)
+        );
+        assert!(
+            repository.blocks(first, 0, 1).unwrap()[0]
+                .content
+                .is_empty()
+        );
+        assert_eq!(
+            repository.blocks(second, 0, 1).unwrap()[0].content,
+            "separate edit"
+        );
+    }
+
+    #[test]
     fn inline_record_creation_requests_name_focus_and_reordering_refreshes_the_database() {
         let directory = tempfile::tempdir().unwrap();
         let mut repository = Repository::open(&directory.path().join("test.sqlite")).unwrap();
@@ -1869,13 +2016,9 @@ mod tests {
                 Action::RestorePages(records.clone()),
             ] {
                 let restoring = matches!(&action, Action::RestorePages(_));
-                let event = perform_action(
-                    &mut repository,
-                    &mut histories,
-                    &mut global_history,
-                    action,
-                )
-                .unwrap();
+                let event =
+                    perform_action(&mut repository, &mut histories, &mut global_history, action)
+                        .unwrap();
                 let Event::ActionDone {
                     preserve_view,
                     refresh_database,
@@ -1932,13 +2075,9 @@ mod tests {
                         original_title.as_str(),
                     ),
                 };
-                let event = perform_action(
-                    &mut repository,
-                    &mut histories,
-                    &mut global_history,
-                    action,
-                )
-                .unwrap();
+                let event =
+                    perform_action(&mut repository, &mut histories, &mut global_history, action)
+                        .unwrap();
                 let Event::ActionDone {
                     document: Some(document),
                     preserve_view,
@@ -2148,14 +2287,17 @@ mod tests {
         )
         .unwrap();
         let Event::ActionDone {
-            refresh_database,
-            ..
-        } = event else {
+            refresh_database, ..
+        } = event
+        else {
             panic!("expected ActionDone on undo");
         };
         assert_eq!(refresh_database, Some(database));
         assert_eq!(repository.database(database).unwrap().rows.len(), 1);
-        assert_eq!(repository.database(database).unwrap().rows[0].page.id, record);
+        assert_eq!(
+            repository.database(database).unwrap().rows[0].page.id,
+            record
+        );
         // Block is still at position 1 (not yet undone)
         assert_eq!(repository.block_position(block1).unwrap(), Some(1));
 
@@ -2170,7 +2312,8 @@ mod tests {
         let Event::ActionDone {
             document: Some(doc),
             ..
-        } = event else {
+        } = event
+        else {
             panic!("expected ActionDone with document on second undo");
         };
         assert_eq!(doc.page.id, page);
@@ -2200,9 +2343,9 @@ mod tests {
         )
         .unwrap();
         let Event::ActionDone {
-            refresh_database,
-            ..
-        } = event else {
+            refresh_database, ..
+        } = event
+        else {
             panic!("expected ActionDone on second redo");
         };
         assert_eq!(refresh_database, Some(database));

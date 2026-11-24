@@ -54,7 +54,7 @@ impl Editor {
         let any_block_changed = intents
             .iter()
             .any(|intent| matches!(intent, Intent::BlockChanged(_) | Intent::Action(_)));
-        if !any_block_changed {
+        if !any_block_changed && !ui.ctx().wants_keyboard_input() {
             let redo_pressed = ui.input_mut(|i| {
                 i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)
                     || i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Z)
@@ -342,7 +342,7 @@ impl Editor {
                         } else {
                             None
                         };
-                        let find_active = self.find.active_range_for_block(block.id, position);
+                        let find_active = self.find.active_range_for_block(block.id);
                         let find_q = if self.find.open {
                             Some(self.find.query.as_str())
                         } else {

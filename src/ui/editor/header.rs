@@ -30,7 +30,7 @@ pub(super) fn show(
     widget_scope: Option<u64>,
     record_properties: RecordPropertiesContext<'_>,
     find_query: Option<&str>,
-    is_find_title_active: bool,
+    find_title_range: Option<(usize, usize)>,
     history: &[crate::domain::model::PageHistorySummary],
 ) -> (Canvas, Vec<Intent>) {
     let mut intents = Vec::new();
@@ -239,7 +239,7 @@ pub(super) fn show(
         palette,
         &mut intents,
         find_query,
-        is_find_title_active,
+        find_title_range,
     );
     if page_changed {
         intents.push(Intent::PageChanged(PageEdit::from(&*page)));
@@ -486,7 +486,7 @@ fn title(
     palette: Palette,
     intents: &mut Vec<Intent>,
     find_query: Option<&str>,
-    is_find_title_active: bool,
+    find_title_range: Option<(usize, usize)>,
 ) -> bool {
     let mut changed = false;
 
@@ -555,7 +555,7 @@ fn title(
                     FontId::proportional(34.0),
                     palette.text,
                     find_clean,
-                    is_find_title_active,
+                    find_title_range,
                 )
             } else {
                 let font = FontId::proportional(34.0);

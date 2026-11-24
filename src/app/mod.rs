@@ -223,19 +223,26 @@ impl NoteonApp {
             return;
         }
         if let Some(editor) = self.editors.get_mut(&id) {
+            self.pending_dialog = None;
             editor.title_focus = true;
             self.page_dialog = Some(id);
             self.touch_editor(id);
             return;
         }
         self.pending_dialog = Some(id);
+        if self.pending_documents.values().any(|(page, _)| *page == id) {
+            return;
+        }
         self.generation += 1;
         let generation = self.generation;
         self.pending_documents.insert(generation, (id, None));
-        self.send(Request::Document {
+        if !self.send(Request::Document {
             page: id,
             generation,
-        });
+        }) {
+            self.pending_documents.remove(&generation);
+            self.pending_dialog = None;
+        }
     }
 
     fn open_page_with_mode(
@@ -260,10 +267,10 @@ impl NoteonApp {
     }
 
     fn open_page_content(&mut self, id: PageId, jump: Option<usize>, add_history: bool) {
+        self.trash = false;
         if self.sidebar.page(id).is_some_and(|page| page.is_database) {
             self.selected = Some(id);
             self.loading = false;
-            self.trash = false;
             self.sidebar.reveal(id);
             self.record_navigation(id, add_history);
             return;
@@ -289,10 +296,11 @@ impl NoteonApp {
             *pending_jump = jump;
             self.selected = Some(id);
             self.loading = true;
+            self.sidebar.reveal(id);
+            self.record_navigation(id, add_history);
             return;
         }
         self.flush(true);
-        self.trash = false;
         self.selected = Some(id);
         self.generation += 1;
         self.pending_documents.insert(self.generation, (id, jump));
@@ -444,10 +452,20 @@ impl NoteonApp {
         if self.busy || self.closing {
             return;
         }
-        let next = self.history_index as isize + direction;
-        if next >= 0 && (next as usize) < self.history.len() {
-            self.history_index = next as usize;
-            self.open_page(self.history[self.history_index], None, false);
+        let mut index = self.history_index;
+        while let Some(next) = index.checked_add_signed(direction)
+            && let Some(&page) = self.history.get(next)
+        {
+            if self
+                .sidebar
+                .page(page)
+                .is_some_and(|page| page.trashed_by.is_none())
+            {
+                self.history_index = next;
+                self.open_page(page, None, false);
+                break;
+            }
+            index = next;
         }
     }
 
@@ -462,6 +480,10 @@ impl NoteonApp {
         }
         if self.saves.failed {
             self.error = Some("Save pending changes before continuing.".into());
+            return;
+        }
+        self.flush(true);
+        if self.saves.failed {
             return;
         }
         match &action {
@@ -556,26 +578,8 @@ impl NoteonApp {
                 }
                 self.trashed_pages_history.retain(|group| !group.is_empty());
             }
-            Action::Undo
-            | Action::Redo => {
-                for page_id in self.editors.keys().copied().collect::<Vec<_>>() {
-                    self.saves.clear_page(page_id);
-                }
-                for editor in self.editors.values_mut() {
-                    editor.cache = crate::ui::editor::BlockCache::default();
-                }
-            }
-            Action::UndoPage(page_id)
-            | Action::RedoPage(page_id)
-            | Action::RestorePageHistory { page: page_id, .. } => {
-                self.saves.clear_page(*page_id);
-                if let Some(editor) = self.editors.get_mut(page_id) {
-                    editor.cache = crate::ui::editor::BlockCache::default();
-                }
-            }
             _ => {}
         }
-        self.flush(true);
         let sent = self.send(Request::Action(action));
         if !is_value_edit {
             self.busy = sent;
@@ -593,6 +597,7 @@ impl NoteonApp {
             && old_title != page.title
             && let Some(parent_editor) = self.editors.get_mut(&parent_id)
         {
+            parent_editor.find.refresh();
             let old_target = if old_title.trim().is_empty() {
                 config::UNTITLED
             } else {
@@ -615,6 +620,9 @@ impl NoteonApp {
                     self.saves.edit_block(block.clone());
                 }
             }
+        }
+        if let Some(editor) = self.editors.get_mut(&page.id) {
+            editor.find.refresh();
         }
         self.saves.edit_page(page);
     }
@@ -656,24 +664,30 @@ impl NoteonApp {
         for intent in edits.into_iter().chain(actions) {
             match intent {
                 Intent::Open(id, jump) => {
+                    self.pending_dialog = None;
                     self.page_dialog = None;
                     self.open_page(id, jump, true);
                 }
                 Intent::OpenTitle(title) => {
                     if let Some(id) = self.sidebar.find_by_title(&title, self.selected) {
+                        self.pending_dialog = None;
                         self.page_dialog = None;
                         self.open_page(id, None, true);
                     }
                 }
                 Intent::OpenInTab(id) => {
+                    self.pending_dialog = None;
                     self.page_dialog = None;
                     self.open_page_in_tab(id);
                 }
                 Intent::OpenInDialog(id) => self.open_page_in_dialog(id),
-                Intent::ClosePageDialog => self.page_dialog = None,
+                Intent::ClosePageDialog => {
+                    self.pending_dialog = None;
+                    self.page_dialog = None;
+                }
                 Intent::OpenUrl(url) => {
-                    context.open_url(egui::OpenUrl::new_tab(&url));
-                    crate::ui::editor::links::open_url_in_browser(&url);
+                    let url = crate::ui::editor::links::normalize_web_url(&url);
+                    context.open_url(egui::OpenUrl::new_tab(url));
                 }
                 Intent::OpenFileExplorer(path) => {
                     crate::ui::editor::links::open_in_file_explorer(&path);
@@ -724,6 +738,9 @@ impl NoteonApp {
                     dispatched_action_in_batch = true;
                 }
                 Intent::BlockChanged(block) => {
+                    if let Some(editor) = self.editors.get_mut(&block.page_id) {
+                        editor.find.refresh();
+                    }
                     if block.position == 0 && block.kind == crate::domain::model::BlockKind::Text {
                         for database in self.databases.values_mut() {
                             if let Some(row) = database
@@ -743,7 +760,7 @@ impl NoteonApp {
                     generation,
                     start,
                 } => {
-                    if self.send(Request::Blocks {
+                    if !self.send(Request::Blocks {
                         page,
                         generation,
                         start,
@@ -771,7 +788,7 @@ impl NoteonApp {
                                 );
                             });
                         } else if let Some(editor) = self.editors.get_mut(&page_id) {
-                            editor.open_find();
+                            editor.find.open();
                         }
                     }
                 }
@@ -932,20 +949,19 @@ impl NoteonApp {
                 }
                 Intent::Help => self.help_open = true,
                 Intent::RetrySave => {
+                    if self.saves.failed {
+                        for editor in self.editors.values_mut() {
+                            editor.find.refresh();
+                        }
+                    }
                     self.saves.retry();
                     self.error = None;
                     self.flush(true);
                 }
                 Intent::Back => self.navigate(-1),
                 Intent::Forward => self.navigate(1),
-                Intent::Undo => {
-                    self.flush(true);
-                    self.action(Action::Undo);
-                }
-                Intent::Redo => {
-                    self.flush(true);
-                    self.action(Action::Redo);
-                }
+                Intent::Undo => self.action(Action::Undo),
+                Intent::Redo => self.action(Action::Redo),
             }
         }
     }
@@ -1111,6 +1127,39 @@ impl NoteonApp {
             }
         }
     }
+
+    fn request_searches(&mut self) {
+        if let Some((query, generation)) = self.search.take_request() {
+            self.flush(true);
+            if !self.send(Request::Search { query, generation }) {
+                self.search.fail();
+            }
+        }
+        let page_searches: Vec<_> = self
+            .editors
+            .iter_mut()
+            .filter_map(|(&page, editor)| {
+                let (revision, query) = editor.find.take_request()?;
+                Some((page, editor.generation, revision, query))
+            })
+            .collect();
+        if !page_searches.is_empty() {
+            self.flush(true);
+        }
+        for (page, generation, revision, query) in page_searches {
+            if (self.saves.failed
+                || !self.send(Request::FindInPage {
+                    page,
+                    generation,
+                    revision,
+                    query,
+                }))
+                && let Some(editor) = self.editors.get_mut(&page)
+            {
+                editor.find.fail(revision);
+            }
+        }
+    }
 }
 
 impl eframe::App for NoteonApp {
@@ -1118,10 +1167,7 @@ impl eframe::App for NoteonApp {
         self.receive_events(context);
         self.poll_assistant();
         self.shortcuts(context);
-        if let Some((query, generation)) = self.search.take_request() {
-            self.flush(true);
-            self.send(Request::Search { query, generation });
-        }
+        self.request_searches();
         self.flush(false);
         self.close_safely(context);
         self.show(context);

@@ -1,7 +1,8 @@
 use rusqlite::params;
 
 use crate::config::{SEARCH_LIMIT, UNTITLED};
-use crate::domain::model::SearchHit;
+use crate::domain::model::{PageId, SearchHit};
+use crate::domain::search::{PageFindMatch, find_char_ranges};
 use crate::error::Result;
 
 use super::{Repository, read_usize, sql_index};
@@ -18,6 +19,40 @@ pub fn search_expression(query: &str) -> Option<String> {
 }
 
 impl Repository {
+    pub fn find_in_page(&self, page: PageId, query: &str) -> Result<Vec<PageFindMatch>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let title: String =
+            self.connection
+                .query_row("SELECT title FROM pages WHERE id=?1", [page], |row| {
+                    row.get(0)
+                })?;
+        let mut matches: Vec<_> = find_char_ranges(&title, query)
+            .into_iter()
+            .map(PageFindMatch::Title)
+            .collect();
+        let mut statement = self.connection.prepare_cached(
+            "SELECT id,position,content FROM blocks WHERE page_id=?1 ORDER BY position",
+        )?;
+        let mut rows = statement.query([page])?;
+        while let Some(row) = rows.next()? {
+            let content: String = row.get(2)?;
+            let ranges = find_char_ranges(&content, query);
+            if !ranges.is_empty() {
+                let block_id = row.get(0)?;
+                let position = read_usize(row, 1)?;
+                matches.extend(ranges.into_iter().map(|range| PageFindMatch::Block {
+                    position,
+                    block_id,
+                    range,
+                }));
+            }
+        }
+        Ok(matches)
+    }
+
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         let Some(expression) = search_expression(query) else {
             return Ok(Vec::new());

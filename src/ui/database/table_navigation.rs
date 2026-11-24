@@ -324,11 +324,13 @@ mod tests {
             .unwrap()
             .id;
         table.data.view_settings.table_visible_properties = Some(vec![property]);
+        let find_open = egui::Id::new(("database-table-find-open", table.data.page_id));
         table.context.data_mut(|state| {
+            state.insert_temp(find_open, true);
             state.insert_temp(
                 egui::Id::new(("database-table-find-query", table.data.page_id)),
                 "Matching".to_owned(),
-            )
+            );
         });
         table.frame(Vec::new());
         let cells = table.cells();
@@ -345,6 +347,12 @@ mod tests {
             table.context.memory(|memory| memory.focused()),
             Some(cells[0].widget)
         );
+
+        table
+            .context
+            .data_mut(|state| state.insert_temp(find_open, false));
+        table.frame(Vec::new());
+        assert_eq!(table.cells().len(), table.data.rows.len() * 2);
     }
 
     #[test]

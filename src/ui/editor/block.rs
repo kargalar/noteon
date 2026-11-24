@@ -1817,7 +1817,7 @@ pub fn layout_title_with_find(
     base_font: FontId,
     base_color: egui::Color32,
     find_query: &str,
-    is_active: bool,
+    active_range: Option<(usize, usize)>,
 ) -> Arc<egui::Galley> {
     let characters: Vec<_> = text.char_indices().collect();
     let mut job = egui::text::LayoutJob::default();
@@ -1831,12 +1831,14 @@ pub fn layout_title_with_find(
     };
 
     let find_at = |i: usize| -> bool { find_ranges.iter().any(|r| r.contains(&i)) };
+    let active_at = |i: usize| active_range.is_some_and(|(start, end)| (start..end).contains(&i));
 
     let mut start = 0;
     while start < characters.len() {
         let matched = find_at(start);
+        let active = active_at(start);
         let mut end = start + 1;
-        while end < characters.len() && find_at(end) == matched {
+        while end < characters.len() && find_at(end) == matched && active_at(end) == active {
             end += 1;
         }
         let byte_start = characters[start].0;
@@ -1847,7 +1849,7 @@ pub fn layout_title_with_find(
         let mut background = None;
 
         if matched {
-            if is_active {
+            if active {
                 background = Some(Color32::from_rgb(255, 115, 0));
                 color = Color32::WHITE;
             } else {

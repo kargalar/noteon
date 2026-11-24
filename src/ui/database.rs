@@ -27,8 +27,10 @@ const TABLE_ADD_PROP_WIDTH: f32 = 42.0;
 const TABLE_HEADER_HEIGHT: f32 = 34.0;
 const TABLE_ROW_HEIGHT: f32 = 36.0;
 const TABLE_RECORD_ICON_WIDTH: f32 = 24.0;
-const TABLE_OPEN_PAGE_BUTTON_SIZE: f32 = 20.0;
-const TABLE_OPEN_PAGE_BUTTON_MARGIN: f32 = 4.0;
+const TABLE_OPEN_PAGE_BUTTON_SIZE: egui::Vec2 = egui::vec2(36.0, 24.0);
+const TABLE_OPEN_PAGE_BUTTON_MARGIN: f32 = 6.0;
+const TABLE_NAME_TITLE_GAP: f32 = 4.0;
+const TABLE_NAME_MIN_WIDTH: f32 = 120.0;
 const DEFAULT_TABLE_MAX_ROWS_HEIGHT: f32 = 648.0;
 const DEFAULT_GALLERY_MAX_HEIGHT: f32 = 760.0;
 const DEFAULT_BOARD_MAX_CARDS_HEIGHT: f32 = 648.0;
@@ -1417,10 +1419,14 @@ fn auto_fit_name_column(ui: &Ui, rows: &[&DatabaseRow]) -> f32 {
             } else {
                 &row.page.title
             };
-            measure_text_width(ui, title, FontId::proportional(13.0)) + 64.0
+            measure_text_width(ui, title, FontId::proportional(13.0))
+                + 58.0
+                + TABLE_NAME_TITLE_GAP
+                + TABLE_OPEN_PAGE_BUTTON_SIZE.x
+                + TABLE_OPEN_PAGE_BUTTON_MARGIN
         })
         .fold(0.0_f32, f32::max);
-    header_w.max(max_row_w).clamp(90.0, 600.0)
+    header_w.max(max_row_w).clamp(TABLE_NAME_MIN_WIDTH, 600.0)
 }
 
 fn auto_fit_created_column(ui: &Ui, rows: &[&DatabaseRow]) -> f32 {
@@ -1680,7 +1686,8 @@ fn show_table(
     let base_name_w = data
         .view_settings
         .table_name_width
-        .unwrap_or(TABLE_NAME_WIDTH);
+        .unwrap_or(TABLE_NAME_WIDTH)
+        .max(TABLE_NAME_MIN_WIDTH);
     let base_created_w = data
         .view_settings
         .table_created_width
@@ -2235,12 +2242,19 @@ fn show_table(
                                     .titles
                                     .entry(row.page.id)
                                     .or_insert_with(|| row.page.title.clone());
-                                let width_avail = (if hovered {
-                                    name_w - 82.0
-                                } else {
-                                    name_w - 42.0
-                                })
-                                .max(24.0);
+                                let open_btn_rect = egui::Rect::from_center_size(
+                                    egui::pos2(
+                                        name_cell_rect.right()
+                                            - TABLE_OPEN_PAGE_BUTTON_MARGIN
+                                            - TABLE_OPEN_PAGE_BUTTON_SIZE.x * 0.5,
+                                        name_cell_rect.center().y,
+                                    ),
+                                    TABLE_OPEN_PAGE_BUTTON_SIZE,
+                                );
+                                let width_avail = (open_btn_rect.left()
+                                    - TABLE_NAME_TITLE_GAP
+                                    - ui.cursor().min.x)
+                                    .max(24.0);
 
                                 let title_edit_id =
                                     egui::Id::new(("table-row-title-edit", row.page.id));
@@ -2407,32 +2421,18 @@ fn show_table(
                                     }
                                 });
 
-                                let mut open_btn_hit: Option<egui::Rect> = None;
-                                if ui.rect_contains_pointer(name_cell_rect) {
-                                    let btn_rect = egui::Rect::from_center_size(
-                                        egui::pos2(
-                                            name_cell_rect.right()
-                                                - TABLE_OPEN_PAGE_BUTTON_MARGIN
-                                                - TABLE_OPEN_PAGE_BUTTON_SIZE * 0.5,
-                                            name_cell_rect.center().y,
-                                        ),
-                                        egui::Vec2::splat(TABLE_OPEN_PAGE_BUTTON_SIZE),
-                                    );
-                                    open_btn_hit = Some(btn_rect.expand(2.0));
+                                if cell_hovered {
                                     let open_resp = ui
                                         .push_id(("table-row-open-page", row.page.id), |ui| {
                                             ui.put(
-                                                btn_rect,
-                                                egui::Button::new(
-                                                    RichText::new("↗")
-                                                        .color(palette.text)
-                                                        .font(FontId::proportional(12.5)),
-                                                )
-                                                .frame(false),
+                                                open_btn_rect,
+                                                egui::Button::new("↗").frame(true),
                                             )
                                         })
-                                        .inner;
-                                    if open_resp.on_hover_text("Open page").clicked() {
+                                        .inner
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .on_hover_text("Open page");
+                                    if open_resp.clicked() {
                                         intents.push(Intent::Open(row.page.id, None));
                                     }
                                 }
@@ -2441,7 +2441,7 @@ fn show_table(
                                     sel_box_hit.is_some_and(|r| r.contains(pos))
                                         || icon_hit_rect.contains(pos)
                                         || response.rect.contains(pos)
-                                        || open_btn_hit.is_some_and(|r| r.contains(pos))
+                                        || (cell_hovered && open_btn_rect.contains(pos))
                                 });
 
                                 let in_empty_space = pointer_pos
@@ -2812,7 +2812,7 @@ fn show_table(
                 total_h,
                 ("name", data.page_id),
                 name_w,
-                90.0,
+                TABLE_NAME_MIN_WIDTH,
                 palette,
                 |ui| auto_fit_name_column(ui, &row_refs),
             ) {

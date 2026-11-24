@@ -197,8 +197,8 @@ fn cached_image(context: &Context, key: &str, path: &Path) -> Option<TextureHand
                         color_image,
                         TextureOptions::LINEAR,
                     );
-                    if loader.cache.len() >= IMAGE_CACHE_LIMIT {
-                        if let Some(oldest) = loader
+                    if loader.cache.len() >= IMAGE_CACHE_LIMIT
+                        && let Some(oldest) = loader
                             .cache
                             .iter()
                             .find(|(k, v)| {
@@ -206,9 +206,8 @@ fn cached_image(context: &Context, key: &str, path: &Path) -> Option<TextureHand
                                     && matches!(v, CachedImageState::Loaded(_))
                             })
                             .map(|(k, _)| k.clone())
-                        {
-                            loader.cache.remove(&oldest);
-                        }
+                    {
+                        loader.cache.remove(&oldest);
                     }
                     loader
                         .cache

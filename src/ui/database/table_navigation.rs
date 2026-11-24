@@ -29,8 +29,8 @@ impl TableNavigation {
     pub(super) fn begin(
         ui: &Ui,
         data: &DatabaseData,
-        rows: &[DatabaseRow],
-        properties: &[DatabaseProperty],
+        rows: &[&DatabaseRow],
+        properties: &[&DatabaseProperty],
         busy: bool,
         drafts: &mut Drafts<'_>,
     ) -> Self {

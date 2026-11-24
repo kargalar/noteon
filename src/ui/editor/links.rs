@@ -61,10 +61,10 @@ pub fn extract_file_or_folder_name(raw_path: &str) -> String {
     }
 
     let p = std::path::Path::new(trimmed);
-    if let Some(file_name) = p.file_name().and_then(|s| s.to_str()) {
-        if !file_name.is_empty() {
-            return file_name.to_string();
-        }
+    if let Some(file_name) = p.file_name().and_then(|s| s.to_str())
+        && !file_name.is_empty()
+    {
+        return file_name.to_string();
     }
 
     clean
@@ -188,41 +188,42 @@ pub fn find_links_and_paths(text: &str) -> Vec<DetectedLink> {
                 j += 1;
             }
 
-            if let Some(cb) = close_bracket {
-                if cb + 1 < total_chars && char_indices[cb + 1].1 == '(' {
-                    let mut close_paren = None;
-                    let mut k = cb + 2;
-                    while k < total_chars {
-                        if char_indices[k].1 == ')' {
-                            close_paren = Some(k);
-                            break;
-                        }
-                        if char_indices[k].1 == '\n' {
-                            break;
-                        }
-                        k += 1;
+            if let Some(cb) = close_bracket
+                && cb + 1 < total_chars
+                && char_indices[cb + 1].1 == '('
+            {
+                let mut close_paren = None;
+                let mut k = cb + 2;
+                while k < total_chars {
+                    if char_indices[k].1 == ')' {
+                        close_paren = Some(k);
+                        break;
                     }
+                    if char_indices[k].1 == '\n' {
+                        break;
+                    }
+                    k += 1;
+                }
 
-                    if let Some(cp) = close_paren {
-                        let target_byte_start = char_indices[cb + 2].0;
-                        let target_byte_end = char_indices[cp].0;
-                        let target = &text[target_byte_start..target_byte_end].trim();
+                if let Some(cp) = close_paren {
+                    let target_byte_start = char_indices[cb + 2].0;
+                    let target_byte_end = char_indices[cp].0;
+                    let target = &text[target_byte_start..target_byte_end].trim();
 
-                        if let Some(link_type) = classify_link(target) {
-                            let raw_byte_start = char_indices[start_char].0;
-                            let raw_byte_end = if cp + 1 < total_chars {
-                                char_indices[cp + 1].0
-                            } else {
-                                text.len()
-                            };
-                            results.push(DetectedLink {
-                                char_range: start_char..cp + 1,
-                                link_type,
-                                raw_text: text[raw_byte_start..raw_byte_end].to_string(),
-                            });
-                            i = cp + 1;
-                            continue;
-                        }
+                    if let Some(link_type) = classify_link(target) {
+                        let raw_byte_start = char_indices[start_char].0;
+                        let raw_byte_end = if cp + 1 < total_chars {
+                            char_indices[cp + 1].0
+                        } else {
+                            text.len()
+                        };
+                        results.push(DetectedLink {
+                            char_range: start_char..cp + 1,
+                            link_type,
+                            raw_text: text[raw_byte_start..raw_byte_end].to_string(),
+                        });
+                        i = cp + 1;
+                        continue;
                     }
                 }
             }

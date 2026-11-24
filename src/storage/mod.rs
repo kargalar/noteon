@@ -183,63 +183,6 @@ fn rebase_attachments(connection: &Connection, database: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod attachment_relocation_tests {
-    use super::*;
-
-    #[test]
-    fn rebases_nested_attachments_and_preserves_external_paths() {
-        let root = tempfile::tempdir().unwrap();
-        let attachments = root.path().join("attachments").join("nested");
-        std::fs::create_dir_all(&attachments).unwrap();
-        let image = attachments.join("image.png");
-        std::fs::write(&image, b"image").unwrap();
-        let old = root
-            .path()
-            .join("old")
-            .join("attachments")
-            .join("nested")
-            .join("image.png");
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE pages(id INTEGER PRIMARY KEY, cover_image TEXT); CREATE TABLE blocks(id INTEGER PRIMARY KEY, kind TEXT, content TEXT);").unwrap();
-        connection
-            .execute(
-                "INSERT INTO pages VALUES (1, ?1)",
-                [old.to_string_lossy().as_ref()],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO blocks VALUES (1, 'image', ?1)",
-                [old.to_string_lossy().as_ref()],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO blocks VALUES (2, 'image', 'https://example.com/image.png')",
-                [],
-            )
-            .unwrap();
-        rebase_attachments(&connection, &root.path().join("noteon.sqlite")).unwrap();
-        let cover: String = connection
-            .query_row("SELECT cover_image FROM pages", [], |row| row.get(0))
-            .unwrap();
-        let media: String = connection
-            .query_row("SELECT content FROM blocks WHERE id=1", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        let external: String = connection
-            .query_row("SELECT content FROM blocks WHERE id=2", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(cover, image.to_string_lossy());
-        assert_eq!(media, cover);
-        assert_eq!(external, "https://example.com/image.png");
-    }
-}
-
 pub struct Repository {
     pub(crate) connection: Connection,
 }
@@ -448,12 +391,11 @@ impl Repository {
             if !destinations.values().any(|new_path| new_path == old_path) {
                 let still_referenced = std::fs::canonicalize(old_path)
                     .is_ok_and(|canonical| referenced_files.contains(&canonical));
-                if !still_referenced {
-                    if std::fs::remove_file(old_path).is_ok()
-                        && let Some(parent) = Path::new(old_path).parent()
-                    {
-                        remove_empty_attachment_directories(parent, &attachments);
-                    }
+                if !still_referenced
+                    && std::fs::remove_file(old_path).is_ok()
+                    && let Some(parent) = Path::new(old_path).parent()
+                {
+                    remove_empty_attachment_directories(parent, &attachments);
                 }
             }
         }
@@ -599,5 +541,62 @@ impl Repository {
     pub fn set_setting(&self, key: SettingKey, value: &str) -> Result<()> {
         self.connection.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key.as_str(), value])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod attachment_relocation_tests {
+    use super::*;
+
+    #[test]
+    fn rebases_nested_attachments_and_preserves_external_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let attachments = root.path().join("attachments").join("nested");
+        std::fs::create_dir_all(&attachments).unwrap();
+        let image = attachments.join("image.png");
+        std::fs::write(&image, b"image").unwrap();
+        let old = root
+            .path()
+            .join("old")
+            .join("attachments")
+            .join("nested")
+            .join("image.png");
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE pages(id INTEGER PRIMARY KEY, cover_image TEXT); CREATE TABLE blocks(id INTEGER PRIMARY KEY, kind TEXT, content TEXT);").unwrap();
+        connection
+            .execute(
+                "INSERT INTO pages VALUES (1, ?1)",
+                [old.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO blocks VALUES (1, 'image', ?1)",
+                [old.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO blocks VALUES (2, 'image', 'https://example.com/image.png')",
+                [],
+            )
+            .unwrap();
+        rebase_attachments(&connection, &root.path().join("noteon.sqlite")).unwrap();
+        let cover: String = connection
+            .query_row("SELECT cover_image FROM pages", [], |row| row.get(0))
+            .unwrap();
+        let media: String = connection
+            .query_row("SELECT content FROM blocks WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let external: String = connection
+            .query_row("SELECT content FROM blocks WHERE id=2", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(cover, image.to_string_lossy());
+        assert_eq!(media, cover);
+        assert_eq!(external, "https://example.com/image.png");
     }
 }

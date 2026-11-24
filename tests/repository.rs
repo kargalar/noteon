@@ -1455,7 +1455,7 @@ fn subpage_blocks_lifecycle_create_sync_ensure_and_trash() {
 
     // 3. Directly create a child page and call ensure_subpage_blocks
     let child2 = repository.create_page(Some(parent), "İkinci Alt").unwrap();
-    let _ = repository.ensure_subpage_blocks(parent).unwrap();
+    repository.ensure_subpage_blocks(parent).unwrap();
     let parent_blocks = repository.blocks(parent, 0, 10).unwrap();
     assert_eq!(parent_blocks.len(), 2);
     assert!(parent_blocks.iter().any(|b| b.content == "↗ İkinci Alt"));

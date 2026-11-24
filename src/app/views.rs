@@ -630,8 +630,7 @@ impl NoteonApp {
                             show_theme_section(
                                 ui,
                                 ThemeSection::General,
-                                "Genel & Temel Renkler",
-                                "Tema modu, arka plan, ana vurgu ve genel kenarlıklar",
+                                ("Genel & Temel Renkler", "Tema modu, arka plan, ana vurgu ve genel kenarlıklar"),
                                 active_highlight,
                                 palette,
                                 &mut intents,
@@ -720,8 +719,7 @@ impl NoteonApp {
                             show_theme_section(
                                 ui,
                                 ThemeSection::Sidebar,
-                                "Kenar Çubuğu",
-                                "Sol panel arka planı ve gezinme listesi",
+                                ("Kenar Çubuğu", "Sol panel arka planı ve gezinme listesi"),
                                 active_highlight,
                                 palette,
                                 &mut intents,
@@ -760,8 +758,7 @@ impl NoteonApp {
                             show_theme_section(
                                 ui,
                                 ThemeSection::Editor,
-                                "Editör & Not İçeriği",
-                                "Sayfa metinleri, başlıklar ve kod blokları",
+                                ("Editör & Not İçeriği", "Sayfa metinleri, başlıklar ve kod blokları"),
                                 active_highlight,
                                 palette,
                                 &mut intents,
@@ -800,8 +797,7 @@ impl NoteonApp {
                             show_theme_section(
                                 ui,
                                 ThemeSection::Header,
-                                "Sayfa Başlığı & Gezinme",
-                                "Sayfa üst başlığı, breadcrumb yolu ve ikonlar",
+                                ("Sayfa Başlığı & Gezinme", "Sayfa üst başlığı, breadcrumb yolu ve ikonlar"),
                                 active_highlight,
                                 palette,
                                 &mut intents,
@@ -831,8 +827,7 @@ impl NoteonApp {
                             show_theme_section(
                                 ui,
                                 ThemeSection::Gallery,
-                                "Galeri Görünümü",
-                                "Veritabanı galeri kartları ve çerçeveleri",
+                                ("Galeri Görünümü", "Veritabanı galeri kartları ve çerçeveleri"),
                                 active_highlight,
                                 palette,
                                 &mut intents,
@@ -862,8 +857,7 @@ impl NoteonApp {
                             show_theme_section(
                                 ui,
                                 ThemeSection::Board,
-                                "Pano (Kanban) Görünümü",
-                                "Pano sütunlarındaki kart öğeleri",
+                                ("Pano (Kanban) Görünümü", "Pano sütunlarındaki kart öğeleri"),
                                 active_highlight,
                                 palette,
                                 &mut intents,
@@ -884,8 +878,7 @@ impl NoteonApp {
                             show_theme_section(
                                 ui,
                                 ThemeSection::Table,
-                                "Tablo Görünümü",
-                                "Veritabanı tablosu, hücre çizgileri ve satır vurguları",
+                                ("Tablo Görünümü", "Veritabanı tablosu, hücre çizgileri ve satır vurguları"),
                                 active_highlight,
                                 palette,
                                 &mut intents,
@@ -1141,8 +1134,7 @@ fn show_color_row(
 fn show_theme_section<F>(
     ui: &mut egui::Ui,
     section: ThemeSection,
-    title: &str,
-    subtitle: &str,
+    label: (&str, &str),
     active_highlight: Option<(ThemeSection, f32)>,
     palette: Palette,
     intents: &mut Vec<Intent>,
@@ -1150,6 +1142,7 @@ fn show_theme_section<F>(
 ) where
     F: FnOnce(&mut egui::Ui, &mut Vec<Intent>),
 {
+    let (title, subtitle) = label;
     let is_highlighted = active_highlight.map(|(s, _)| s) == Some(section);
     let elapsed = active_highlight.map(|(_, e)| e).unwrap_or(0.0);
     let duration = ui.style().animation_time;

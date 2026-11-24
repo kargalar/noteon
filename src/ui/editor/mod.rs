@@ -266,18 +266,22 @@ impl Editor {
             ui,
             document,
             &mut self.title_focus,
-            palette,
-            breadcrumbs,
-            widget_scope,
+            header::HeaderOptions {
+                palette,
+                breadcrumbs,
+                widget_scope,
+                highlight: find::FindHighlight {
+                    query: find_q,
+                    active_match: find_title_range,
+                },
+                history: &self.history,
+            },
             header::RecordPropertiesContext {
                 record: record_properties,
                 property_drafts: context.property_drafts,
                 title_drafts: context.title_drafts,
                 value_drafts: context.value_drafts,
             },
-            find_q,
-            find_title_range,
-            &self.history,
         );
         intents.extend(self.show_blocks(ui, canvas, palette, context));
         if !ui.ctx().wants_keyboard_input()

@@ -438,11 +438,19 @@ impl Repository {
     }
 
     pub fn restore_page_snapshot(&mut self, snapshot: &PageSnapshot) -> Result<Document> {
+        self.apply_page_snapshot(snapshot)?;
+        self.document(snapshot.page_id)
+    }
+
+    pub(crate) fn apply_page_snapshot(&mut self, snapshot: &PageSnapshot) -> Result<()> {
         let transaction = self.connection.transaction()?;
-        transaction.execute(
+        let updated = transaction.execute(
             "UPDATE pages SET title=?1, icon=?2, updated_at=unixepoch() WHERE id=?3",
             params![snapshot.title, snapshot.icon, snapshot.page_id],
         )?;
+        if updated == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows.into());
+        }
         transaction.execute("DELETE FROM blocks WHERE page_id=?1", [snapshot.page_id])?;
         if snapshot.blocks.is_empty() {
             transaction.execute(
@@ -470,7 +478,7 @@ impl Repository {
             }
         }
         transaction.commit()?;
-        self.document(snapshot.page_id)
+        Ok(())
     }
 
     pub fn insert_block(
@@ -648,24 +656,22 @@ impl Repository {
             for id in ids {
                 if let Ok(content) =
                     check_stmt.query_row(params![id, page], |row| row.get::<_, String>(0))
+                    && content.trim_start().starts_with('↗')
                 {
-                    if content.trim_start().starts_with('↗') {
-                        let title = content
-                            .trim_start()
-                            .trim_start_matches("↗ ")
-                            .trim_start_matches('↗')
-                            .trim();
-                        let child_id: Option<PageId> = transaction
+                    let title = content
+                        .trim_start()
+                        .trim_start_matches("↗ ")
+                        .trim_start_matches('↗')
+                        .trim();
+                    let child_id: Option<PageId> = transaction
                             .query_row(
                                 "SELECT id FROM pages WHERE parent_id=?1 AND trashed_by IS NULL AND (title=?2 OR (?2='Untitled' AND title='')) LIMIT 1",
                                 params![page, title],
                                 |row| row.get(0),
                             )
                             .ok();
-                        if let Some(cid) = child_id {
-                            transaction
-                                .execute("UPDATE pages SET trashed_by=?1 WHERE id=?1", [cid])?;
-                        }
+                    if let Some(cid) = child_id {
+                        transaction.execute("UPDATE pages SET trashed_by=?1 WHERE id=?1", [cid])?;
                     }
                 }
             }
@@ -858,10 +864,9 @@ impl Repository {
         let mut order: Vec<BlockId> = {
             let mut stmt = transaction
                 .prepare_cached("SELECT id FROM blocks WHERE page_id=?1 ORDER BY position")?;
-            let rows = stmt
-                .query_map([page], |row| row.get::<_, BlockId>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
+
+            stmt.query_map([page], |row| row.get::<_, BlockId>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
         if direction < 0 {
             for index in 1..order.len() {
@@ -901,20 +906,19 @@ impl Repository {
             let mut stmt = transaction.prepare_cached(
                 "SELECT id,position,kind,content,checked,media_width,text_styles FROM blocks WHERE page_id=?1 ORDER BY position",
             )?;
-            let mapped = stmt
-                .query_map([page], |row| {
-                    Ok((
-                        row.get::<_, BlockId>(0)?,
-                        read_usize(row, 1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, bool>(4)?,
-                        row.get::<_, f32>(5)?,
-                        row.get::<_, String>(6)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            mapped
+
+            stmt.query_map([page], |row| {
+                Ok((
+                    row.get::<_, BlockId>(0)?,
+                    read_usize(row, 1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, bool>(4)?,
+                    row.get::<_, f32>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let to_duplicate: Vec<_> = rows
             .into_iter()
@@ -966,12 +970,11 @@ impl Repository {
         let rows = {
             let mut stmt = transaction
                 .prepare_cached("SELECT id,kind FROM blocks WHERE page_id=?1 ORDER BY position")?;
-            let mapped = stmt
-                .query_map([page], |row| {
-                    Ok((row.get::<_, BlockId>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            mapped
+
+            stmt.query_map([page], |row| {
+                Ok((row.get::<_, BlockId>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let target_ids: Vec<BlockId> = rows
             .iter()

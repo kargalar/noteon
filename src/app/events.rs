@@ -49,10 +49,10 @@ impl NoteonApp {
                         .filter(|value: &f32| value.is_finite())
                         .unwrap_or(crate::config::DEFAULT_FONT_SCALE)
                         .clamp(crate::config::MIN_FONT_SCALE, crate::config::MAX_FONT_SCALE);
-                    if let Some(raw) = custom_theme {
-                        if let Ok(config) = serde_json::from_str(&raw) {
-                            self.custom_theme = config;
-                        }
+                    if let Some(raw) = custom_theme
+                        && let Ok(config) = serde_json::from_str(&raw)
+                    {
+                        self.custom_theme = config;
                     }
                     self.apply_theme(context);
                     if let Some(layout) = dock_layout {
@@ -129,12 +129,12 @@ impl NoteonApp {
                     for row in &mut data.rows {
                         self.saves.overlay_page(&mut row.page);
                     }
-                    super::sync_database_title_drafts(
+                    super::database_cache::sync_database_title_drafts(
                         self.databases.get(&data.page_id),
                         &data,
                         &mut self.database_title_drafts,
                     );
-                    super::sync_database_value_drafts(
+                    super::database_cache::sync_database_value_drafts(
                         self.databases.get(&data.page_id),
                         &data,
                         &mut self.database_value_drafts,
@@ -243,10 +243,10 @@ impl NoteonApp {
                             focus,
                             focus_at_end,
                         );
-                        if let Some(hist) = history {
-                            if let Some(editor) = self.editors.get_mut(&id) {
-                                editor.history = hist;
-                            }
+                        if let Some(hist) = history
+                            && let Some(editor) = self.editors.get_mut(&id)
+                        {
+                            editor.history = hist;
                         }
                         self.touch_editor(id);
                     } else if let Some(mut doc) = created_record_document {
@@ -310,12 +310,11 @@ impl NoteonApp {
                             }
                         }
                     } else {
-                        if let Some(hist) = history {
-                            if let Some(page) = self.selected {
-                                if let Some(editor) = self.editors.get_mut(&page) {
-                                    editor.history = hist;
-                                }
-                            }
+                        if let Some(hist) = history
+                            && let Some(page) = self.selected
+                            && let Some(editor) = self.editors.get_mut(&page)
+                        {
+                            editor.history = hist;
                         }
                         for editor in self.editors.values_mut() {
                             if let Some(document) = editor.document.as_mut()

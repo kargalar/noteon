@@ -234,7 +234,7 @@ fn find_desktop_codex() -> Option<PathBuf> {
             Some((modified, binary))
         })
         .collect();
-    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     candidates.into_iter().map(|(_, path)| path).next()
 }
 
@@ -295,7 +295,7 @@ fn read_events(
 pub fn read_latest_quota() -> Option<super::CodexQuota> {
     let sessions = codex_sessions_dir()?;
     let mut files = collect_jsonl_files(&sessions);
-    files.sort_by(|left, right| right.0.cmp(&left.0));
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     files
         .into_iter()
         .take(5)

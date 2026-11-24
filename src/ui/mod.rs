@@ -7,6 +7,7 @@ pub mod menus;
 pub mod page_properties;
 pub mod page_transfer;
 pub mod palette;
+mod property_names;
 pub mod search;
 mod selection;
 pub mod sidebar;
@@ -340,10 +341,10 @@ pub fn icon_picker_button(
         });
     } else {
         let mut text = RichText::new(button_text).size(font_size);
-        if !crate::config::is_color_icon(button_text) {
-            if let Some(color) = color {
-                text = text.color(color);
-            }
+        if !crate::config::is_color_icon(button_text)
+            && let Some(color) = color
+        {
+            text = text.color(color);
         }
         ui.persistent_menu_button(text, |ui| {
             show_icon_picker_content(ui, &id_salt, current_icon, &mut selected_icon);

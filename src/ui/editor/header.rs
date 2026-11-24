@@ -22,18 +22,32 @@ pub(super) struct RecordPropertiesContext<'a> {
     pub value_drafts: &'a mut std::collections::HashMap<(i64, i64), String>,
 }
 
+pub(super) struct HeaderOptions<'a> {
+    pub(super) palette: Palette,
+    pub(super) breadcrumbs: &'a [crate::ui::BreadcrumbItem],
+    pub(super) widget_scope: Option<u64>,
+    pub(super) highlight: super::find::FindHighlight<'a>,
+    pub(super) history: &'a [crate::domain::model::PageHistorySummary],
+}
+
 pub(super) fn show(
     ui: &mut Ui,
     document: &mut Document,
     title_focus: &mut bool,
-    palette: Palette,
-    breadcrumbs: &[crate::ui::BreadcrumbItem],
-    widget_scope: Option<u64>,
+    options: HeaderOptions<'_>,
     record_properties: RecordPropertiesContext<'_>,
-    find_query: Option<&str>,
-    find_title_range: Option<(usize, usize)>,
-    history: &[crate::domain::model::PageHistorySummary],
 ) -> (Canvas, Vec<Intent>) {
+    let HeaderOptions {
+        palette,
+        breadcrumbs,
+        widget_scope,
+        highlight,
+        history,
+    } = options;
+    let super::find::FindHighlight {
+        query: find_query,
+        active_match: find_title_range,
+    } = highlight;
     let page_rect = ui.max_rect().intersect(ui.clip_rect());
     let mut intents = Vec::new();
     let page = &mut document.page;
@@ -515,7 +529,7 @@ fn title(
         egui::pos2(ui.max_rect().left() + inset, ui.cursor().min.y),
         egui::vec2(document_width, 76.0),
     );
-    let is_pointer_over = pointer_pos.map_or(false, |pos| title_zone.contains(pos));
+    let is_pointer_over = pointer_pos.is_some_and(|pos| title_zone.contains(pos));
     let show_add_button =
         page.icon.is_empty() && (is_pointer_over || was_hovered || was_icon_menu_open);
 

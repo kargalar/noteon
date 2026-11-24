@@ -802,14 +802,14 @@ impl Editor {
                             for p in start..=end {
                                 let bid = document.outline[p].id;
                                 self.selected_blocks.insert(bid);
-                                if !self.cache.blocks.contains_key(&p) {
-                                    if let Some(load_start) = self.cache.request(p) {
-                                        intents.push(Intent::LoadBlocks {
-                                            page: page_id,
-                                            generation,
-                                            start: load_start,
-                                        });
-                                    }
+                                if !self.cache.blocks.contains_key(&p)
+                                    && let Some(load_start) = self.cache.request(p)
+                                {
+                                    intents.push(Intent::LoadBlocks {
+                                        page: page_id,
+                                        generation,
+                                        start: load_start,
+                                    });
                                 }
                             }
                         } else {
@@ -979,26 +979,24 @@ impl Editor {
                     blocks: ordered_ids.clone(),
                 }));
             }
-            if do_enter {
-                if let Some(last_id) = ordered_ids.last() {
-                    if let Some(pos) = self
+            if do_enter
+                && let Some(last_id) = ordered_ids.last()
+                && let Some(pos) = self
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.outline.iter().position(|stub| stub.id == *last_id))
+            {
+                intents.push(Intent::Action(Action::InsertBlock {
+                    column_anchor: self
                         .document
                         .as_ref()
-                        .and_then(|doc| doc.outline.iter().position(|stub| stub.id == *last_id))
-                    {
-                        intents.push(Intent::Action(Action::InsertBlock {
-                            column_anchor: self
-                                .document
-                                .as_ref()
-                                .and_then(|doc| doc.outline[pos].column_group.map(|_| *last_id)),
-                            page: page_id,
-                            position: pos + 1,
-                            kind: BlockKind::Text,
-                            content: String::new(),
-                            text_styles: Vec::new(),
-                        }));
-                    }
-                }
+                        .and_then(|doc| doc.outline[pos].column_group.map(|_| *last_id)),
+                    page: page_id,
+                    position: pos + 1,
+                    kind: BlockKind::Text,
+                    content: String::new(),
+                    text_styles: Vec::new(),
+                }));
             }
             if do_cut {
                 self.copy_selected_blocks(ui.ctx());

@@ -102,10 +102,10 @@ impl Sidebar {
             && let Some(children) = self.children.get(&Some(curr))
         {
             for &child_id in children {
-                if let Some(page) = self.page(child_id) {
-                    if page.display_title().trim().eq_ignore_ascii_case(clean) {
-                        return Some(child_id);
-                    }
+                if let Some(page) = self.page(child_id)
+                    && page.display_title().trim().eq_ignore_ascii_case(clean)
+                {
+                    return Some(child_id);
                 }
             }
         }
@@ -321,11 +321,10 @@ impl Sidebar {
                                     is_multi_selected,
                                     &self.selected_pages,
                                 );
-                                if let Some(pos) = press_pos {
-                                    if res.rect.contains(pos) {
+                                if let Some(pos) = press_pos
+                                    && res.rect.contains(pos) {
                                         page_hit = true;
                                     }
-                                }
                                 if res.clicked || res.middle_clicked || res.toggled {
                                     page_hit = true;
                                 }

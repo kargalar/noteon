@@ -9,6 +9,12 @@ use crate::ui::palette::Palette;
 
 pub use crate::domain::search::find_char_ranges;
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct FindHighlight<'a> {
+    pub query: Option<&'a str>,
+    pub active_match: Option<(usize, usize)>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct PageFind {
     pub open: bool,

@@ -103,11 +103,48 @@ pub struct BreadcrumbItem {
 }
 
 pub fn quiet_button(ui: &mut Ui, text: &str, color: Color32) -> Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).color(color))
-            .frame(false)
-            .min_size(Vec2::new(28.0, 28.0)),
-    )
+    ui.scope(|ui| {
+        let inactive = &mut ui.visuals_mut().widgets.inactive;
+        inactive.weak_bg_fill = Color32::TRANSPARENT;
+        inactive.bg_stroke = egui::Stroke::NONE;
+        ui.add(
+            egui::Button::new(RichText::new(text).color(color))
+                .frame(true)
+                .min_size(Vec2::new(28.0, 28.0)),
+        )
+    })
+    .inner
+}
+
+pub fn primary_button(text: &str, palette: Palette) -> impl egui::Widget + use<> {
+    let label = RichText::new(text).color(palette.primary_text).strong();
+    move |ui: &mut Ui| {
+        ui.scope(|ui| {
+            let widgets = &mut ui.visuals_mut().widgets;
+            let hover = if palette.primary_text == Color32::from_gray(0x17) {
+                palette.accent.lerp_to_gamma(Color32::WHITE, 0.45)
+            } else {
+                palette.accent.lerp_to_gamma(Color32::BLACK, 0.18)
+            };
+            widgets.inactive.weak_bg_fill = palette.accent;
+            widgets.inactive.bg_stroke = egui::Stroke::NONE;
+            widgets.hovered.weak_bg_fill = hover;
+            widgets.hovered.bg_stroke = egui::Stroke::NONE;
+            widgets.active.weak_bg_fill = palette.accent;
+            widgets.active.bg_stroke = egui::Stroke::new(2.0_f32, palette.primary_text);
+            let response = ui.add(egui::Button::new(label).frame(true));
+            if response.has_focus() {
+                ui.painter().rect_stroke(
+                    response.rect.expand(2.0),
+                    10,
+                    egui::Stroke::new(1.0_f32, palette.accent),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            response
+        })
+        .inner
+    }
 }
 
 pub fn small_label(ui: &mut Ui, text: &str, color: Color32) {

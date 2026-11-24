@@ -28,10 +28,12 @@ pub struct Palette {
     pub muted: Color32,
     pub border: Color32,
     pub accent: Color32,
+    pub primary_text: Color32,
     pub accent_soft: Color32,
     pub hover: Color32,
     pub danger: Color32,
     pub code: Color32,
+    pub field: Color32,
     pub gallery_card: Color32,
     pub gallery_border: Color32,
     pub board_card: Color32,
@@ -41,19 +43,21 @@ impl Palette {
     pub fn new(dark: bool) -> Self {
         if dark {
             Self {
-                background: Color32::from_rgb(20, 20, 20),
-                sidebar: Color32::from_rgb(14, 14, 14),
-                text: Color32::from_rgb(230, 230, 230),
-                muted: Color32::from_rgb(140, 140, 140),
-                border: Color32::from_rgb(38, 38, 38),
-                accent: Color32::from_rgb(210, 210, 210),
-                accent_soft: Color32::from_rgb(45, 45, 45),
-                hover: Color32::from_rgb(32, 32, 32),
+                background: Color32::from_gray(0x10),
+                sidebar: Color32::from_gray(0x1C),
+                text: Color32::from_gray(0xF4),
+                muted: Color32::from_gray(0x92),
+                border: Color32::from_gray(0x30),
+                accent: Color32::from_gray(0xEE),
+                primary_text: Color32::from_gray(0x17),
+                accent_soft: Color32::from_gray(0x38),
+                hover: Color32::from_gray(0x41),
                 danger: Color32::from_rgb(232, 133, 124),
-                code: Color32::from_rgb(28, 28, 28),
-                gallery_card: Color32::from_rgb(14, 14, 14),
-                gallery_border: Color32::from_rgb(38, 38, 38),
-                board_card: Color32::from_rgb(18, 18, 18),
+                code: Color32::from_gray(0x25),
+                field: Color32::from_gray(0x30),
+                gallery_card: Color32::from_gray(0x1C),
+                gallery_border: Color32::from_gray(0x30),
+                board_card: Color32::from_gray(0x1C),
             }
         } else {
             Self {
@@ -63,10 +67,12 @@ impl Palette {
                 muted: Color32::from_rgb(134, 139, 124),
                 border: Color32::from_rgb(230, 232, 220),
                 accent: Color32::from_rgb(80, 107, 58),
+                primary_text: Color32::from_gray(0xF4),
                 accent_soft: Color32::from_rgb(231, 238, 220),
                 hover: Color32::from_rgb(237, 240, 228),
                 danger: Color32::from_rgb(175, 71, 58),
                 code: Color32::from_rgb(243, 245, 236),
+                field: Color32::from_rgb(243, 245, 236),
                 gallery_card: Color32::from_rgb(246, 246, 240),
                 gallery_border: Color32::from_rgb(230, 232, 220),
                 board_card: Color32::from_rgb(250, 250, 246),
@@ -88,82 +94,55 @@ impl Palette {
         accent: Color32,
         custom: &CustomTheme,
     ) -> Self {
-        let brightness = (0.2126 * f32::from(background.r())
-            + 0.7152 * f32::from(background.g())
-            + 0.0722 * f32::from(background.b()))
-            / 255.0;
-        let light_foreground = brightness > 0.52;
-        let contrast_palette = Self::new(!light_foreground);
-        let surface = if light_foreground {
-            Color32::WHITE
-        } else {
-            Color32::BLACK
+        let brightness = |color: Color32| {
+            0.2126 * f32::from(color.r())
+                + 0.7152 * f32::from(color.g())
+                + 0.0722 * f32::from(color.b())
+        };
+        let custom_background = self.background != background;
+        let custom_accent = self.accent != accent;
+        let contrast_palette = Self::new(brightness(background) <= 133.0);
+        let color = |value: &Option<String>, fallback| {
+            value
+                .as_deref()
+                .and_then(Self::from_setting)
+                .unwrap_or(fallback)
         };
         self.background = background;
-        self.sidebar = custom
-            .sidebar
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or_else(|| {
-                mix(
-                    background,
-                    surface,
-                    if light_foreground { 0.035 } else { 0.25 },
-                )
-            });
-        self.text = custom
-            .text
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or(contrast_palette.text);
-        self.muted = custom
-            .muted
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or(contrast_palette.muted);
+        self.text = color(&custom.text, contrast_palette.text);
+        self.muted = color(&custom.muted, contrast_palette.muted);
         self.danger = contrast_palette.danger;
-        self.border = custom
-            .border
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or_else(|| mix(background, self.text, 0.14));
+        if custom_background {
+            self.sidebar = mix(background, self.text, 0.055);
+            self.border = mix(background, self.text, 0.14);
+            self.code = mix(background, self.text, 0.095);
+            self.field = mix(background, self.text, 0.14);
+            self.hover = mix(background, self.text, 0.21);
+        }
+        if custom_background || custom_accent {
+            self.accent_soft = mix(background, accent, 0.18);
+        }
         self.accent = accent;
-        self.accent_soft = custom
-            .accent_soft
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or_else(|| {
-                mix(
-                    background,
-                    accent,
-                    if light_foreground { 0.15 } else { 0.24 },
-                )
-            });
-        self.hover = custom
-            .hover
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or_else(|| mix(background, accent, 0.10));
-        self.code = custom
-            .code
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or_else(|| mix(background, self.text, 0.045));
-        self.gallery_card = custom
-            .gallery_card
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or(self.sidebar);
-        self.gallery_border = custom
-            .gallery_border
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or_else(|| self.border.linear_multiply(0.55));
-        self.board_card = custom
-            .board_card
-            .as_deref()
-            .and_then(Self::from_setting)
-            .unwrap_or(self.sidebar);
+        self.primary_text = if brightness(accent) > 133.0 {
+            Color32::from_gray(0x17)
+        } else {
+            Color32::from_gray(0xF4)
+        };
+        self.sidebar = color(&custom.sidebar, self.sidebar);
+        self.border = color(&custom.border, self.border);
+        self.accent_soft = color(&custom.accent_soft, self.accent_soft);
+        self.hover = color(&custom.hover, self.hover);
+        self.code = color(&custom.code, self.code);
+        if custom_background || custom.sidebar.is_some() {
+            self.gallery_card = self.sidebar;
+            self.board_card = self.sidebar;
+        }
+        if custom_background || custom.border.is_some() {
+            self.gallery_border = self.border;
+        }
+        self.gallery_card = color(&custom.gallery_card, self.gallery_card);
+        self.gallery_border = color(&custom.gallery_border, self.gallery_border);
+        self.board_card = color(&custom.board_card, self.board_card);
         self
     }
 

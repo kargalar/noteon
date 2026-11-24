@@ -23,6 +23,9 @@ egui-twemoji = "0.7.1"
 twemoji-assets = "1.4.0"
 arboard = "3"
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["UI_ViewManagement"] }
+
 [dev-dependencies]
 tempfile = "3.27"
 

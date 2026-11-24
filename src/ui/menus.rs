@@ -170,6 +170,10 @@ fn show_menu<R>(
     // its InnerResponse when the menu closes.
     let mut inner = None;
     let (action, _) = menu.root.show(response, |ui| {
+        ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+        ui.spacing_mut().item_spacing.y = 4.0;
+        let focus_stroke = ui.visuals().selection.stroke;
+        ui.visuals_mut().widgets.active.bg_stroke = focus_stroke;
         let result = add_contents(ui);
         inner = Some(InnerResponse::new(result, ui.response()));
     });

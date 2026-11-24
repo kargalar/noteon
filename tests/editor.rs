@@ -1390,7 +1390,7 @@ fn clicking_cover_without_cover_triggers_choose_cover_image() {
     let mut editor = editor("Sample page", 1);
     frame_with_breadcrumbs(&context, &mut editor, &[], Vec::new());
 
-    let click_pos = egui::pos2(200.0, 80.0);
+    let click_pos = egui::pos2(200.0, 65.0);
     let intents = frame_with_breadcrumbs(
         &context,
         &mut editor,

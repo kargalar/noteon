@@ -141,22 +141,21 @@ impl PageFind {
                 egui::Frame::new()
                     .fill(palette.sidebar)
                     .stroke(Stroke::new(1.0_f32, palette.border))
-                    .corner_radius(8.0)
-                    .shadow(ui.visuals().window_shadow)
-                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .corner_radius(12)
+                    .shadow(ui.visuals().popup_shadow)
+                    .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing = vec2(5.0, 0.0);
 
-                            // Search icon
-                            ui.label(RichText::new("🔍").size(12.0).color(palette.muted));
+                            ui.label(RichText::new("⌕").size(12.0).color(palette.muted));
 
                             // Search Input
                             let input_resp = ui.add(
                                 egui::TextEdit::singleline(&mut self.query)
                                     .id(egui::Id::new(("page-find-input", page_id, widget_scope)))
                                     .return_key(None)
-                                    .hint_text("Sayfada ara…")
+                                    .hint_text(RichText::new("Sayfada ara…").color(palette.muted))
                                     .font(FontId::proportional(13.0))
                                     .desired_width(128.0)
                                     .margin(egui::Margin::symmetric(4, 3)),

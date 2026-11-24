@@ -32,6 +32,15 @@ fn frame_sidebar(
     events: Vec<Event>,
     modifiers: Modifiers,
 ) -> Vec<Intent> {
+    render_sidebar(context, sidebar, events, modifiers).0
+}
+
+fn render_sidebar(
+    context: &egui::Context,
+    sidebar: &mut Sidebar,
+    events: Vec<Event>,
+    modifiers: Modifiers,
+) -> (Vec<Intent>, egui::FullOutput) {
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -42,12 +51,25 @@ fn frame_sidebar(
         ..Default::default()
     };
     let mut intents = Vec::new();
-    let _ = context.run(input, |context| {
+    let output = context.run(input, |context| {
         egui::SidePanel::left("sidebar").show(context, |ui| {
             intents.extend(sidebar.show(ui, None, false, Palette::new(false), true));
         });
     });
-    intents
+    (intents, output)
+}
+
+fn page_position(output: &egui::FullOutput, title: &str) -> egui::Pos2 {
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(label) if label.galley.text() == title => {
+                Some(label.pos + label.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("page row was not rendered: {title}"))
 }
 
 #[test]
@@ -68,14 +90,10 @@ fn sidebar_ctrl_click_and_shift_click_and_delete() {
     let mut sidebar = Sidebar::default();
     sidebar.set_pages(test_pages());
 
-    // Initial render to lay out
-    frame_sidebar(&context, &mut sidebar, Vec::new(), Modifiers::NONE);
-
-    // Header is ~50px, Row 0 is WORKSPACE header (~33px), so Row 1 (Page 1) is at y ≈ 95-100px.
-    // Each row is 33px high.
-    let page1_pos = egui::pos2(80.0, 115.0);
-    let page2_pos = egui::pos2(80.0, 150.0);
-    let page3_pos = egui::pos2(80.0, 195.0);
+    let (_, output) = render_sidebar(&context, &mut sidebar, Vec::new(), Modifiers::NONE);
+    let page1_pos = page_position(&output, "Page 1");
+    let page2_pos = page_position(&output, "Page 2");
+    let page3_pos = page_position(&output, "Page 3");
 
     // 1. Regular click on Page 1 -> selects Page 1
     frame_sidebar(
@@ -243,9 +261,8 @@ fn sidebar_clicking_outside_clears_selection() {
     let mut sidebar = Sidebar::default();
     sidebar.set_pages(test_pages());
 
-    frame_sidebar(&context, &mut sidebar, Vec::new(), Modifiers::NONE);
-
-    let page1_pos = egui::pos2(80.0, 115.0);
+    let (_, output) = render_sidebar(&context, &mut sidebar, Vec::new(), Modifiers::NONE);
+    let page1_pos = page_position(&output, "Page 1");
     // 1. Click on Page 1 -> selects Page 1
     frame_sidebar(
         &context,

@@ -49,19 +49,20 @@ impl Search {
         }
         let mut open = true;
         egui::Window::new(text::SEARCH_TITLE)
+            .frame(egui::Frame::window(&context.style()))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(590.0)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 95.0])
             .show(context, |ui| {
-                ui.add_space(7.0);
                 let input = ui.add_sized(
-                    [ui.available_width(), 37.0],
+                    [ui.available_width(), 36.0],
                     egui::TextEdit::singleline(&mut self.query)
                         .return_key(None)
-                        .hint_text(text::SEARCH_PLACEHOLDER)
-                        .font(egui::FontId::proportional(18.0)),
+                        .hint_text(RichText::new(text::SEARCH_PLACEHOLDER).color(palette.muted))
+                        .font(egui::FontId::proportional(14.0))
+                        .margin(egui::Margin::symmetric(12, 8)),
                 );
                 if self.focus {
                     input.request_focus();
@@ -103,15 +104,27 @@ impl Search {
                         |ui, range| {
                             for index in range {
                                 let hit = &self.hits[index];
-                                let button = egui::Button::new(
-                                    RichText::new(format!(
-                                        "{}  {}\n{}",
-                                        hit.icon, hit.title, hit.preview
-                                    ))
-                                    .size(13.0),
-                                )
-                                .min_size(vec2(ui.available_width(), 58.0))
-                                .frame(false);
+                                let mut label = egui::text::LayoutJob::default();
+                                label.append(
+                                    &format!("{}  {}\n", hit.icon, hit.title),
+                                    0.0,
+                                    egui::TextFormat::simple(
+                                        egui::FontId::proportional(14.0),
+                                        palette.text,
+                                    ),
+                                );
+                                label.append(
+                                    &hit.preview,
+                                    0.0,
+                                    egui::TextFormat::simple(
+                                        egui::FontId::proportional(12.0),
+                                        palette.muted,
+                                    ),
+                                );
+                                label.wrap.max_rows = 2;
+                                let button = egui::Button::new(label)
+                                    .min_size(vec2(ui.available_width(), 58.0))
+                                    .wrap();
                                 if ui.add(button).clicked() {
                                     intents.push(Intent::Open(hit.page_id, hit.position));
                                 }
@@ -122,7 +135,7 @@ impl Search {
                 ui.separator();
                 small_label(
                     ui,
-                    "Enter  open first result     ·     Esc  close     ·     Up to 50 results",
+                    "Enter  Open first result    ·    Esc  Close",
                     palette.muted,
                 );
                 if input.has_focus()

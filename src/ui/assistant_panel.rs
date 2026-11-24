@@ -4,7 +4,7 @@ use crate::assistant::{Assistant, ChatMessage, EFFORT_LEVELS, Role};
 use crate::domain::markdown;
 use crate::domain::model::{BlockKind, InlineFontFamily, InlineTextStyle, TextStyleRange};
 use crate::ui::palette::Palette;
-use crate::ui::{quiet_button, small_label};
+use crate::ui::{primary_button, quiet_button, small_label};
 
 const INPUT_ID: &str = "assistant-input";
 const SUGGESTIONS: [&str; 4] = [
@@ -54,7 +54,7 @@ fn show_header(
     actions: &mut Vec<AssistantAction>,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("✦ Assistant").strong().color(palette.text));
+        ui.heading("Assistant");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if quiet_button(ui, "×", palette.muted)
                 .on_hover_text("Close (Ctrl+J)")
@@ -68,7 +68,7 @@ fn show_header(
             {
                 actions.push(AssistantAction::ToggleSettings);
             }
-            if quiet_button(ui, "🗑", palette.muted)
+            if quiet_button(ui, "▱", palette.muted)
                 .on_hover_text("Clear chat")
                 .clicked()
             {
@@ -95,9 +95,9 @@ fn show_settings(
     actions: &mut Vec<AssistantAction>,
 ) {
     egui::Frame::new()
-        .fill(palette.hover)
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::same(8))
+        .fill(palette.code)
+        .corner_radius(12)
+        .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             small_label(ui, "Model", palette.muted);
             let model = ui.add(
@@ -169,7 +169,7 @@ fn show_message(ui: &mut egui::Ui, message: &ChatMessage, palette: Palette) {
 fn show_bubble(ui: &mut egui::Ui, text: &str, fill: egui::Color32, palette: Palette) {
     egui::Frame::new()
         .fill(fill)
-        .corner_radius(8.0)
+        .corner_radius(12)
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -375,7 +375,7 @@ fn show_input(
         } else if ui
             .add_enabled(
                 !assistant.input.trim().is_empty(),
-                egui::Button::new(RichText::new("Send").color(palette.text)),
+                primary_button("Send", palette),
             )
             .clicked()
             || submit

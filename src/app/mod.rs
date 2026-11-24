@@ -110,7 +110,7 @@ impl NoteonApp {
             ready: false,
             loading: false,
             busy: false,
-            dark: false,
+            dark: true,
             light_background: Palette::new(false).background,
             dark_background: Palette::new(true).background,
             accent_color: None,
@@ -1164,6 +1164,7 @@ impl NoteonApp {
 
 impl eframe::App for NoteonApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::refresh_motion(context);
         self.receive_events(context);
         self.poll_assistant();
         self.shortcuts(context);

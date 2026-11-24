@@ -461,7 +461,7 @@ impl Worker {
                     ) => publish(Event::Ready {
                         pages,
                         last_page,
-                        dark: dark.as_deref() == Some("true"),
+                        dark: dark.as_deref() != Some("false"),
                         light_background,
                         dark_background,
                         accent_color,

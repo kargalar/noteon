@@ -17,7 +17,7 @@ use crate::ui::page_properties::{
 };
 use crate::worker::Action;
 
-use super::{Intent, ThemeSection, palette::Palette};
+use super::{Intent, ThemeSection, palette::Palette, primary_button};
 
 const TABLE_NAME_WIDTH: f32 = 250.0;
 const EMPTY_RECORD_NAME: &str = "Empty";
@@ -32,24 +32,6 @@ const TABLE_OPEN_PAGE_BUTTON_MARGIN: f32 = 4.0;
 const DEFAULT_TABLE_MAX_ROWS_HEIGHT: f32 = 648.0;
 const DEFAULT_GALLERY_MAX_HEIGHT: f32 = 760.0;
 const DEFAULT_BOARD_MAX_CARDS_HEIGHT: f32 = 648.0;
-
-fn new_record_button(ui: &Ui) -> egui::Button<'static> {
-    let (background, text) = if ui.visuals().dark_mode {
-        (Color32::WHITE, Color32::BLACK)
-    } else {
-        (Color32::BLACK, Color32::WHITE)
-    };
-
-    egui::Button::new(
-        RichText::new("+ New record")
-            .font(FontId::proportional(13.0))
-            .color(text)
-            .strong(),
-    )
-    .fill(background)
-    .stroke(egui::Stroke::NONE)
-    .corner_radius(5)
-}
 
 #[allow(dead_code)]
 fn focus_record_name(ui: &Ui, id: egui::Id, title: &str) {
@@ -622,7 +604,7 @@ fn show_inner(
                         }
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let new_btn = new_record_button(ui);
+                            let new_btn = primary_button("+ New record", palette);
                             let new_clicked = ui.add_enabled(!busy, new_btn).clicked();
                             if new_clicked {
                                 intents.push(Intent::Action(Action::CreateDatabaseRecord(
@@ -4406,10 +4388,10 @@ fn show_cards(
                             } else {
                                 palette.gallery_border
                             };
-                            ui.painter().rect_filled(card_rect, 8.0, bg);
+                            ui.painter().rect_filled(card_rect, 12.0, bg);
                             ui.painter().rect_stroke(
                                 card_rect,
-                                8.0,
+                                12.0,
                                 egui::Stroke::new(
                                     if is_selected { 2.0 } else { 1.0_f32 },
                                     border_color,
@@ -4800,8 +4782,12 @@ fn show_cards(
     }
 
     ui.add_space(6.0);
-    let new_btn = new_record_button(ui).corner_radius(6);
-    if ui.add_sized([total_width, 34.0], new_btn).clicked() && !busy {
+    let new_btn = primary_button("+ New record", palette);
+    if ui
+        .add_enabled_ui(!busy, |ui| ui.add_sized([total_width, 34.0], new_btn))
+        .inner
+        .clicked()
+    {
         intents.push(Intent::Action(Action::CreateDatabaseRecord(data.page_id)));
     }
 
@@ -4957,8 +4943,8 @@ fn show_board(
                             1.0_f32,
                             palette.border.linear_multiply(0.4),
                         ))
-                        .corner_radius(8)
-                        .inner_margin(10);
+                        .corner_radius(16)
+                        .inner_margin(16);
 
                     let col_inner = col_frame.show(ui, |ui| {
                         ui.set_min_width(board_col_width);
@@ -5107,10 +5093,10 @@ fn show_board(
                                         } else {
                                             palette.border.linear_multiply(0.6)
                                         };
-                                        ui.painter().rect_filled(card_rect, 6.0, card_bg);
+                                        ui.painter().rect_filled(card_rect, 10.0, card_bg);
                                         ui.painter().rect_stroke(
                                             card_rect,
-                                            6.0,
+                                            10.0,
                                             egui::Stroke::new(
                                                 if is_selected { 2.0 } else { 1.0_f32 },
                                                 stroke_col,

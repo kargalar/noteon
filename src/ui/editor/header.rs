@@ -2,9 +2,9 @@ use super::block;
 use crate::config::UNTITLED;
 use crate::domain::model::{BlockKind, Document, Page, PageEdit};
 use crate::ui::menus::{PersistentContextMenu, PersistentMenuUi};
-use crate::ui::{Intent, ThemeSection, palette::Palette, quiet_button, small_label, text};
+use crate::ui::{Intent, ThemeSection, palette::Palette, quiet_button, text};
 use crate::worker::Action;
-use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, vec2};
+use eframe::egui::{self, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, vec2};
 
 #[derive(Clone, Copy)]
 pub(super) struct Canvas {
@@ -36,21 +36,25 @@ pub(super) fn show(
     let mut intents = Vec::new();
     let page = &mut document.page;
     let mut page_changed = false;
-    breadcrumb(
-        ui,
-        page,
-        palette,
-        breadcrumbs,
-        &mut intents,
-        &mut page_changed,
-        history,
-    );
-    ui.add_space(8.0);
-    ui.separator();
+    egui::Frame::new()
+        .fill(palette.sidebar)
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            breadcrumb(
+                ui,
+                page,
+                palette,
+                breadcrumbs,
+                &mut intents,
+                &mut page_changed,
+                history,
+            );
+        });
     let width = ui.available_width();
     let has_cover = page.cover != 0 || page.cover_image.is_some();
-    let cover_height = if has_cover { 180.0 } else { 28.0 };
-    ui.add_space(10.0);
+    let cover_height = if has_cover { 180.0 } else { 24.0 };
+    ui.add_space(8.0);
     let (cover_rect, mut cover_response) =
         ui.allocate_exact_size(vec2(width, cover_height), Sense::click_and_drag());
     if let Some(path) = page.cover_image.as_deref() {
@@ -110,14 +114,14 @@ pub(super) fn show(
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             ui.painter().rect_stroke(
                 cover_rect.shrink(2.0),
-                4.0,
+                9.0,
                 egui::Stroke::new(1.0_f32, palette.border.linear_multiply(0.5)),
                 egui::StrokeKind::Inside,
             );
             ui.painter().text(
                 cover_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "🖼  Kapak ekle",
+                "+  Kapak ekle",
                 egui::FontId::proportional(12.0),
                 palette.muted,
             );
@@ -215,8 +219,8 @@ pub(super) fn show(
             }
         });
     }
-    if cover_height > 28.0 {
-        ui.add_space(8.0);
+    if has_cover {
+        ui.add_space(12.0);
     }
     let (document_width, inset) = if page.full_width {
         let doc_w = (width - 48.0).max(200.0);
@@ -271,8 +275,9 @@ pub(super) fn show(
     );
     ui.add_space(4.0);
     let line_y = ui.cursor().min.y;
-    let line_left = inset + block::HANDLE_WIDTH;
-    let line_right = inset + document_width - 4.0;
+    let canvas_left = ui.max_rect().left() + inset;
+    let line_left = canvas_left + block::HANDLE_WIDTH;
+    let line_right = canvas_left + document_width - 4.0;
     ui.painter().line_segment(
         [
             egui::pos2(line_left, line_y),
@@ -345,17 +350,20 @@ fn breadcrumb(
             }
             ui.label(RichText::new("/").size(12.0).color(palette.muted));
         }
-        if let Some(source) = crate::ui::emoji_image_source(&page.icon) {
-            ui.add(egui::Image::new(source).fit_to_exact_size(egui::vec2(12.0, 12.0)));
-            ui.label(RichText::new(page.display_title()).size(12.0));
-        } else {
-            let current_label = if page.icon.is_empty() {
-                page.display_title().to_string()
+        let title_width = (ui.available_width() - 116.0).max(0.0);
+        ui.scope(|ui| {
+            ui.set_max_width(title_width);
+            let title = if let Some(source) = crate::ui::emoji_image_source(&page.icon) {
+                ui.add(egui::Image::new(source).fit_to_exact_size(egui::vec2(12.0, 12.0)));
+                page.display_title().to_owned()
+            } else if page.icon.is_empty() {
+                page.display_title().to_owned()
             } else {
                 format!("{}  {}", page.icon, page.display_title())
             };
-            ui.label(RichText::new(current_label).size(12.0));
-        }
+            ui.add(egui::Label::new(RichText::new(title).size(12.0)).truncate())
+                .on_hover_text(page.display_title());
+        });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.persistent_menu_button("···", |ui| {
                 let full_width_label = if page.full_width {
@@ -456,7 +464,6 @@ fn breadcrumb(
             {
                 intents.push(Intent::Action(Action::Favorite(page.id)));
             }
-            small_label(ui, "PERSONAL", palette.muted);
         });
     });
 }
@@ -502,7 +509,7 @@ fn title(
         .unwrap_or_default();
     let pointer_pos = ui.input(|i| i.pointer.hover_pos());
     let title_zone = egui::Rect::from_min_size(
-        egui::pos2(inset, ui.cursor().min.y),
+        egui::pos2(ui.max_rect().left() + inset, ui.cursor().min.y),
         egui::vec2(document_width, 76.0),
     );
     let is_pointer_over = pointer_pos.map_or(false, |pos| title_zone.contains(pos));
@@ -546,21 +553,25 @@ fn title(
             ui.add_space(4.0);
         }
         let find_clean = find_query.map(|q| q.trim()).unwrap_or("");
+        let title_font = FontId::new(34.0, egui::TextStyle::Heading.resolve(ui.style()).family);
         let mut layouter = |ui: &Ui, text: &str, wrap_width: f32| {
             if !find_clean.is_empty() {
                 block::layout_title_with_find(
                     ui,
                     text,
                     wrap_width,
-                    FontId::proportional(34.0),
+                    title_font.clone(),
                     palette.text,
                     find_clean,
                     find_title_range,
                 )
             } else {
-                let font = FontId::proportional(34.0);
-                let job =
-                    egui::text::LayoutJob::simple(text.to_string(), font, palette.text, wrap_width);
+                let job = egui::text::LayoutJob::simple(
+                    text.to_string(),
+                    title_font.clone(),
+                    palette.text,
+                    wrap_width,
+                );
                 ui.fonts(|f| f.layout_job(job))
             }
         };
@@ -582,7 +593,7 @@ fn title(
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let title_edit = egui::TextEdit::singleline(&mut page.title)
             .id(title_id)
-            .font(FontId::proportional(34.0))
+            .font(title_font.clone())
             .frame(false)
             .hint_text(UNTITLED)
             .margin(egui::Margin::ZERO)
@@ -771,28 +782,13 @@ fn title_widget_id(page_id: i64, widget_scope: Option<u64>) -> egui::Id {
 
 fn cover(ui: &Ui, rect: Rect, color: Color32) {
     let painter = ui.painter().with_clip_rect(rect);
-    painter.rect_filled(rect, 6.0, color);
-    let ink = Color32::from_rgba_unmultiplied(73, 95, 62, 35);
+    painter.rect_filled(rect, 12.0, color);
+    let ink = Color32::from_black_alpha(20);
     let center = rect.right_center() - vec2(100.0, -36.0);
     for index in 0..8 {
         let radius = 32.0 + index as f32 * 18.0;
         painter.circle_stroke(center, radius, Stroke::new(1.2_f32, ink));
     }
-    let x = rect.left() + 32.0;
-    painter.text(
-        egui::pos2(x, rect.center().y - 9.0),
-        Align2::LEFT_CENTER,
-        "LESS NOISE.",
-        FontId::proportional(10.0),
-        Color32::from_rgb(80, 99, 66),
-    );
-    painter.text(
-        egui::pos2(x, rect.center().y + 15.0),
-        Align2::LEFT_CENTER,
-        "More thought.",
-        FontId::proportional(22.0),
-        Color32::from_rgb(60, 80, 48),
-    );
 }
 
 fn format_history_timestamp(timestamp: i64) -> String {

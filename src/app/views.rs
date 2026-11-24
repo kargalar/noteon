@@ -5,7 +5,8 @@ use egui_dock::{DockArea, OverlayType, Style as DockStyle, TabViewer};
 use crate::config;
 use crate::ui::text;
 use crate::ui::{
-    CustomColorKey, DockSide, Intent, ThemeSection, palette::Palette, quiet_button, small_label,
+    CustomColorKey, DockSide, Intent, ThemeSection, palette::Palette, primary_button, quiet_button,
+    small_label,
 };
 use crate::worker::Action;
 
@@ -19,12 +20,14 @@ impl NoteonApp {
             context,
             palette,
             self.selected.and_then(|id| self.sidebar.page(id)),
+            self.sidebar_pinned,
+            &mut intents,
         );
         egui::TopBottomPanel::bottom("status")
             .frame(
                 egui::Frame::new()
                     .fill(palette.sidebar)
-                    .inner_margin(egui::Margin::symmetric(17, 7)),
+                    .inner_margin(egui::Margin::symmetric(16, 2)),
             )
             .show(context, |ui| {
                 ui.horizontal(|ui| {
@@ -33,23 +36,23 @@ impl NoteonApp {
                         if self.saves.failed && ui.small_button(text::RETRY_SAVE).clicked() {
                             intents.push(Intent::RetrySave);
                         }
-                        if ui.small_button("Ã—").clicked() {
+                        if ui.small_button("×").clicked() {
                             self.error = None;
                         }
                     } else if let Some((notice, _)) = &self.notice {
                         small_label(ui, notice, palette.accent);
                     } else {
                         let (status, color) = if self.closing {
-                            ("Saving changes before closingâ€¦", palette.muted)
+                            ("Saving changes before closing…", palette.muted)
                         } else if self.busy {
-                            ("Workingâ€¦", palette.muted)
+                            ("Working…", palette.muted)
                         } else if self.saves.failed {
                             (
-                                "Save failed Â· Your changes are still in memory",
+                                "Save failed · Your changes are still in memory",
                                 palette.danger,
                             )
                         } else if !self.saves.is_idle() {
-                            ("Savingâ€¦", palette.muted)
+                            ("Saving…", palette.muted)
                         } else {
                             (text::LOCAL_SAVED, palette.accent)
                         };
@@ -65,26 +68,13 @@ impl NoteonApp {
                             .iter()
                             .filter(|page| page.trashed_by.is_none())
                             .count();
-                        small_label(
-                            ui,
-                            &format!(
-                                "{active_count} pages    Â·    Noteon {}",
-                                env!("CARGO_PKG_VERSION")
-                            ),
-                            palette.muted,
-                        );
+                        small_label(ui, &format!("{active_count} pages"), palette.muted);
                         let label = if self.assistant.is_running() {
                             "✦ Assistant…"
                         } else {
                             "✦ Assistant"
                         };
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new(label).small().color(palette.accent),
-                                )
-                                .frame(false),
-                            )
+                        if quiet_button(ui, label, palette.muted)
                             .on_hover_text("Ask the AI assistant (Ctrl+J)")
                             .clicked()
                         {
@@ -94,18 +84,33 @@ impl NoteonApp {
                 });
             });
         let mut assistant_actions = Vec::new();
+        let assistant_opacity = context.animate_bool(
+            egui::Id::new("assistant-panel-opacity"),
+            self.assistant.open,
+        );
         if self.assistant.open {
+            let sidebar_width = if self.sidebar_pinned {
+                config::SIDEBAR_WIDTH
+            } else {
+                0.0
+            };
+            let editor_space = context.available_rect().width() - sidebar_width;
+            let assistant_max = (editor_space - 280.0).max(config::ASSISTANT_PANEL_MIN_WIDTH);
             egui::SidePanel::right("assistant")
                 .default_width(config::ASSISTANT_PANEL_WIDTH)
-                .min_width(config::ASSISTANT_PANEL_MIN_WIDTH)
+                .width_range(config::ASSISTANT_PANEL_MIN_WIDTH..=assistant_max)
                 .resizable(true)
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
-                        .fill(palette.background)
-                        .inner_margin(egui::Margin::symmetric(12, 9))
+                        .fill(palette.sidebar)
+                        .corner_radius(16)
+                        .outer_margin(egui::Margin::symmetric(8, 8))
+                        .inner_margin(egui::Margin::same(16))
                         .stroke(Stroke::new(1.0_f32, palette.border)),
                 )
                 .show(context, |ui| {
+                    ui.multiply_opacity(assistant_opacity);
                     assistant_actions =
                         crate::ui::assistant_panel::show(ui, &mut self.assistant, palette);
                 });
@@ -117,12 +122,15 @@ impl NoteonApp {
 
         if self.sidebar_pinned {
             egui::SidePanel::left("sidebar")
-                .exact_width(config::SIDEBAR_WIDTH)
-                .resizable(true)
+                .default_width(config::SIDEBAR_WIDTH)
+                .resizable(false)
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(palette.sidebar)
-                        .inner_margin(egui::Margin::symmetric(15, 9))
+                        .corner_radius(16)
+                        .outer_margin(egui::Margin::same(8))
+                        .inner_margin(egui::Margin::same(16))
                         .stroke(Stroke::new(1.0_f32, palette.border)),
                 )
                 .show(context, |ui| {
@@ -138,14 +146,14 @@ impl NoteonApp {
                 });
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(palette.background).inner_margin(egui::Margin::same(8)))
+            .frame(egui::Frame::new().fill(palette.background).inner_margin(egui::Margin::same(16)))
             .show(context, |ui| {
                 if !self.ready {
                     ui.vertical_centered(|ui| {
                         ui.add_space(180.0);
                         if self.error.is_none() {
                             ui.spinner();
-                            ui.label("Opening workspaceâ€¦");
+                            ui.label("Opening workspace…");
                         } else {
                             ui.heading("Could not open workspace");
                             ui.label("Check the error details and make sure the data folder is accessible.");
@@ -175,6 +183,23 @@ impl NoteonApp {
                             intents: &mut intents,
                         };
                         let mut dock_style = DockStyle::from_egui(ui.style());
+                        dock_style.tab_bar.bg_fill = palette.background;
+                        dock_style.tab_bar.hline_color = palette.border;
+                        dock_style.tab_bar.height = 32.0;
+                        dock_style.tab.tab_body.bg_fill = palette.background;
+                        dock_style.tab.tab_body.stroke = Stroke::NONE;
+                        dock_style.tab.hline_below_active_tab_name = true;
+                        for (tab, fill, text) in [
+                            (&mut dock_style.tab.active, palette.code, palette.text),
+                            (&mut dock_style.tab.focused, palette.accent, palette.primary_text),
+                            (&mut dock_style.tab.hovered, palette.hover, palette.text),
+                            (&mut dock_style.tab.inactive, palette.background, palette.muted),
+                        ] {
+                            tab.bg_fill = fill;
+                            tab.text_color = text;
+                            tab.outline_color = palette.border;
+                            tab.corner_radius = egui::CornerRadius::same(9);
+                        }
                         if self.dock.iter_all_tabs().take(2).count() == 1 {
                             dock_style.tab_bar.height = 0.0;
                         }
@@ -269,6 +294,7 @@ impl NoteonApp {
                     .fixed_pos(egui::pos2(x_pos, sidebar_top))
                     .order(egui::Order::Foreground)
                     .constrain(false)
+                    .fade_in(false)
                     .show(context, |ui| {
                         ui.set_min_width(config::SIDEBAR_WIDTH);
                         ui.set_max_width(config::SIDEBAR_WIDTH);
@@ -276,11 +302,13 @@ impl NoteonApp {
                         ui.set_max_height(sidebar_height);
                         egui::Frame::new()
                             .fill(palette.sidebar)
-                            .inner_margin(egui::Margin::symmetric(15, 9))
+                            .corner_radius(16)
+                            .shadow(ui.visuals().window_shadow)
+                            .inner_margin(egui::Margin::same(16))
                             .stroke(Stroke::new(1.0_f32, palette.border))
                             .show(ui, |ui| {
                                 ui.set_min_width(ui.available_width());
-                                ui.set_min_height(sidebar_height - 18.0);
+                                ui.set_min_height(sidebar_height - 34.0);
                                 ui.add_enabled_ui(
                                     self.ready && !self.busy && !self.closing,
                                     |ui| {
@@ -309,7 +337,7 @@ impl NoteonApp {
 
     fn show_trash(&mut self, ui: &mut egui::Ui, palette: Palette) -> Vec<Intent> {
         let mut intents = Vec::new();
-        ui.add_space(35.0);
+        ui.add_space(12.0);
 
         let mut pages: Vec<_> = self
             .sidebar
@@ -346,7 +374,7 @@ impl NoteonApp {
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.heading(RichText::new("Trash").size(31.0));
+                ui.heading(RichText::new("Trash").size(20.0));
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(
@@ -471,8 +499,11 @@ impl NoteonApp {
                     egui::Frame::new()
                         .fill(palette.sidebar)
                         .inner_margin(egui::Margin::symmetric(14, 10))
-                        .corner_radius(6)
-                        .stroke(egui::Stroke::new(1.0_f32, palette.border.linear_multiply(0.5)))
+                        .corner_radius(12)
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            palette.border.linear_multiply(0.5),
+                        ))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
@@ -515,11 +546,7 @@ impl NoteonApp {
 
                                         ui.add_space(6.0);
 
-                                        let restore_btn = egui::Button::new(
-                                            RichText::new("Geri yükle")
-                                                .color(palette.accent)
-                                                .size(12.0),
-                                        );
+                                        let restore_btn = primary_button("Geri yükle", palette);
                                         if ui
                                             .add_enabled(!self.busy, restore_btn)
                                             .on_hover_text("Bu sayfayı geri yükle")
@@ -542,6 +569,7 @@ impl NoteonApp {
         let mut intents = Vec::new();
         let mut settings_open = self.settings_open;
         egui::Window::new("Workspace settings")
+            .frame(egui::Frame::window(&context.style()))
             .open(&mut settings_open)
             .resizable(false)
             .collapsible(false)
@@ -982,11 +1010,7 @@ impl NoteonApp {
             intents.push(Intent::LoadDatabase(database_id));
         }
 
-        let frame = egui::Frame::window(&context.style())
-            .fill(palette.background)
-            .stroke(Stroke::new(1.0_f32, palette.border))
-            .corner_radius(10.0)
-            .inner_margin(egui::Margin::symmetric(16, 12));
+        let frame = egui::Frame::window(&context.style());
 
         let modal = egui::Modal::new(egui::Id::new("noteon-page-dialog"))
             .backdrop_color(Color32::from_black_alpha(150))
@@ -1128,32 +1152,30 @@ fn show_theme_section<F>(
 {
     let is_highlighted = active_highlight.map(|(s, _)| s) == Some(section);
     let elapsed = active_highlight.map(|(_, e)| e).unwrap_or(0.0);
-    let pulse = if is_highlighted {
-        (elapsed * 6.0).sin() * 0.5 + 0.5
+    let duration = ui.style().animation_time;
+    let highlight = if duration > 0.0 {
+        ((3.5 - elapsed) / duration).clamp(0.0, 1.0)
     } else {
-        0.0
+        1.0
     };
 
     let border_color = if is_highlighted {
-        palette.accent.linear_multiply(0.5 + 0.5 * pulse)
+        palette.border.lerp_to_gamma(palette.accent, highlight)
     } else {
         palette.border
     };
-    let border_width = if is_highlighted { 2.0 } else { 1.0_f32 };
+    let border_width = if is_highlighted { 1.0 + highlight } else { 1.0 };
     let frame_fill = if is_highlighted {
-        Color32::from_rgba_unmultiplied(
-            palette.accent_soft.r(),
-            palette.accent_soft.g(),
-            palette.accent_soft.b(),
-            (60.0 + 80.0 * pulse) as u8,
-        )
+        palette
+            .sidebar
+            .lerp_to_gamma(palette.accent_soft, 0.6 * highlight)
     } else {
         palette.sidebar
     };
 
     let frame = egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(12))
-        .corner_radius(8.0)
+        .inner_margin(egui::Margin::same(16))
+        .corner_radius(12)
         .fill(frame_fill)
         .stroke(Stroke::new(border_width, border_color));
 
@@ -1162,14 +1184,6 @@ fn show_theme_section<F>(
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(title).strong().size(14.0));
-                    if is_highlighted {
-                        ui.label(
-                            RichText::new("✨ Seçili Bölüm")
-                                .size(11.5)
-                                .color(palette.accent)
-                                .strong(),
-                        );
-                    }
                 });
                 if !subtitle.is_empty() {
                     ui.label(RichText::new(subtitle).small().color(palette.muted));
@@ -1201,50 +1215,31 @@ fn show_window_chrome(
     context: &egui::Context,
     palette: Palette,
     active_page: Option<&crate::domain::model::Page>,
+    sidebar_pinned: bool,
+    intents: &mut Vec<Intent>,
 ) {
-    const HEIGHT: f32 = 20.0;
-    const CONTROL_WIDTH: f32 = 26.0;
-    const CONTROL_HEIGHT: f32 = 18.0;
-    const CONTROL_SPACING: f32 = 2.0;
-    const CONTROL_RADIUS: f32 = 3.0;
-    const RIGHT_PADDING: f32 = 4.0;
-
-    let pointer_pos = context.input(|i| i.pointer.latest_pos());
-    let is_dragging = context.input(|i| i.pointer.is_decidedly_dragging());
-    let is_hover_prev = context
-        .data(|d| d.get_temp::<bool>(egui::Id::new("window_chrome_hover_state")))
-        .unwrap_or(false);
-
-    let is_hovered = pointer_pos.is_some_and(|pos| {
-        if is_hover_prev || is_dragging {
-            pos.y >= 0.0 && pos.y <= HEIGHT + 4.0
-        } else {
-            pos.y >= 0.0 && pos.y <= HEIGHT
-        }
-    });
-    context.data_mut(|d| d.insert_temp(egui::Id::new("window_chrome_hover_state"), is_hovered));
-
-    let hover_t = context.animate_bool(egui::Id::new("window_chrome_hover"), is_hovered);
-
     egui::TopBottomPanel::top("window-chrome")
-        .exact_height(HEIGHT)
+        .exact_height(34.0)
         .frame(
             egui::Frame::new()
                 .fill(palette.sidebar)
-                .stroke(Stroke::new(1.0_f32, palette.border)),
+                .inner_margin(egui::Margin::symmetric(8, 0)),
         )
         .show(context, |ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let controls_total_width =
-                    CONTROL_WIDTH * 3.0 + CONTROL_SPACING * 2.0 + RIGHT_PADDING;
-                let drag_width = if hover_t > 0.05 {
-                    (ui.available_width() - controls_total_width).max(0.0)
-                } else {
-                    ui.available_width()
-                };
-                let (drag_rect, drag_response) =
-                    ui.allocate_exact_size(vec2(drag_width, HEIGHT), egui::Sense::click_and_drag());
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.horizontal_centered(|ui| {
+                const CONTROLS_WIDTH: f32 = 100.0;
+                if !sidebar_pinned
+                    && quiet_button(ui, "◫", palette.muted)
+                        .on_hover_text("Pin sidebar")
+                        .clicked()
+                {
+                    intents.push(Intent::ToggleSidebarPin);
+                }
+                let (drag_rect, drag_response) = ui.allocate_exact_size(
+                    vec2((ui.available_width() - CONTROLS_WIDTH).max(0.0), 34.0),
+                    egui::Sense::click_and_drag(),
+                );
                 if drag_response.drag_started_by(egui::PointerButton::Primary) {
                     context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
@@ -1252,118 +1247,49 @@ fn show_window_chrome(
                     toggle_maximized(context);
                 }
 
-                if hover_t > 0.05 {
-                    if let Some(page) = active_page {
-                        let text_color = Color32::from_rgba_unmultiplied(
-                            palette.muted.r(),
-                            palette.muted.g(),
-                            palette.muted.b(),
-                            (hover_t * 255.0) as u8,
-                        );
-                        let header_title = if page.icon.is_empty() {
-                            page.display_title().to_string()
-                        } else {
-                            format!("{}  {}", page.icon, page.display_title())
-                        };
-                        ui.painter().text(
-                            drag_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            header_title,
-                            egui::FontId::proportional(11.0),
-                            text_color,
-                        );
-                    }
+                let mut title = egui::text::LayoutJob::simple_singleline(
+                    active_page
+                        .map_or(config::APP_NAME, |page| page.display_title())
+                        .to_owned(),
+                    egui::FontId::proportional(12.0),
+                    palette.muted,
+                );
+                title.wrap.max_width = (drag_rect.width() - 24.0).max(1.0);
+                title.wrap.max_rows = 1;
+                title.wrap.break_anywhere = true;
+                let label = ui.painter().layout_job(title);
+                let position = egui::Align2::CENTER_CENTER
+                    .anchor_size(drag_rect.center(), label.size())
+                    .min;
+                ui.painter()
+                    .with_clip_rect(drag_rect)
+                    .galley(position, label, palette.muted);
 
-                    if chrome_button(
-                        ui,
-                        "−",
-                        CONTROL_WIDTH,
-                        CONTROL_HEIGHT,
-                        CONTROL_RADIUS,
-                        palette,
-                        false,
-                        hover_t,
-                    )
+                if quiet_button(ui, "−", palette.muted)
+                    .on_hover_text("Minimize")
                     .clicked()
-                    {
-                        context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    }
-                    ui.add_space(CONTROL_SPACING);
-
-                    let maximized =
-                        context.input(|input| input.viewport().maximized.unwrap_or(false));
-                    if chrome_button(
-                        ui,
-                        if maximized { "❐" } else { "□" },
-                        CONTROL_WIDTH,
-                        CONTROL_HEIGHT,
-                        CONTROL_RADIUS,
-                        palette,
-                        false,
-                        hover_t,
-                    )
+                {
+                    context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+                let maximized = context.input(|input| input.viewport().maximized.unwrap_or(false));
+                if quiet_button(ui, if maximized { "❐" } else { "□" }, palette.muted)
+                    .on_hover_text(if maximized {
+                        "Restore window"
+                    } else {
+                        "Maximize"
+                    })
                     .clicked()
-                    {
-                        toggle_maximized(context);
-                    }
-                    ui.add_space(CONTROL_SPACING);
-
-                    if chrome_button(
-                        ui,
-                        "×",
-                        CONTROL_WIDTH,
-                        CONTROL_HEIGHT,
-                        CONTROL_RADIUS,
-                        palette,
-                        true,
-                        hover_t,
-                    )
+                {
+                    toggle_maximized(context);
+                }
+                if quiet_button(ui, "×", palette.muted)
+                    .on_hover_text("Close window")
                     .clicked()
-                    {
-                        context.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    ui.add_space(RIGHT_PADDING);
+                {
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
         });
-}
-
-fn chrome_button(
-    ui: &mut egui::Ui,
-    icon: &str,
-    width: f32,
-    height: f32,
-    radius: f32,
-    palette: Palette,
-    close: bool,
-    alpha: f32,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(width, height), egui::Sense::click());
-    if response.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            radius,
-            if close { palette.danger } else { palette.hover },
-        );
-    }
-    let text_color = if close && response.hovered() {
-        palette.background
-    } else {
-        Color32::from_rgba_unmultiplied(
-            palette.text.r(),
-            palette.text.g(),
-            palette.text.b(),
-            (alpha * 255.0) as u8,
-        )
-    };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        egui::FontId::proportional(if close { 14.0 } else { 11.0 }),
-        text_color,
-    );
-    response
 }
 
 fn toggle_maximized(context: &egui::Context) {

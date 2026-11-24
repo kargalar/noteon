@@ -7,9 +7,9 @@ use crate::domain::model::{Page, PageEdit, PageId};
 use crate::worker::Action;
 
 use super::text;
-use super::{Intent, ThemeSection, palette::Palette, quiet_button};
+use super::{Intent, ThemeSection, palette::Palette, primary_button, quiet_button};
 
-const ROW_HEIGHT: f32 = 33.0;
+const ROW_HEIGHT: f32 = 29.0;
 
 enum TreeRow {
     Section(&'static str),
@@ -230,7 +230,7 @@ impl Sidebar {
         palette: Palette,
         intents: &mut Vec<Intent>,
     ) {
-        let footer = 128.0;
+        let footer = 83.0;
         let mut toggle = None;
         let pointer_pressed =
             ui.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed());
@@ -271,34 +271,27 @@ impl Sidebar {
                                 vec2(ui.available_width(), ROW_HEIGHT),
                                 Sense::hover(),
                             );
-                            ui.painter().text(
-                                rect.left_center() + vec2(6.0, 4.0),
-                                Align2::LEFT_CENTER,
-                                title,
-                                FontId::proportional(10.0),
+                            let text = egui::text::LayoutJob::single_section(
+                                (*title).to_owned(),
+                                egui::TextFormat {
+                                    font_id: FontId::proportional(11.0),
+                                    color: palette.muted,
+                                    extra_letter_spacing: 1.0,
+                                    ..Default::default()
+                                },
+                            );
+                            let label = ui.painter().layout_job(text);
+                            let y = rect.center().y - label.size().y * 0.5;
+                            ui.painter().galley(
+                                egui::pos2(rect.left() + 6.0, y),
+                                label,
                                 palette.muted,
                             );
-                            if *title == "WORKSPACE" {
-                                if !trash && egui::DragAndDrop::payload::<crate::ui::page_transfer::PageDragPayload>(ui.ctx()).is_some() {
-                                    crate::ui::page_transfer::drop_target(ui, rect, None, None, palette, intents);
-                                }
-                                let add_rect = egui::Rect::from_center_size(
-                                    egui::pos2(rect.right() - 15.0, rect.center().y),
-                                    vec2(28.0, 28.0),
-                                );
-                                if ui
-                                    .put(
-                                        add_rect,
-                                        egui::Button::new(
-                                            RichText::new("+").size(18.0).color(palette.muted),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .on_hover_text("New page")
-                                    .clicked()
-                                {
-                                    intents.push(Intent::Action(Action::CreatePage(None)));
-                                }
+                            if *title == "WORKSPACE"
+                                && !trash
+                                && egui::DragAndDrop::payload::<crate::ui::page_transfer::PageDragPayload>(ui.ctx()).is_some()
+                            {
+                                crate::ui::page_transfer::drop_target(ui, rect, None, None, palette, intents);
                             }
                         }
                         TreeRow::Page {
@@ -404,51 +397,60 @@ impl Sidebar {
 }
 
 fn show_header(ui: &mut Ui, palette: Palette, pinned: bool, intents: &mut Vec<Intent>) {
-    ui.add_space(10.0);
     ui.horizontal(|ui| {
         let (icon_rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
-        ui.painter().rect_filled(icon_rect, 6.0, palette.text);
+        ui.painter().rect_filled(icon_rect, 8.0, palette.accent);
         ui.painter().text(
             icon_rect.center() - vec2(0.0, 0.5),
             Align2::CENTER_CENTER,
             "n",
             FontId::new(15.0, FontFamily::Name("noteon-bold".into())),
-            palette.sidebar,
+            palette.primary_text,
         );
-        ui.label(RichText::new("noteon").size(24.0).strong());
+        ui.label(RichText::new("Noteon").heading());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (pin_icon, pin_color, pin_tip) = if pinned {
-                ("📌", palette.accent, "Unpin sidebar (auto-hide)")
+            let (pin_color, pin_tip) = if pinned {
+                (palette.accent, "Unpin sidebar (auto-hide)")
             } else {
-                ("📌", palette.muted, "Pin sidebar")
+                (palette.muted, "Pin sidebar")
             };
-            if quiet_button(ui, pin_icon, pin_color)
+            if quiet_button(ui, "◫", pin_color)
                 .on_hover_text(pin_tip)
                 .clicked()
             {
                 intents.push(Intent::ToggleSidebarPin);
             }
-            if quiet_button(ui, "⌕", palette.muted)
-                .on_hover_text("Search workspace · Ctrl + K")
-                .clicked()
-            {
-                intents.push(Intent::Search);
-            }
         });
     });
-    ui.add_space(16.0);
+    ui.add_space(12.0);
+    if ui
+        .add_sized(
+            [ui.available_width(), 31.0],
+            primary_button("+  New page", palette),
+        )
+        .clicked()
+    {
+        intents.push(Intent::Action(Action::CreatePage(None)));
+    }
+    let search =
+        egui::Button::new(RichText::new("⌕  Search").color(palette.text)).shortcut_text("Ctrl+K");
+    if ui.add_sized([ui.available_width(), 30.0], search).clicked() {
+        intents.push(Intent::Search);
+    }
+    ui.add_space(10.0);
+    ui.separator();
 }
 
 fn show_footer(ui: &mut Ui, trash: bool, palette: Palette, intents: &mut Vec<Intent>) {
-    ui.add_space(9.0);
     ui.separator();
-    if quiet_button(
-        ui,
-        "▱   Trash",
-        if trash { palette.accent } else { palette.muted },
-    )
-    .clicked()
-    {
+    if trash {
+        let button = egui::Button::new("▱  Trash")
+            .selected(trash)
+            .corner_radius(9);
+        if ui.add(button).clicked() {
+            intents.push(Intent::Trash);
+        }
+    } else if quiet_button(ui, "▱  Trash", palette.muted).clicked() {
         intents.push(Intent::Trash);
     }
     ui.horizontal(|ui| {
@@ -477,7 +479,6 @@ fn show_footer(ui: &mut Ui, trash: bool, palette: Palette, intents: &mut Vec<Int
             }
         });
     });
-    ui.add_space(5.0);
 }
 
 struct PageRow<'a> {
@@ -512,6 +513,28 @@ impl PageRow<'_> {
             vec2(ui.available_width(), ROW_HEIGHT),
             Sense::click_and_drag(),
         );
+        if self.active || response.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                9,
+                if self.active {
+                    palette.accent_soft
+                } else {
+                    palette.hover
+                },
+            );
+        }
+        if self.active || response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                9,
+                Stroke::new(
+                    if response.has_focus() { 2.0_f32 } else { 1.0 },
+                    palette.accent,
+                ),
+                egui::StrokeKind::Inside,
+            );
+        }
         response.dnd_set_drag_payload(self.page.id);
         if response
             .dnd_hover_payload::<crate::ui::page_transfer::PageDragPayload>()
@@ -560,17 +583,6 @@ impl PageRow<'_> {
                 }));
             }
         }
-        if self.active || response.hovered() {
-            ui.painter().rect_filled(
-                rect,
-                5.0,
-                if self.active {
-                    palette.accent_soft
-                } else {
-                    palette.hover
-                },
-            );
-        }
         let x = rect.left() + 9.0 + self.depth.min(7) as f32 * 13.0;
         let toggled = self.expansion_arrow(ui, rect, x, palette);
         self.paint_title(ui, rect, x, palette);
@@ -615,7 +627,23 @@ impl PageRow<'_> {
 
     fn paint_title(&self, ui: &Ui, rect: egui::Rect, x: f32, palette: Palette) {
         let icon_x = x + 20.0;
-        if !self.page.icon.is_empty() {
+        if self.page.icon.is_empty() {
+            let icon_rect =
+                egui::Rect::from_center_size(egui::pos2(icon_x, rect.center().y), vec2(10.0, 13.0));
+            ui.painter().rect_stroke(
+                icon_rect,
+                2,
+                Stroke::new(1.0_f32, palette.muted),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().line_segment(
+                [
+                    icon_rect.left_top() + vec2(2.5, 5.0),
+                    icon_rect.right_top() + vec2(-2.5, 5.0),
+                ],
+                Stroke::new(1.0_f32, palette.muted),
+            );
+        } else {
             if let Some(source) = crate::ui::emoji_image_source(&self.page.icon) {
                 let size = 15.0;
                 let icon_rect = egui::Rect::from_center_size(
@@ -638,21 +666,19 @@ impl PageRow<'_> {
             }
         }
         let text_x = icon_x + 16.0;
-        let galley = ui.painter().layout(
+        let mut job = egui::text::LayoutJob::simple_singleline(
             self.page.display_title().into(),
             FontId::proportional(13.0),
-            if self.active {
-                palette.accent
-            } else {
-                palette.text
-            },
-            (rect.right() - text_x - 7.0).max(15.0),
-        );
-        ui.painter().with_clip_rect(rect).galley(
-            egui::pos2(text_x, rect.center().y - 9.0),
-            galley,
             palette.text,
         );
+        job.wrap.max_width = (rect.right() - text_x - 7.0).max(1.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let galley = ui.painter().layout_job(job);
+        let y = rect.center().y - galley.size().y * 0.5;
+        ui.painter()
+            .with_clip_rect(rect)
+            .galley(egui::pos2(text_x, y), galley, palette.text);
     }
 }
 
